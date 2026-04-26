@@ -4,6 +4,71 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-04-26
+
+Patch release — `--batch` agent-drive verb + cyrius toolchain bump to
+5.7.7. Closes the cyim pain point in cyrius-bb's tooling field notes
+(`tooling-pain-points.md`): "no multi-edit-in-one-call mode … a batch
+mode (read a list of <old>=>new> pairs) would be cleaner for larger
+refactors."
+
+### Added
+
+- `cyim --batch <file>` — apply N substitutions from stdin, save once.
+  Stdin format: NUL-separated alternating tokens
+  `OLD1\0NEW1\0OLD2\0NEW2\0…\0`. Token count must be even and ≥ 2;
+  the stream must end with a NUL. Each pair applies in order to the
+  in-memory buffer; the file is written **once** at the end. **Atomic**
+  — failure mid-batch (pair K's OLD missing or non-unique) leaves
+  FILE untouched on disk.
+
+  Default per-pair semantics match `--replace`: OLD must be unique in
+  the (in-progress) buffer at apply time, exit 5 if not. `--all`
+  switches every pair to `--replace-all` (substitute every occurrence).
+
+  Composes with the existing modifier surface:
+  - `--wc[=l|=long]` — print `wc(1)` on the post-save buffer.
+  - `--expect=<pat>` / `--expect-not=<pat>` — post-save assertion on
+    the result; exit 6 on mismatch (file is already saved at that
+    point — the assertion is a contract on the *final* result).
+
+  Exit codes:
+  - **0** — every pair applied; file saved
+  - **1** — save failed
+  - **2** — bad CLI args (missing FILE; malformed stdin: empty,
+    odd token count, missing trailing NUL, empty OLD)
+  - **3** — file not found
+  - **4** — pair K's OLD not found in (in-progress) buffer
+  - **5** — pair K's OLD occurs more than once and `--all` not passed
+  - **6** — `--expect` / `--expect-not` mismatch on final buffer
+
+  Closes the workflow gap noted in `tooling-pain-points.md` — the
+  three-chained `--replace` block in cyrius-bb's `cyrius.cyml` rewrite
+  is now one call. Stdin format byte-clean: handles em-dashes,
+  newlines, the literal `=>` (the sigil the field-notes author
+  proposed) — no escape ceremony required because separators are
+  NUL bytes, not text.
+
+  Sequel to v1.1.0's `--grep`/`--expect[-not]`/`--expect-N` primitives:
+  v1.1.0 closed the *check* boundary jump (no more `cyim … && rg …`),
+  v1.1.2 closes the *substitution* boundary jump (no more
+  `cyim --replace … && cyim --replace … && …`).
+
+### Changed
+
+- Cyrius toolchain pin: `5.7.1` → `5.7.7` (in `cyrius.cyml [package].cyrius`).
+
+### Tests
+
+- `tests/cli_smoke.sh` extended from 10 → 28 cases. New cases
+  (11–25) cover: single pair, sequential multi-pair, non-unique-OLD
+  rejection without `--all` (with explicit on-disk atomicity check),
+  `--all` global mode, mid-batch failure with on-disk atomicity check,
+  empty stdin, odd token count, missing trailing NUL, empty OLD,
+  `--expect` / `--expect-not` post-save semantics, interspersed
+  modifiers, extra-positional rejection, and a multi-byte-Unicode
+  (em-dash) round-trip via `--grep` post-substitution.
+
 ## [1.1.1] — 2026-04-26
 
 Patch release — agent-drive CLI flag-parser fix.

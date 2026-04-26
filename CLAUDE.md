@@ -24,14 +24,15 @@ Own the editor surface in the AGNOS library. Modal grammar in the lineage of `vi
 
 - **`agnoshi`** — the AI shell embeds cyim as the in-shell editor.
 - **`aethersafha`** — the Wayland compositor hosts cyim in its terminal surface.
-- **`daimon`-orchestrated agents** — AI assistants (Claude-style and AGNOS-native agents alike) drive cyim programmatically. The same modal surface humans use, agents drive headlessly. The edit loop closes through cyim — nothing in the loop ships from outside the library. Five CLI surfaces serve this consumer:
+- **`daimon`-orchestrated agents** — AI assistants (Claude-style and AGNOS-native agents alike) drive cyim programmatically. The same modal surface humans use, agents drive headlessly. The edit loop closes through cyim — nothing in the loop ships from outside the library. Six CLI surfaces serve this consumer:
   1. `cyim --headless <file>` — low-level keystroke stream over stdin. Full editor semantics: search / undo / dot / visual / multi-window / multi-buffer all available. Encoding-sensitive (raw bytes, `\x1b` for Esc). Use when an agent wants to model arbitrary edits.
   2. `cyim --write <file>` — high-level "set file content from stdin" (matches the Claude Code `Write` tool shape). Direct buffer op, no dispatch detour.
   3. `cyim --replace OLD NEW <file>` — high-level find/replace; OLD must be unique (matches the Claude Code `Edit` tool's uniqueness invariant). Exit 5 if the constraint fails.
   4. `cyim --replace-all OLD NEW <file>` — same, every occurrence.
   5. `cyim --grep PATTERN <file>` — read-only line scan; emits `FILE:N:LINE` (matches `grep -n`). Literal substring (same matching as `--replace`'s OLD), not regex. Closes the "tool boundary jump" so checks stay in one binary.
+  6. `cyim --batch <file>` — N substitutions in one call. Stdin format: NUL-separated alternating tokens `OLD1\0NEW1\0OLD2\0NEW2\0…\0`. Pairs apply sequentially in memory; one save at the end. Default per-pair semantics match `--replace` (OLD unique at apply time); `--all` switches every pair to `--replace-all`. Atomic — failure mid-batch leaves FILE untouched on disk.
 
-  Modifiers (parsed in any order between verb and positionals): `--wc[=l|=long]` (print `wc(1)` on success of `--write`/`--replace[-all]`); `--expect=<pat>` / `--expect-not=<pat>` (post-save shape assertion on `--write`, exit 6 on mismatch); `--expect-N=<n>` / `--expect-1` (pre-substitution count assertion on `--replace[-all]`, exit 6 on mismatch).
+  Modifiers (parsed in any order between verb and positionals): `--wc[=l|=long]` (print `wc(1)` on success of `--write`/`--replace[-all]`/`--batch`); `--expect=<pat>` / `--expect-not=<pat>` (post-save shape assertion on `--write` and `--batch`, exit 6 on mismatch); `--expect-N=<n>` / `--expect-1` (pre-substitution count assertion on `--replace[-all]`, exit 6 on mismatch); `--all` (on `--batch`: every pair runs `--replace-all`).
 
   Exit codes match `~/.local/bin/cyim-edit` so wrapper scripts collapse to `exec` one-liners. The keymap dispatch (M1) was designed with this consumer first-class, not retrofit.
 

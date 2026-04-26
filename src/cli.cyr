@@ -7,14 +7,25 @@
 #                                     every line containing PATTERN
 #                                     (literal substring; same matching
 #                                     semantics as --replace's OLD).
+# `cyim --batch FILE`               — apply N substitutions from stdin,
+#                                     save once. Stdin: NUL-separated
+#                                     alternating tokens
+#                                     OLD1\\0NEW1\\0OLD2\\0NEW2\\0…\\0.
+#                                     Each pair runs --replace semantics
+#                                     (OLD unique at apply time); --all
+#                                     switches every pair to
+#                                     --replace-all. Atomic: failure
+#                                     mid-batch leaves FILE untouched.
 #
 # Modifiers (consumed in any order, between the verb and its positionals):
-#   --wc[=l|=long]      on --write/--replace[-all]: print wc(1) on success
-#   --expect=<pat>      on --write: post-save assertion (must contain)
-#   --expect-not=<pat>  on --write: post-save assertion (must not contain)
+#   --wc[=l|=long]      on --write/--replace[-all]/--batch: print wc(1) on success
+#   --expect=<pat>      on --write/--batch: post-save assertion (must contain)
+#   --expect-not=<pat>  on --write/--batch: post-save assertion (must not contain)
 #   --expect-N=<n>      on --replace[-all]: assert OLD occurs exactly N
 #                       times (pre-substitution); --expect-1 is sugar
 #                       for --expect-N=1.
+#   --all               on --batch: every pair runs --replace-all
+#                       (default is --replace's unique-required mode).
 #
 # These are direct buffer ops — they don't go through the dispatch +
 # apply chain because there's no edit-history / undo / mode state to
@@ -24,13 +35,14 @@
 #
 # Exit codes (per-verb where noted):
 #   0 — success (or, for --grep, ≥1 match)
-#   1 — save failed (--write/--replace[-all]) | no match (--grep)
+#   1 — save failed (--write/--replace[-all]/--batch) | no match (--grep)
 #   2 — bad CLI args (missing OLD/NEW/FILE/PATTERN, empty OLD/PATTERN,
-#       malformed --expect-N value)
+#       malformed --expect-N value, malformed --batch stdin)
 #   3 — file not found
-#   4 — OLD not found in FILE (--replace[-all] only; suppressed when
-#       --expect-N=0 explicitly asserts the no-op case)
-#   5 — OLD occurs more than once and --replace-all wasn't passed
+#   4 — OLD not found in FILE (--replace[-all]/--batch; suppressed
+#       on --replace[-all] when --expect-N=0 explicitly asserts the
+#       no-op case)
+#   5 — OLD occurs more than once and --replace-all/--all wasn't passed
 #   6 — assertion failed (--expect / --expect-not / --expect-N mismatch)
 #
 # Requires: src/buffer.cyr (buf_*), stdlib (file_read / file_save_*
@@ -469,5 +481,161 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n) {
         return 1;
     }
     _cli_print_wc(out, file_path, wc_mode);
+    return 0;
+}
+
+# Read all of stdin into a freshly allocated heap buffer. Returns the
+# buffer pointer; writes the byte count into the 8-byte slot at
+# `len_out`. Caller owns `buf` (cyim's freelist allocator can't reclaim
+# arbitrary blocks; the buffer lives until process exit).
+#
+# Used by run_batch to slurp the NUL-separated pair stream — buf_insert
+# (the --write path) is wrong here because we need raw byte access by
+# offset for the token walk, not gap-buffer semantics.
+fn _cli_drain_stdin_raw(len_out) {
+    var cap = 4096;
+    var buf = alloc(cap);
+    var n = 0;
+    var go = 1;
+    while (go == 1) {
+        if (n + 4096 > cap) {
+            var new_cap = cap * 2;
+            while (new_cap < n + 4096) { new_cap = new_cap * 2; }
+            var nb = alloc(new_cap);
+            var i = 0;
+            while (i < n) {
+                store8(nb + i, load8(buf + i));
+                i = i + 1;
+            }
+            buf = nb;
+            cap = new_cap;
+        }
+        var r = file_read(0, buf + n, 4096);
+        if (r <= 0) { go = 0; }
+        if (r > 0) { n = n + r; }
+    }
+    store64(len_out, n);
+    return buf;
+}
+
+# `cyim --batch FILE` — apply N substitutions from stdin to FILE, save
+# once. Stdin format: NUL-separated alternating tokens
+# OLD1\0NEW1\0OLD2\0NEW2\0…\0. Token count must be even and ≥ 2; the
+# stream must end with a NUL (closes the final NEW). Each pair applies
+# in order to the in-memory buffer; the file is written once at the end.
+# A failure mid-batch leaves FILE untouched on disk — atomic from the
+# caller's perspective.
+#
+# `mode`:       0 = each pair runs --replace semantics (OLD unique at
+#               apply time); 1 = each pair runs --replace-all.
+# `wc_mode`:    0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
+# `expect_pat` / `expect_pol`: same shape as run_write — post-save
+#               assertion on the final buffer; mismatch returns 6 (file
+#               is already saved at that point — assertion is a contract
+#               on the result).
+fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
+    if (file_path == 0) {
+        syscall(1, 2, "cyim --batch: missing FILE argument\n", 36);
+        return 2;
+    }
+
+    var len_slot[8];
+    store64(&len_slot, 0);
+    var stdin_buf = _cli_drain_stdin_raw(&len_slot);
+    var stdin_len = load64(&len_slot);
+
+    if (stdin_len == 0) {
+        syscall(1, 2, "cyim --batch: empty stdin\n", 26);
+        return 2;
+    }
+    if (load8(stdin_buf + stdin_len - 1) != 0) {
+        syscall(1, 2, "cyim --batch: stdin must end with NUL after final NEW\n", 54);
+        return 2;
+    }
+
+    # Token count = number of NUL bytes in the stream. Must be even and
+    # ≥ 2 (one OLD + one NEW = one pair).
+    var num_tokens = 0;
+    var p = 0;
+    while (p < stdin_len) {
+        if (load8(stdin_buf + p) == 0) { num_tokens = num_tokens + 1; }
+        p = p + 1;
+    }
+    if (num_tokens < 2) {
+        syscall(1, 2, "cyim --batch: need at least one OLD/NEW pair\n", 45);
+        return 2;
+    }
+    if ((num_tokens / 2) * 2 != num_tokens) {
+        syscall(1, 2, "cyim --batch: odd token count (each OLD needs a NEW)\n", 53);
+        return 2;
+    }
+
+    var b = buf_new();
+    var loaded = buf_load_file(b, file_path);
+    if (loaded < 0) {
+        syscall(1, 2, "cyim --batch: file not found\n", 29);
+        return 3;
+    }
+
+    # Walk the stream pair-by-pair. Each token is already NUL-terminated
+    # in-place by the separators, so strlen() works directly on token
+    # pointers — _cli_count_matches / _cli_substitute use strlen on the
+    # needle, which is what we want.
+    var tok_start = 0;
+    var on_old = 1;
+    var old_ptr = 0;
+    var t = 0;
+    while (t < num_tokens) {
+        var j = tok_start;
+        while (load8(stdin_buf + j) != 0) { j = j + 1; }
+        var tok_ptr = stdin_buf + tok_start;
+        var tok_len = j - tok_start;
+        if (on_old == 1) {
+            if (tok_len == 0) {
+                syscall(1, 2, "cyim --batch: empty OLD in pair\n", 32);
+                return 2;
+            }
+            old_ptr = tok_ptr;
+            on_old = 0;
+        } else {
+            var count = _cli_count_matches(b, old_ptr);
+            if (count == 0) {
+                syscall(1, 2, "cyim --batch: pair OLD not found in file\n", 41);
+                return 4;
+            }
+            if (mode == 0) {
+                if (count > 1) {
+                    syscall(1, 2, "cyim --batch: pair OLD not unique — use --all or specify more\n", 64);
+                    return 5;
+                }
+            }
+            b = _cli_substitute(b, old_ptr, tok_ptr, mode);
+            on_old = 1;
+        }
+        tok_start = j + 1;
+        t = t + 1;
+    }
+
+    var rc = buf_save_file(b, file_path);
+    if (rc < 0) {
+        syscall(1, 2, "cyim --batch: save failed\n", 26);
+        return 1;
+    }
+    if (expect_pol != 0) {
+        var ec = _cli_count_matches(b, expect_pat);
+        if (expect_pol == 1) {
+            if (ec == 0) {
+                syscall(1, 2, "cyim --batch: --expect pattern not found in result\n", 51);
+                return 6;
+            }
+        }
+        if (expect_pol == 2) {
+            if (ec > 0) {
+                syscall(1, 2, "cyim --batch: --expect-not pattern present in result\n", 53);
+                return 6;
+            }
+        }
+    }
+    _cli_print_wc(b, file_path, wc_mode);
     return 0;
 }

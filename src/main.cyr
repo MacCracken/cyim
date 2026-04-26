@@ -41,7 +41,7 @@ var DEFAULT_ROWS = 24;
 var DEFAULT_COLS = 80;
 
 fn print_version() {
-    syscall(1, 1, "cyim 1.1.1\n", 11);
+    syscall(1, 1, "cyim 1.1.2\n", 11);
     return 0;
 }
 
@@ -55,11 +55,13 @@ fn print_help() {
     syscall(1, 1, "       cyim --replace <old> <new> <file>     (substitute first; OLD must be unique)\n", 84);
     syscall(1, 1, "       cyim --replace-all <old> <new> <file> (substitute every occurrence)\n", 75);
     syscall(1, 1, "       cyim --grep <pattern> <file>          (read-only; emit FILE:N:LINE per hit)\n", 83);
-    syscall(1, 1, "       --wc[=l|=long]      on --write/--replace[-all]: print wc(1) on success\n", 78);
-    syscall(1, 1, "       --expect=<pat>      on --write: post-save assertion (exit 6 on miss)\n", 76);
-    syscall(1, 1, "       --expect-not=<pat>  on --write: post-save assertion (exit 6 on hit)\n", 75);
+    syscall(1, 1, "       cyim --batch <file>                   (apply NUL-separated OLD/NEW pairs from stdin; atomic)\n", 100);
+    syscall(1, 1, "       --wc[=l|=long]      on --write/--replace[-all]/--batch: print wc(1) on success\n", 86);
+    syscall(1, 1, "       --expect=<pat>      on --write/--batch: post-save assertion (exit 6 on miss)\n", 84);
+    syscall(1, 1, "       --expect-not=<pat>  on --write/--batch: post-save assertion (exit 6 on hit)\n", 83);
     syscall(1, 1, "       --expect-N=<n>      on --replace[-all]: pre-sub count must equal N\n", 74);
     syscall(1, 1, "       --expect-1          on --replace[-all]: alias for --expect-N=1\n", 70);
+    syscall(1, 1, "       --all               on --batch: each pair runs --replace-all\n", 68);
     return 0;
 }
 
@@ -352,6 +354,63 @@ fn main() {
                 return 2;
             }
             return run_replace(ra_p0, ra_p1, ra_p2, 1, ra_wc, ra_expect_n);
+        }
+        if (streq(a1, "--batch") == 1) {
+            # Modifiers and the FILE positional may interleave in any
+            # order after the verb (same parser shape as --write).
+            var ba_wc = 0;
+            var ba_expect = 0;
+            var ba_expect_pol = 0;
+            var ba_mode = 0;
+            var ba_pos0 = 0;
+            var ba_npos = 0;
+            var ba_idx = 2;
+            while (ba_idx < ac) {
+                var arg = argv(ba_idx);
+                var consumed = 0;
+                if (streq(arg, "--wc")      == 1) { ba_wc = 1; consumed = 1; }
+                if (streq(arg, "--wc=l")    == 1) { ba_wc = 2; consumed = 1; }
+                if (streq(arg, "--wc=long") == 1) { ba_wc = 2; consumed = 1; }
+                if (streq(arg, "--all")     == 1) { ba_mode = 1; consumed = 1; }
+                if (consumed == 0) {
+                    var s1 = _cli_argprefix(arg, "--expect=");
+                    if (s1 != 0) {
+                        if (strlen(s1) == 0) {
+                            syscall(1, 2, "cyim --batch: --expect requires a non-empty pattern\n", 52);
+                            return 2;
+                        }
+                        ba_expect = s1;
+                        ba_expect_pol = 1;
+                        consumed = 1;
+                    }
+                }
+                if (consumed == 0) {
+                    var s2 = _cli_argprefix(arg, "--expect-not=");
+                    if (s2 != 0) {
+                        if (strlen(s2) == 0) {
+                            syscall(1, 2, "cyim --batch: --expect-not requires a non-empty pattern\n", 56);
+                            return 2;
+                        }
+                        ba_expect = s2;
+                        ba_expect_pol = 2;
+                        consumed = 1;
+                    }
+                }
+                if (consumed == 0) {
+                    if (ba_npos > 0) {
+                        syscall(1, 2, "cyim --batch: unexpected extra argument\n", 40);
+                        return 2;
+                    }
+                    ba_pos0 = arg;
+                    ba_npos = 1;
+                }
+                ba_idx = ba_idx + 1;
+            }
+            if (ba_npos < 1) {
+                syscall(1, 2, "usage: cyim --batch [--wc[=l]] [--expect=<pat>|--expect-not=<pat>] [--all] <file>\n", 82);
+                return 2;
+            }
+            return run_batch(ba_pos0, ba_mode, ba_wc, ba_expect, ba_expect_pol);
         }
         fpath = a1;
     }
