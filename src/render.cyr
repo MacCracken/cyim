@@ -1,0 +1,127 @@
+# render.cyr — TTY rendering for cyim's main loop
+#
+# Bite 8 ships the minimum viable display: clear screen, draw lines into
+# a scratch buffer, flush per line, draw a single status row at the
+# bottom, position the cursor. Resize handling, scrolling, and syntax
+# highlighting (M2 territory) are deferred.
+#
+# Requires: src/buffer.cyr, src/mode.cyr, src/tty.cyr.
+
+# Per-line output buffer. Sized to comfortably hold an 80-col line plus
+# CR/LF. A line longer than this is truncated visually — content is
+# unaffected, only the display is.
+var RENDER_LINE_BUF = 8192;
+
+# Draw line `line` (0-indexed) into stdout, terminated with CRLF (raw mode
+# has OPOST off, so we must emit \r\n explicitly). Truncates at `cols`.
+fn render_line(b, line, cols) {
+    var ls = buf_pos_of_line(b, line);
+    var le = buf_line_end(b, ls);
+    var blen = buf_len(b);
+    var out[8192];
+    var pos = 0;
+
+    if (blen > 0) {
+        if (le == ls) {
+            # Either single-char line or empty interior line.
+            var c = buf_get(b, ls);
+            if (c != 10) {
+                if (pos < cols) {
+                    store8(&out + pos, c);
+                    pos = pos + 1;
+                }
+            }
+        } else {
+            var i = ls;
+            while (i <= le) {
+                if (pos < cols) {
+                    store8(&out + pos, buf_get(b, i));
+                    pos = pos + 1;
+                }
+                i = i + 1;
+            }
+        }
+    }
+    store8(&out + pos, 13);  # \r
+    pos = pos + 1;
+    store8(&out + pos, 10);  # \n
+    pos = pos + 1;
+    syscall(1, 1, &out, pos);
+    return 0;
+}
+
+# Bottom status row. In COMMAND mode shows ":<cmdbuf>"; otherwise mode tag,
+# filename, modified flag.
+fn render_status(s, rows, cols) {
+    tty_move(rows, 1);
+    syscall(1, 1, "\x1b[2K", 4);  # clear current line first
+
+    if (editor_mode(s) == MODE_COMMAND) {
+        syscall(1, 1, ":", 1);
+        var cb = editor_cmdbuf(s);
+        var clen = buf_len(cb);
+        var i = 0;
+        var line[2048];
+        var pos = 0;
+        while (i < clen) {
+            if (pos < cols - 1) {
+                store8(&line + pos, buf_get(cb, i));
+                pos = pos + 1;
+            }
+            i = i + 1;
+        }
+        if (pos > 0) { syscall(1, 1, &line, pos); }
+        return 0;
+    }
+
+    var tag = "-- NORMAL --";
+    if (editor_mode(s) == MODE_INSERT) { tag = "-- INSERT --"; }
+    syscall(1, 1, tag, strlen(tag));
+    syscall(1, 1, "  ", 2);
+    var path = editor_file_path(s);
+    if (path == 0) {
+        syscall(1, 1, "[scratch]", 9);
+    } else {
+        syscall(1, 1, path, strlen(path));
+    }
+    if (editor_modified(s) == 1) {
+        syscall(1, 1, " [+]", 4);
+    }
+    return 0;
+}
+
+# Full-screen redraw. Called at the top of every main-loop iteration.
+fn render_frame(s, rows, cols) {
+    var b = editor_buf(s);
+    tty_clear();
+    tty_cursor_home();
+
+    var n_lines = buf_line_count(b);
+    var max_lines = rows - 1;  # last row is the status line
+    if (n_lines > max_lines) { n_lines = max_lines; }
+
+    var line = 0;
+    while (line < n_lines) {
+        render_line(b, line, cols);
+        line = line + 1;
+    }
+    # Vim convention: tildes mark rows past end-of-file.
+    while (line < max_lines) {
+        syscall(1, 1, "~\r\n", 3);
+        line = line + 1;
+    }
+
+    render_status(s, rows, cols);
+
+    if (editor_mode(s) == MODE_COMMAND) {
+        var clen = buf_len(editor_cmdbuf(s));
+        tty_move(rows, clen + 2);  # +1 for the ":", +1 for 1-indexed
+    } else {
+        var cpos = buf_cursor(b);
+        var crow = buf_line_of(b, cpos) + 1;
+        var ccol = buf_col_of(b, cpos) + 1;
+        if (crow > max_lines) { crow = max_lines; }
+        tty_move(crow, ccol);
+    }
+    return 0;
+}

@@ -1,11 +1,102 @@
-# cyim — main entry point
-# Stdlib auto-included via cyrius.cyml
+# main.cyr — cyim entry point
+#
+# Three command-line shapes:
+#   cyim                — open scratch buffer
+#   cyim <file>         — open <file>
+#   cyim --probe        — TTY round-trip diagnostic (raw on / sleep / cooked off)
+#   cyim --version      — print version and exit
+#   cyim --help         — print usage and exit
+#
+# Main loop:
+#   1. Render the frame (buffer + status + cursor).
+#   2. Block on read(stdin, 1) — VMIN=1 / VTIME=0 from tty_raw.
+#   3. editor_step(s, byte) dispatches + applies.
+#   4. Exit when editor_quit(s) == 1 or stdin EOF.
+#
+# All TTY state changes wrap the loop: alt-screen on / raw on at start;
+# alt-screen off / cooked on at exit. EOF and quit both fall through to
+# the same teardown path.
 
-fn main() {
-    alloc_init();
-    println("hello from cyim");
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/driver.cyr"
+include "src/tty.cyr"
+include "src/render.cyr"
+
+var DEFAULT_ROWS = 24;
+var DEFAULT_COLS = 80;
+
+fn print_version() {
+    syscall(1, 1, "cyim 0.1.0\n", 11);
     return 0;
 }
 
-var r = main();
-syscall(SYS_EXIT, r);
+fn print_help() {
+    syscall(1, 1, "usage: cyim [<file>]\n", 21);
+    syscall(1, 1, "       cyim --version\n", 22);
+    syscall(1, 1, "       cyim --help\n", 19);
+    syscall(1, 1, "       cyim --probe   (TTY round-trip diagnostic)\n", 50);
+    return 0;
+}
+
+fn run_editor(file_path) {
+    var b = buf_new();
+    if (file_path != 0) {
+        if (file_exists(file_path) == 1) {
+            buf_load_file(b, file_path);
+            buf_move(b, 0);
+        }
+    }
+    var s = editor_new(b);
+    if (file_path != 0) {
+        editor_set_file_path(s, file_path);
+    }
+    editor_set_modified(s, 0);
+
+    if (tty_raw(0) < 0) {
+        syscall(1, 2, "cyim: stdin is not a TTY\n", 25);
+        return 1;
+    }
+    tty_alt_enter();
+
+    var quit = 0;
+    while (quit == 0) {
+        render_frame(s, DEFAULT_ROWS, DEFAULT_COLS);
+        var key_buf[1];
+        var n = file_read(0, &key_buf, 1);
+        if (n <= 0) {
+            quit = 1;
+        }
+        if (quit == 0) {
+            editor_step(s, load8(&key_buf));
+            if (editor_quit(s) == 1) { quit = 1; }
+        }
+    }
+
+    tty_alt_leave();
+    tty_cooked(0);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    args_init();
+
+    var ac = argc();
+    var fpath = 0;
+    if (ac > 1) {
+        var a1 = argv(1);
+        if (streq(a1, "--version") == 1) { return print_version(); }
+        if (streq(a1, "--help")    == 1) { return print_help(); }
+        if (streq(a1, "--probe")   == 1) { return tty_probe(); }
+        fpath = a1;
+    }
+    return run_editor(fpath);
+}
+
+var exit_code = main();
+syscall(60, exit_code);

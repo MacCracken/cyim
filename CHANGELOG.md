@@ -120,6 +120,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   backspace, and Esc-cancels-cmdline.
 - `tests/dispatch.tcyr` updated to include `src/buffer.cyr`
   (the new `editor_new` allocates a cmdbuf via `buf_new`).
+- `src/render.cyr` — TTY rendering: `render_line` (per-line
+  scratch-buffered write with CRLF for raw-mode terminals;
+  truncates at `cols`), `render_status` (mode tag + filename +
+  modified flag, or `:cmdbuf` in COMMAND mode), `render_frame`
+  (clear, walk lines, vim-style `~` for past-EOF rows, position
+  cursor on bottom row in COMMAND mode and at line/col
+  otherwise).
+- `src/main.cyr` — full editor entry point. CLI shapes:
+  `cyim [<file>]`, `cyim --version`, `cyim --help`,
+  `cyim --probe`. Main loop reads one byte at a time, calls
+  `editor_step`, exits when `editor_quit() == 1` or stdin EOF.
+  Wraps the loop with `tty_alt_enter` / `tty_raw` on the way in
+  and `tty_alt_leave` / `tty_cooked` on the way out.
+- `tests/integration_smoke.py` — Python PTY harness that spawns
+  cyim against a fixture file, drives recorded keystrokes through
+  a real pseudo-terminal, and asserts on-disk file content. Five
+  end-to-end checks: `:q` clean exit doesn't modify, `iEDIT<Esc>:wq`
+  prepends "EDIT", `A!!<Esc>:wq` appends "!!" before `\n`, `xx:wq`
+  deletes first two chars, dirty `:q` refused + `:q!` discards.
+
+### Status
+- M1 (gap-buffer + raw-mode TTY + modal dispatch) is complete.
+  All 8 bites landed.
+- 350 .tcyr assertions across 8 suites + 5 PTY-driven end-to-end
+  checks; all green.
+- DCE binary: 101,560 B (M0 was 57,728 B; +43,832 B for the
+  full editor).
 
 ## [0.1.0] — 2026-04-25
 
