@@ -65,6 +65,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   newlines, b across whitespace, G/gg, `motion_apply` end-to-end
   via the editor state, and "all motions on an empty buffer are
   safe no-ops".
+- `src/insert.cyr` — INSERT-mode handlers: `insert_literal`,
+  `insert_delete_left`, `insert_to_after` (vim `a`: cursor +1
+  clamped to buf_len), `insert_to_line_end` (vim `A`: cursor →
+  line's `\n` or buf_len; empty lines stay put),
+  `insert_to_normal` (vim Esc: cursor steps back one within line
+  bounds), and `insert_apply(s, action, key)` which silently
+  no-ops on non-INSERT actions.
+- `src/driver.cyr` — `editor_step(s, key)` (the canonical
+  consume-one-byte function: dispatch + insert_apply +
+  motion_apply) and `editor_run(s, keys, n)` (the headless
+  agent-drive entry point — same code path the TTY consumer
+  takes).
+- `tests/insert.tcyr` — 39 assertions over 10 groups including
+  unit-level handler invariants, `insert_apply` routing, and four
+  end-to-end `editor_run` drives covering `iHello<Esc>` (Esc
+  step-back lands cursor on 'o'), `iHello<Esc>$a World<Esc>` to
+  build "Hello Wor" via mode round-trip, backspace inside INSERT
+  (DEL and ^H both work), and motion+insert mix that prepends
+  "hello " before "world".
 
 ## [0.1.0] — 2026-04-25
 

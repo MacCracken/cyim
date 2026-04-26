@@ -1,0 +1,227 @@
+# tests/insert.tcyr — INSERT-mode handlers + headless drive end-to-end
+#
+# Each group either calls handlers directly (for unit-level invariants) or
+# drives a key sequence via `editor_run` (for integration). Buffer contents
+# are spot-checked byte-by-byte.
+
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/driver.cyr"
+
+# Helper: copy buffer bytes to `out` (NUL-terminated). Returns logical length.
+fn buf_copy(b, out) {
+    var len = buf_len(b);
+    var i = 0;
+    while (i < len) {
+        store8(out + i, buf_get(b, i));
+        i = i + 1;
+    }
+    store8(out + len, 0);
+    return len;
+}
+
+# Helper: byte-compare buffer to expected cstr of length `n`.
+fn buf_eq(b, expected, n) {
+    if (buf_len(b) != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (buf_get(b, i) != load8(expected + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("insert_literal at empty cursor");
+    var b1 = buf_new();
+    var s1 = editor_new(b1);
+    insert_literal(s1, 72);  # 'H'
+    insert_literal(s1, 105); # 'i'
+    assert_eq(buf_len(b1), 2, "len after 2 literal inserts");
+    assert_eq(buf_cursor(b1), 2, "cursor advanced");
+    assert_eq(buf_get(b1, 0), 72, "[0] == 'H'");
+    assert_eq(buf_get(b1, 1), 105, "[1] == 'i'");
+
+    test_group("insert_delete_left (backspace)");
+    insert_delete_left(s1);
+    assert_eq(buf_len(b1), 1, "len after backspace");
+    assert_eq(buf_cursor(b1), 1, "cursor moved left");
+    insert_delete_left(s1);
+    assert_eq(buf_len(b1), 0, "buffer emptied");
+    assert_eq(buf_cursor(b1), 0, "cursor at 0");
+    # Backspace on empty buffer is a safe no-op.
+    var ok = insert_delete_left(s1);
+    assert_eq(ok, 0, "backspace on empty returns 0");
+    assert_eq(buf_len(b1), 0, "still empty");
+
+    test_group("insert_to_after (`a` semantics)");
+    var b2 = buf_new();
+    buf_insert(b2, "abc", 3);
+    buf_move(b2, 0);
+    var s2 = editor_new(b2);
+    # Position-only: after `a` from 0, cursor is at 1.
+    insert_to_after(s2);
+    assert_eq(buf_cursor(b2), 1, "a from 0 -> cursor at 1");
+    # Now insert 'X' here: buffer becomes "aXbc".
+    insert_literal(s2, 88);
+    assert_eq(buf_len(b2), 4, "len now 4");
+    assert_eq(buf_eq(b2, "aXbc", 4), 1, "buffer is 'aXbc'");
+    assert_eq(buf_cursor(b2), 2, "cursor at 2 (on 'b')");
+
+    # `a` at end-of-buffer puts cursor past the last char.
+    var b3 = buf_new();
+    buf_insert(b3, "ab", 2);
+    var s3 = editor_new(b3);
+    # buf_cursor is 2 after the insert (at end). `a` should clamp at buf_len.
+    insert_to_after(s3);
+    assert_eq(buf_cursor(b3), 2, "a at end stays at end (no overshoot)");
+
+    test_group("insert_to_line_end (`A` semantics)");
+    var b4 = buf_new();
+    buf_insert(b4, "hello\nworld", 11);
+    buf_move(b4, 2); # 'l' on line 0
+    var s4 = editor_new(b4);
+    insert_to_line_end(s4);
+    assert_eq(buf_cursor(b4), 5, "A on line 0 -> position of '\\n' (5)");
+    # Insert 'X' here: "helloX\nworld".
+    insert_literal(s4, 88);
+    assert_eq(buf_eq(b4, "helloX\nworld", 12), 1, "buffer is 'helloX\\nworld'");
+    assert_eq(buf_cursor(b4), 6, "cursor advanced past 'X'");
+
+    # `A` on the last line (no trailing \n): cursor goes to buf_len.
+    var b5 = buf_new();
+    buf_insert(b5, "abc", 3);
+    buf_move(b5, 1);
+    var s5 = editor_new(b5);
+    insert_to_line_end(s5);
+    assert_eq(buf_cursor(b5), 3, "A on no-trailing-NL line -> buf_len (3)");
+
+    # `A` on an empty line: cursor stays at line_start.
+    var b6 = buf_new();
+    buf_insert(b6, "abc\n\ndef", 8);
+    buf_move(b6, 4); # the empty line at position 4
+    var s6 = editor_new(b6);
+    insert_to_line_end(s6);
+    assert_eq(buf_cursor(b6), 4, "A on empty interior line stays at line_start");
+
+    # `A` on an empty buffer.
+    var b7 = buf_new();
+    var s7 = editor_new(b7);
+    insert_to_line_end(s7);
+    assert_eq(buf_cursor(b7), 0, "A on empty buffer stays at 0");
+
+    test_group("insert_to_normal (Esc step-back)");
+    var b8 = buf_new();
+    buf_insert(b8, "Hi", 2);
+    # Cursor at 2 after typing — like the end of an insert sequence.
+    var s8 = editor_new(b8);
+    insert_to_normal(s8);
+    assert_eq(buf_cursor(b8), 1, "Esc from cursor=2 -> 1 (on 'i')");
+
+    # Esc at line_start is a no-op.
+    var b9 = buf_new();
+    buf_insert(b9, "Hi", 2);
+    buf_move(b9, 0);
+    var s9 = editor_new(b9);
+    insert_to_normal(s9);
+    assert_eq(buf_cursor(b9), 0, "Esc at line_start stays at 0");
+
+    # Esc on empty buffer is a no-op.
+    var b10 = buf_new();
+    var s10 = editor_new(b10);
+    insert_to_normal(s10);
+    assert_eq(buf_cursor(b10), 0, "Esc on empty buffer stays at 0");
+
+    test_group("insert_apply routes by action id");
+    var b11 = buf_new();
+    var s11 = editor_new(b11);
+    assert_eq(insert_apply(s11, ACT_INSERT_LITERAL, 65), 1, "INSERT_LITERAL consumed");
+    assert_eq(buf_get(b11, 0), 65, "'A' inserted");
+    # Non-INSERT action is silently passed through.
+    assert_eq(insert_apply(s11, ACT_MOVE_LEFT, 0), 0, "MOVE_LEFT not consumed");
+    assert_eq(insert_apply(s11, ACT_NONE, 0), 0, "NONE not consumed");
+
+    test_group("editor_step + editor_run: end-to-end 'iHello<Esc>'");
+    var b12 = buf_new();
+    var s12 = editor_new(b12);
+    var seq[7];
+    store8(&seq + 0, 105); # i
+    store8(&seq + 1, 72);  # H
+    store8(&seq + 2, 101); # e
+    store8(&seq + 3, 108); # l
+    store8(&seq + 4, 108); # l
+    store8(&seq + 5, 111); # o
+    store8(&seq + 6, 27);  # Esc
+    editor_run(s12, &seq, 7);
+    assert_eq(buf_len(b12), 5, "buffer has 5 bytes");
+    assert_eq(buf_eq(b12, "Hello", 5), 1, "buffer is 'Hello'");
+    assert_eq(editor_mode(s12), MODE_NORMAL, "ends in NORMAL");
+    assert_eq(buf_cursor(b12), 4, "cursor on 'o' (last char) after Esc step-back");
+
+    test_group("editor_run: 'iHello<Esc>$a World<Esc>' from empty -> 'Hello World'");
+    var b13 = buf_new();
+    var s13 = editor_new(b13);
+    var seq2[14];
+    store8(&seq2 + 0,  105);  # i
+    store8(&seq2 + 1,  72);   # H
+    store8(&seq2 + 2,  101);  # e
+    store8(&seq2 + 3,  108);  # l
+    store8(&seq2 + 4,  108);  # l
+    store8(&seq2 + 5,  111);  # o
+    store8(&seq2 + 6,  27);   # Esc      -> NORMAL, cursor steps back to 'o' (4)
+    store8(&seq2 + 7,  36);   # $        -> stay on 'o' (already at line_end == 4)
+    store8(&seq2 + 8,  97);   # a        -> cursor 5 (past 'o'), INSERT
+    store8(&seq2 + 9,  32);   # ' '
+    store8(&seq2 + 10, 87);   # W
+    store8(&seq2 + 11, 111);  # o
+    store8(&seq2 + 12, 114);  # r
+    store8(&seq2 + 13, 27);   # Esc
+    editor_run(s13, &seq2, 14);
+    assert_eq(buf_eq(b13, "Hello Wor", 9), 1, "buffer is 'Hello Wor'");
+    assert_eq(editor_mode(s13), MODE_NORMAL, "ends in NORMAL");
+    # After 'r' typed cursor was 9; Esc step-back to 8 (on 'r').
+    assert_eq(buf_cursor(b13), 8, "cursor on last typed char ('r')");
+
+    test_group("editor_run: backspace inside INSERT");
+    var b14 = buf_new();
+    var s14 = editor_new(b14);
+    var seq3[7];
+    store8(&seq3 + 0, 105); # i
+    store8(&seq3 + 1, 65);  # A
+    store8(&seq3 + 2, 66);  # B
+    store8(&seq3 + 3, 67);  # C
+    store8(&seq3 + 4, 127); # DEL  (backspace)
+    store8(&seq3 + 5, 8);   # ^H   (also backspace)
+    store8(&seq3 + 6, 27);  # Esc
+    editor_run(s14, &seq3, 7);
+    assert_eq(buf_eq(b14, "A", 1), 1, "buffer is 'A' after 2 backspaces");
+    assert_eq(buf_cursor(b14), 0, "cursor on 'A' after Esc step-back");
+
+    test_group("editor_run: motion + insert mix");
+    var b15 = buf_new();
+    buf_insert(b15, "world", 5);
+    buf_move(b15, 0);
+    var s15 = editor_new(b15);
+    # Insert "hello " before "world": navigate to 0, type 'i', "hello ", Esc.
+    var seq4[8];
+    store8(&seq4 + 0, 105); # i
+    store8(&seq4 + 1, 104); # h
+    store8(&seq4 + 2, 101); # e
+    store8(&seq4 + 3, 108); # l
+    store8(&seq4 + 4, 108); # l
+    store8(&seq4 + 5, 111); # o
+    store8(&seq4 + 6, 32);  # ' '
+    store8(&seq4 + 7, 27);  # Esc
+    editor_run(s15, &seq4, 8);
+    assert_eq(buf_eq(b15, "hello world", 11), 1, "prepended 'hello '");
+    assert_eq(editor_mode(s15), MODE_NORMAL, "ends in NORMAL");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -1,0 +1,83 @@
+# insert.cyr — INSERT-mode handlers
+#
+# Five actions land here:
+#   ACT_INSERT_LITERAL      — type a byte at the cursor
+#   ACT_DELETE_LEFT         — backspace
+#   ACT_TO_INSERT_AFTER     — `a`: pre-step cursor right by 1
+#   ACT_TO_INSERT_LINE_END  — `A`: jump cursor to the line's '\n' (or buf_len)
+#   ACT_TO_NORMAL           — leaving INSERT: vim-style step-back within line
+#
+# The mode change itself happens inside `editor_dispatch`; this module owns
+# the cursor / buffer side effects that are specific to entering or leaving
+# INSERT. ACT_TO_INSERT (plain `i`) needs no cursor adjustment so it's not
+# handled here — the dispatcher's mode flip is enough.
+#
+# Requires: src/buffer.cyr, src/mode.cyr (consumer must include them first).
+
+# Insert one byte at the cursor.
+fn insert_literal(s, key) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    buf_insert_byte(b, key);
+    return 1;
+}
+
+# Delete one byte to the left of the cursor.
+fn insert_delete_left(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    return buf_delete_left(b);
+}
+
+# `a` — step cursor right by 1 (clamped to buf_len, NOT to line_end:
+# INSERT mode is allowed to position past the line's last printable char,
+# i.e. on top of the '\n', because the next inserted byte goes there).
+fn insert_to_after(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var pos = buf_cursor(b);
+    var len = buf_len(b);
+    if (pos < len) { buf_move(b, pos + 1); }
+    return buf_cursor(b);
+}
+
+# `A` — jump cursor to the insert-position at end of line. For non-empty
+# lines that's the byte just after the last printable char (the '\n', or
+# buf_len if no terminator). For empty lines (line_start == line_end) the
+# cursor stays put — there is no after-the-last-char to land on.
+fn insert_to_line_end(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var pos = buf_cursor(b);
+    var ls = buf_line_start(b, pos);
+    var le = buf_line_end(b, pos);
+    var new_pos = le;
+    if (le != ls) { new_pos = le + 1; }
+    buf_move(b, new_pos);
+    return new_pos;
+}
+
+# Esc from INSERT — step cursor back by 1 within line bounds (vim's
+# "after-typed-byte" cursor returns to "on-typed-byte"). At line_start
+# it's a no-op.
+fn insert_to_normal(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var pos = buf_cursor(b);
+    if (pos == 0) { return 0; }
+    var ls = buf_line_start(b, pos);
+    if (pos > ls) { buf_move(b, pos - 1); }
+    return buf_cursor(b);
+}
+
+# Top-level INSERT-action handler. Returns 1 if it consumed the action,
+# 0 otherwise. Safe to call on every dispatched action — non-INSERT
+# actions are silent no-ops.
+fn insert_apply(s, action, key) {
+    if (action == ACT_INSERT_LITERAL)      { insert_literal(s, key); return 1; }
+    if (action == ACT_DELETE_LEFT)         { insert_delete_left(s); return 1; }
+    if (action == ACT_TO_INSERT_AFTER)     { insert_to_after(s); return 1; }
+    if (action == ACT_TO_INSERT_LINE_END)  { insert_to_line_end(s); return 1; }
+    if (action == ACT_TO_NORMAL)           { insert_to_normal(s); return 1; }
+    return 0;
+}

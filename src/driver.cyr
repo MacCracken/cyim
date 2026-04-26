@@ -1,0 +1,29 @@
+# driver.cyr — single-step + headless drive entry points
+#
+# `editor_step` is the canonical "consume one input byte" function: it
+# dispatches the byte to an action, then runs every per-mode handler.
+# Handlers are mutually exclusive on action ids — calling all of them per
+# step is safe and keeps the chain trivial as new modes land.
+#
+# `editor_run` is the headless / agent-drive entry point: feed it a byte
+# array and it walks the editor through the same code path a TTY consumer
+# takes, just without the read(stdin) wrapper.
+#
+# Requires: src/buffer.cyr, src/mode.cyr, src/motion.cyr, src/insert.cyr
+# (consumer includes them in that order).
+
+fn editor_step(s, key) {
+    var action = editor_dispatch(s, key);
+    insert_apply(s, action, key);
+    motion_apply(s, action);
+    return action;
+}
+
+fn editor_run(s, keys, n) {
+    var i = 0;
+    while (i < n) {
+        editor_step(s, load8(keys + i));
+        i = i + 1;
+    }
+    return n;
+}
