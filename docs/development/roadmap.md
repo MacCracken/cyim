@@ -218,17 +218,17 @@ the 0-day corpus survey is checked in and referenced from CHANGELOG.
 
 ---
 
-## Milestone v1.0 — Release
+## Milestone v1.0 — Release ✅ *Done — 2026-04-25*
 
 **Goal:** ship.
 
-- `VERSION` = `1.0.0`
-- All M0–M7 work landed, audited, documented
-- CHANGELOG header in sync; closeout pass per CLAUDE.md run end-to-end
-- Tag, release notes, downstream consumers (`agnoshi`, `aethersafha`,
-  `daimon`-orchestrated agents) take over from here
-
-**Done when:** `git tag 1.0.0` is pushed and the release workflow passes.
+- ✅ `VERSION` = `1.0.0`
+- ✅ All M0–M7 work landed, audited, documented
+- ✅ CHANGELOG header in sync; closeout pass per CLAUDE.md run end-to-end
+- ✅ DCE binary 274,656 B; 847 .tcyr assertions; 14 PTY E2E; 3 fuzz; 9 benches; all green from a fresh `rm -rf build && cyrius deps && cyrius build`
+- ✅ Security audit: 0 CRITICAL / 0 HIGH / 0 MEDIUM at v1.0
+- Tag + release notes pushed; downstream consumers (`agnoshi`,
+  `aethersafha`, `daimon`-orchestrated agents) take over from here
 
 ---
 
@@ -267,4 +267,4 @@ in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-04-25 (M0–M4 landed; M5 polish, M6 P(-1) hardening, M7 security audit pre-v1.0)*
+*Last updated: 2026-04-25 (v1.0.0 released — all of M0–M7 landed in one go).*

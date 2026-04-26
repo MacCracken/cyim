@@ -8,9 +8,9 @@
 
 ## Version
 
-- **VERSION**: `0.1.0`
+- **VERSION**: `1.0.0`
 - **Cyrius toolchain pin**: `5.7.1` (in `cyrius.cyml [package].cyrius`)
-- **Last release**: `0.1.0` — initial scaffold, 2026-04-25
+- **Last release**: `1.0.0` — first stable, 2026-04-25 (M0–M7 all landed)
 
 ## Binary
 
@@ -35,8 +35,17 @@
 - **M4** — search, undo, visual, `.` repeat, `:set` + `.cyimrc`. *Done.*
 - **M5** — polish: docs, perf benchmarks, fuzz, receipts. *Done.*
 - **M6** — P(-1) hardening: tokenbuf cache, F-1/F-3/F-4 closures, cleanliness gate, refactor pass. *Done.*
-- **M7** — Security audit: 0day corpus, checklist re-walk, F-2 fix, trust-model ADR. *Done.* M7.5 (WebFetch CVE verification) queued as a follow-up — class taxonomy and findings stand independent of specific CVE numbers; not v1.0-blocking.
-- **v1.0 (next)** — release. CLAUDE.md's CRITICAL/HIGH-must-close gate satisfied. Closeout pass + version bump + tag.
+- **M7** — Security audit: 0day corpus, checklist re-walk, F-2 fix, trust-model ADR, M7.5 verification pass. *Done.* All CVE references in the corpus survey verified against primary sources.
+- **v1.0** — release. *Done — 2026-04-25.*
+
+## Post-v1.0
+
+Demand-gated work now begins per [`roadmap.md`](roadmap.md)'s
+post-v1.0 table: headless / agent-drive completion (the
+`editor_run` surface already exists; daimon integration when
+that consumer is ready), system clipboard (via `aethersafha`),
+LSP client (when cyrius-lsp stabilizes), terminal embed,
+macros, etc.
 
 ## Consumers
 

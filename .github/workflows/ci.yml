@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:                    # reusable by release.yml as a gate
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -32,17 +33,194 @@ jobs:
           echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
 
       - name: Resolve dependencies
+        # Fetches vyakarana from the tag pinned in cyrius.cyml
+        # ([deps.vyakarana] git + tag + modules) into lib/.
         run: cyrius deps
 
       - name: Build
         run: |
           mkdir -p build
-          cyrius build src/main.cyr build/${{ github.event.repository.name }}
+          cyrius build src/main.cyr build/cyim
+
+      - name: Verify ELF
+        run: xxd -l 4 build/cyim | grep -q "7f45 4c46"
+
+      - name: Lint
+        # Every src file clean; the only tolerated warning is the
+        # `exceeds 120 characters` rule on comment-divider lines
+        # (cosmetic only). Anything else is a hard fail.
+        #
+        # cyrius lint exits non-zero when it has anything to report
+        # (even "0 warnings"), so both the tool invocation and the
+        # inner grep (which exits 1 on no match) need `|| true` to
+        # avoid colliding with the implicit `set -e` on `run:`.
+        run: |
+          fail=0
+          for f in src/*.cyr; do
+            out=$(cyrius lint "$f" 2>&1 || true)
+            echo "$out"
+            bad=$(echo "$out" | grep -E '^\s*warn ' | grep -v 'exceeds 120 characters' || true)
+            if [ -n "$bad" ]; then
+              fail=1
+            fi
+          done
+          [ $fail -eq 0 ] || { echo "lint: non-cosmetic warnings present"; exit 1; }
 
       - name: Test
-        # v5.6.28: bare `cyrius test` picks up the [build].test entry
-        # AND auto-discovers tests/*.tcyr — avoids the previous
-        # `cyrius test src/test.cyr` form that hard-failed when the
-        # stub didn't exist (Issue 1) and also wouldn't ever exercise
-        # tests/${proj}.tcyr.
+        # Bare `cyrius test` picks up the [build].test entry AND
+        # auto-discovers tests/*.tcyr (cc5 v5.6.28+).
         run: cyrius test
+
+      - name: Fuzz
+        # Runs every fuzz/*.fcyr harness. Each is bounded
+        # (10K iters in buffer.fcyr, 100×1KB in tokenizer.fcyr,
+        # 5K iters in driver.fcyr) so the job stays under a minute.
+        run: cyrius fuzz
+
+      - name: Benchmark (smoke run)
+        # Just confirms tests/perf.bcyr still compiles and produces
+        # numbers. The perf-tracking discipline lives in
+        # BENCHMARKS.md, not CI — this step exists so a syntax
+        # break in the bench harness doesn't go unnoticed.
+        run: cyrius bench tests/perf.bcyr
+
+      - name: PTY integration smoke
+        # tests/integration_smoke.py spawns the cyim binary under a
+        # real PTY (via pty.fork) and drives recorded keystroke
+        # sequences end-to-end. Covers M1–M4 behavior (search +
+        # undo + dot + visual + multi-window + highlight).
+        run: python3 tests/integration_smoke.py
+
+      - name: DCE parity check
+        # A release build and a debug build must produce the same
+        # behavior. Rebuild with CYRIUS_DCE=1 and re-run integration smoke.
+        run: |
+          mkdir -p build
+          CYRIUS_DCE=1 cyrius build src/main.cyr build/cyim-dce
+          echo "cyim-dce: $(wc -c < build/cyim-dce) bytes"
+          # Replace the regular binary so integration_smoke.py picks up the DCE build.
+          cp build/cyim-dce build/cyim
+          python3 tests/integration_smoke.py
+
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for dangerous patterns in src/
+        # Encodes the invariants closed by the M5/M6/M7 audit
+        # findings. Rejects pattern hits in code; tolerates them
+        # in comments. GitHub Actions runs bash with `set -eo
+        # pipefail`, so every `grep | awk` pipeline where grep may
+        # find no matches needs `|| true` to stay alive on "clean".
+        run: |
+          FAIL=0
+          scan() {
+            local label="$1"; shift
+            local pat="$1"; shift
+            local hits
+            hits=$(grep -rn "$pat" src/ 2>/dev/null | awk -F: '
+              { line=$3; for(i=4;i<=NF;i++) line=line":"$i;
+                sub(/^[[:space:]]+/,"",line);
+                if (substr(line,1,1) != "#") print $1":"$2":"line }' || true)
+            if [ -n "$hits" ]; then
+              echo "FAIL: $label"
+              echo "$hits"
+              FAIL=1
+            fi
+          }
+
+          # Refusal §0 — no shell-out anywhere in the editor.
+          # /bin/sh string MUST NOT appear in any src file.
+          sh_hits=$(grep -rn '"/bin/sh"' src/ 2>/dev/null \
+            | awk -F: '
+              { line=$3; for(i=4;i<=NF;i++) line=line":"$i;
+                sub(/^[[:space:]]+/,"",line);
+                if (substr(line,1,1) != "#") print $1":"$2":"line }' || true)
+          if [ -n "$sh_hits" ]; then
+            echo "FAIL: /bin/sh invocation in code"
+            echo "$sh_hits"
+            FAIL=1
+          fi
+
+          # Same for sys_system / raw execve (59) / raw fork (57).
+          scan "sys_system call"   '\bsys_system\s*('
+          scan "raw execve(59)"    'syscall( *59'
+          scan "raw fork(57)"      'syscall( *57'
+
+          # M6 audit F-1 regression guard — render-side control-byte
+          # substitution must remain in place. If render.cyr ever
+          # loses its render_ctrl_substitute call, raw ESC bytes
+          # could echo to the terminal (corpus Class 3 / 10).
+          if ! grep -q 'render_ctrl_substitute' src/render.cyr; then
+            echo "FAIL: render.cyr missing render_ctrl_substitute call"
+            FAIL=1
+          fi
+
+          # M7 F-2 regression guard — :e file-size check.
+          if ! grep -q '_cmd_file_size' src/command.cyr; then
+            echo "FAIL: command.cyr missing _cmd_file_size pre-check"
+            FAIL=1
+          fi
+          if ! grep -q 'editor_cfg_max_filesize' src/command.cyr; then
+            echo "FAIL: command.cyr missing maxfilesize cap consultation"
+            FAIL=1
+          fi
+
+          # M6 F-3 regression guard — cmdbuf cap.
+          if ! grep -q 'COMMAND_MAX_LEN' src/command.cyr; then
+            echo "FAIL: command.cyr missing COMMAND_MAX_LEN cap"
+            FAIL=1
+          fi
+
+          # CLAUDE.md rule: heap-allocate large data. Flag any
+          # static `var X[N]` with N >= 65536.
+          awk -F: '
+            /var [A-Za-z_][A-Za-z0-9_]*\[[0-9]+\]/ {
+              match($0, /\[[0-9]+\]/); s=substr($0,RSTART+1,RLENGTH-2); n=s+0;
+              if (n >= 65536) print FILENAME":"NR": large stack buffer ("n" bytes): "$0
+            }' src/*.cyr > /tmp/bigbuf.txt
+          if [ -s /tmp/bigbuf.txt ]; then
+            cat /tmp/bigbuf.txt
+            FAIL=1
+          fi
+
+          echo "security scan complete (fail: $FAIL)"
+          exit $FAIL
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required files
+        run: |
+          MISSING=0
+          for f in README.md CHANGELOG.md VERSION CONTRIBUTING.md SECURITY.md \
+                   CODE_OF_CONDUCT.md LICENSE cyrius.cyml CLAUDE.md \
+                   docs/development/roadmap.md docs/development/state.md \
+                   docs/guides/usage.md docs/guides/keymap.md \
+                   docs/guides/cyimrc.md docs/adr/0001-trust-model.md \
+                   BENCHMARKS.md; do
+            if [ -f "$f" ]; then echo "  OK: $f"
+            else echo "  MISSING: $f"; MISSING=1; fi
+          done
+          exit $MISSING
+
+      - name: Verify version consistency
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          echo "VERSION file: $VERSION"
+          # CHANGELOG must have a section for this version.
+          grep -qE "^## \[${VERSION}\]" CHANGELOG.md \
+            || { echo "FAIL: CHANGELOG.md missing section [${VERSION}]"; exit 1; }
+          # cyrius.cyml pulls from VERSION via ${file:VERSION} — confirm the
+          # indirection hasn't drifted to a hardcoded value.
+          grep -qE '^version *= *"\$\{file:VERSION\}"' cyrius.cyml \
+            || { echo "FAIL: cyrius.cyml version no longer pulls from VERSION"; exit 1; }
+          # The `cyim X.Y.Z` string baked into print_version must match too.
+          grep -qE "\"cyim ${VERSION}\\\\n\"" src/main.cyr \
+            || { echo "FAIL: print_version in src/main.cyr != $VERSION"; exit 1; }
+          echo "Version consistent: VERSION = CHANGELOG = cyrius.cyml = print_version = $VERSION"

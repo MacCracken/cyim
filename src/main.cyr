@@ -40,7 +40,7 @@ var DEFAULT_ROWS = 24;
 var DEFAULT_COLS = 80;
 
 fn print_version() {
-    syscall(1, 1, "cyim 0.1.0\n", 11);
+    syscall(1, 1, "cyim 1.0.0\n", 11);
     return 0;
 }
 

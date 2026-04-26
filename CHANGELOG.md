@@ -4,6 +4,123 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-04-25
+
+First release. The M0–M7 work that started as the M0 scaffold
+on 2026-04-25 lands as v1.0.0 the same day — every milestone's
+output is in this release because we accumulated everything in
+the `[Unreleased]` block and bumped at the close. Future
+releases will follow the more typical "ship 0.X.Y patches
+between minor bumps" cadence.
+
+### Headline features (v1.0)
+
+- **Modal editor** in the vim lineage: NORMAL / INSERT / COMMAND
+  / SEARCH / SEARCH_BACK / VISUAL / VISUAL_LINE.
+- **Gap-buffer** with full motion + edit surface.
+- **Multi-buffer** registry with `:bn` / `:bp` / `:b N` / `:ls`.
+- **Multi-window** splits (`:sp` / `:vsp`) with Ctrl-w h/j/k/l
+  navigation and per-leaf status row.
+- **Syntax highlighting** via [vyakarana](https://github.com/MacCracken/vyakarana)
+  1.0.2 — 11 bundled grammars (c, cyrius, javascript, json,
+  markdown, python, rust, shell, toml, typescript, yaml). Per-buffer
+  tokenbuf cache keeps render frames at sub-microsecond cost on
+  unchanged buffers.
+- **Search** (`/` `?` `n` `N` `*` `#`) with case-fold via
+  `:set ic`; naive byte-wise scan, no regex (no ReDoS class).
+- **Undo / redo** (`u` / Ctrl-r) — snapshot-based, per buffer.
+- **Visual mode** + single yank register: `y` / `d` / `p` / `P`.
+- **Dot repeat** (`.`) replays the last insert session.
+- **`:set` runtime config**: `ic` / `noic` / `number` /
+  `nonumber` / `tabstop=N` / `maxfilesize=N`.
+- **`.cyimrc`** flat-CYML config with palette overrides + the
+  same editor options.
+- **Headless / agent-drive** entry point — `editor_run(s, keys, n)`
+  drives the same dispatch+apply chain a TTY consumer takes.
+- **No embedded scripting language. Ever.** Configuration is
+  data, not code. The bulk of vim's historical CVE surface
+  (Vimscript injection, modeline RCE, plugin sandbox escapes)
+  is structurally absent.
+
+### Receipts at v1.0
+
+- DCE binary: **274,656 B** (~10× smaller than vim, ~38× smaller
+  than neovim).
+- Source: **~4 200 LOC editor + ~5 100 LOC tests/fuzz/grammars**
+  (~125× smaller than vim's editor core).
+- **847 .tcyr assertions** across 18 suites.
+- **14 PTY-driven end-to-end checks** in
+  `tests/integration_smoke.py`.
+- **3 fuzz harnesses** (gap-buffer, tokenizer, full-driver), all
+  pass `cyrius fuzz`.
+- **9 perf benches** in `tests/perf.bcyr` with M5 baseline + M6
+  cache-hit win recorded in [`BENCHMARKS.md`](BENCHMARKS.md).
+- Security audit: **0 CRITICAL / 0 HIGH / 0 MEDIUM** findings;
+  8 LOW findings all triaged with rationale per
+  [`docs/audit/2026-04-25-m7-audit.md`](docs/audit/2026-04-25-m7-audit.md).
+  External CVE corpus survey at
+  [`docs/security/2026-04-25-0day-corpus.md`](docs/security/2026-04-25-0day-corpus.md);
+  trust-model ADR at [`docs/adr/0001-trust-model.md`](docs/adr/0001-trust-model.md).
+- `cyrius lint` clean of correctness warnings; `cyrius fmt --check`
+  clean across all `src/*.cyr`.
+- **Dead-code floor at v1.0:** two unreferenced symbols
+  retained: `tty_cursor_hide` and `tty_cursor_show`. Both are
+  public ANSI helpers in [`src/tty.cyr`](src/tty.cyr); they're
+  the natural wiring point for "hide cursor during repaint to
+  avoid flicker" — a UX polish that's plausible-near-future.
+  Total binary cost of the two: ~80 B. Recorded here so a
+  future audit can decide whether to delete or wire.
+
+### CI / release plumbing (v1.0 ship-prep)
+
+- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md` —
+  ship-prep root files. SECURITY.md cross-references the M5/M7
+  audit docs, the trust-model ADR, and explains what's in/out
+  of scope for security reports.
+- `.github/workflows/ci.yml` rewritten — modeled on owl's
+  proven shape. Now has: `workflow_call` trigger (release.yml
+  reuses it as a gate), ELF verify, `cyrius lint` per-file
+  with non-cosmetic-warning hard fail, `cyrius test`,
+  `cyrius fuzz`, `cyrius bench tests/perf.bcyr` (compile-only
+  smoke), `python3 tests/integration_smoke.py` (PTY E2E), DCE
+  parity check (re-runs PTY smoke against the `CYRIUS_DCE=1`
+  binary), plus a separate `security` job (regression guards
+  for /bin/sh, sys_system, F-1 control-byte sub, F-2 file-size
+  cap, F-3 cmdbuf cap, oversized stack buffers per CLAUDE.md
+  rule) and a `docs` job (required-files coverage + version
+  consistency: VERSION = CHANGELOG section = cyrius.cyml
+  `${file:VERSION}` indirection = `print_version` string in
+  src/main.cyr).
+- `.github/workflows/release.yml` rewritten — semver-tag
+  trigger, full CI gate via `workflow_call`, version-verify
+  job, build matrix (x86_64-linux today; matrix expands as the
+  Cyrius toolchain gains targets), source tarball, SHA256SUMS,
+  `softprops/action-gh-release@v2` with the release body pulled
+  from the matching CHANGELOG section (auto-prerelease on
+  `0.x` tags). Packaged artifact ships binary + grammars +
+  README + LICENSE + CHANGELOG + VERSION + SECURITY.md; no
+  vendored lib/ (consumers run `cyrius deps` themselves).
+
+### Milestones rolled into v1.0
+
+- **M0** (2026-04-25) — scaffold (boots / prints / exits).
+- **M1** — gap-buffer + raw-mode TTY + modal dispatch (8 bites).
+- **M2** — syntax highlighting via vyakarana (6 bites).
+- **M3** — multi-buffer + splits + window navigation (6 bites).
+- **M4** — search, undo, visual, `.` repeat, `:set` + `.cyimrc`
+  (6 bites).
+- **M5** — polish: docs, perf benches, fuzz, receipts (4 bites).
+- **M6** — P(-1) hardening: tokenbuf cache, F-1/F-3/F-4 closures,
+  cleanliness gate, refactor pass (6 bites).
+- **M7** — Security audit: 0day CVE corpus survey, checklist
+  re-walk, F-2 fix, trust-model ADR, M7.5 CVE verification pass
+  (5 bites).
+
+For per-milestone detail, see the M2-M7 sections below (preserved
+from the [Unreleased] block at the time of release).
+
+---
+
 ### Added (M2)
 - `[deps.vyakarana]` block in `cyrius.cyml` — pinned to vyakarana
   1.0.2 via git tag; pulls `dist/vyakarana.cyr` into `lib/`.
