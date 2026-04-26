@@ -54,7 +54,7 @@ fn print_help() {
     syscall(1, 1, "       cyim --write <file>                   (replace <file> with stdin)\n", 73);
     syscall(1, 1, "       cyim --replace <old> <new> <file>     (substitute first; OLD must be unique)\n", 84);
     syscall(1, 1, "       cyim --replace-all <old> <new> <file> (substitute every occurrence)\n", 75);
-    syscall(1, 1, "       cyim --grep <pattern> <file>          (read-only; emit FILE:N:LINE per hit)\n", 83);
+    syscall(1, 1, "       cyim --grep <pattern> <file>          (read-only; literal substring, not regex; emit FILE:N:LINE)\n", 105);
     syscall(1, 1, "       cyim --batch <file>                   (apply NUL-separated OLD/NEW pairs from stdin; atomic)\n", 100);
     syscall(1, 1, "       --wc[=l|=long]      on --write/--replace[-all]/--batch: print wc(1) on success\n", 86);
     syscall(1, 1, "       --expect=<pat>      on --write/--batch: post-save assertion (exit 6 on miss)\n", 84);
@@ -216,13 +216,24 @@ fn main() {
             var w_expect_pol = 0;
             var w_pos0 = 0;
             var w_npos = 0;
+            var w_wc_seen = 0;
+            var w_expect_seen = 0;
             var w_idx = 2;
             while (w_idx < ac) {
                 var arg = argv(w_idx);
                 var consumed = 0;
-                if (streq(arg, "--wc")      == 1) { w_wc = 1; consumed = 1; }
-                if (streq(arg, "--wc=l")    == 1) { w_wc = 2; consumed = 1; }
-                if (streq(arg, "--wc=long") == 1) { w_wc = 2; consumed = 1; }
+                if (streq(arg, "--wc")      == 1) {
+                    if (w_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    w_wc = 1; w_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--wc=l")    == 1) {
+                    if (w_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    w_wc = 2; w_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--wc=long") == 1) {
+                    if (w_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    w_wc = 2; w_wc_seen = 1; consumed = 1;
+                }
                 if (consumed == 0) {
                     var s1 = _cli_argprefix(arg, "--expect=");
                     if (s1 != 0) {
@@ -230,8 +241,10 @@ fn main() {
                             syscall(1, 2, "cyim --write: --expect requires a non-empty pattern\n", 52);
                             return 2;
                         }
+                        if (w_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect\n", 31); return 2; }
                         w_expect = s1;
                         w_expect_pol = 1;
+                        w_expect_seen = 1;
                         consumed = 1;
                     }
                 }
@@ -242,8 +255,10 @@ fn main() {
                             syscall(1, 2, "cyim --write: --expect-not requires a non-empty pattern\n", 56);
                             return 2;
                         }
+                        if (w_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-not\n", 35); return 2; }
                         w_expect = s2;
                         w_expect_pol = 2;
+                        w_expect_seen = 1;
                         consumed = 1;
                     }
                 }
@@ -271,14 +286,28 @@ fn main() {
             var r_p1 = 0;
             var r_p2 = 0;
             var r_npos = 0;
+            var r_wc_seen = 0;
+            var r_expect_seen = 0;
             var r_idx = 2;
             while (r_idx < ac) {
                 var arg = argv(r_idx);
                 var consumed = 0;
-                if (streq(arg, "--wc")        == 1) { r_wc = 1; consumed = 1; }
-                if (streq(arg, "--wc=l")      == 1) { r_wc = 2; consumed = 1; }
-                if (streq(arg, "--wc=long")   == 1) { r_wc = 2; consumed = 1; }
-                if (streq(arg, "--expect-1")  == 1) { r_expect_n = 1; consumed = 1; }
+                if (streq(arg, "--wc")        == 1) {
+                    if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    r_wc = 1; r_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--wc=l")      == 1) {
+                    if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    r_wc = 2; r_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--wc=long")   == 1) {
+                    if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    r_wc = 2; r_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--expect-1")  == 1) {
+                    if (r_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+                    r_expect_n = 1; r_expect_seen = 1; consumed = 1;
+                }
                 if (consumed == 0) {
                     var s = _cli_argprefix(arg, "--expect-N=");
                     if (s != 0) {
@@ -287,7 +316,9 @@ fn main() {
                             syscall(1, 2, "cyim --replace: --expect-N requires a non-negative integer\n", 59);
                             return 2;
                         }
+                        if (r_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
                         r_expect_n = n;
+                        r_expect_seen = 1;
                         consumed = 1;
                     }
                 }
@@ -317,14 +348,28 @@ fn main() {
             var ra_p1 = 0;
             var ra_p2 = 0;
             var ra_npos = 0;
+            var ra_wc_seen = 0;
+            var ra_expect_seen = 0;
             var ra_idx = 2;
             while (ra_idx < ac) {
                 var arg = argv(ra_idx);
                 var consumed = 0;
-                if (streq(arg, "--wc")        == 1) { ra_wc = 1; consumed = 1; }
-                if (streq(arg, "--wc=l")      == 1) { ra_wc = 2; consumed = 1; }
-                if (streq(arg, "--wc=long")   == 1) { ra_wc = 2; consumed = 1; }
-                if (streq(arg, "--expect-1")  == 1) { ra_expect_n = 1; consumed = 1; }
+                if (streq(arg, "--wc")        == 1) {
+                    if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    ra_wc = 1; ra_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--wc=l")      == 1) {
+                    if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    ra_wc = 2; ra_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--wc=long")   == 1) {
+                    if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    ra_wc = 2; ra_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--expect-1")  == 1) {
+                    if (ra_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+                    ra_expect_n = 1; ra_expect_seen = 1; consumed = 1;
+                }
                 if (consumed == 0) {
                     var s = _cli_argprefix(arg, "--expect-N=");
                     if (s != 0) {
@@ -333,7 +378,9 @@ fn main() {
                             syscall(1, 2, "cyim --replace-all: --expect-N requires a non-negative integer\n", 63);
                             return 2;
                         }
+                        if (ra_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
                         ra_expect_n = n;
+                        ra_expect_seen = 1;
                         consumed = 1;
                     }
                 }
@@ -364,14 +411,29 @@ fn main() {
             var ba_mode = 0;
             var ba_pos0 = 0;
             var ba_npos = 0;
+            var ba_wc_seen = 0;
+            var ba_expect_seen = 0;
+            var ba_all_seen = 0;
             var ba_idx = 2;
             while (ba_idx < ac) {
                 var arg = argv(ba_idx);
                 var consumed = 0;
-                if (streq(arg, "--wc")      == 1) { ba_wc = 1; consumed = 1; }
-                if (streq(arg, "--wc=l")    == 1) { ba_wc = 2; consumed = 1; }
-                if (streq(arg, "--wc=long") == 1) { ba_wc = 2; consumed = 1; }
-                if (streq(arg, "--all")     == 1) { ba_mode = 1; consumed = 1; }
+                if (streq(arg, "--wc")      == 1) {
+                    if (ba_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    ba_wc = 1; ba_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--wc=l")    == 1) {
+                    if (ba_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    ba_wc = 2; ba_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--wc=long") == 1) {
+                    if (ba_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                    ba_wc = 2; ba_wc_seen = 1; consumed = 1;
+                }
+                if (streq(arg, "--all")     == 1) {
+                    if (ba_all_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --all\n", 28); return 2; }
+                    ba_mode = 1; ba_all_seen = 1; consumed = 1;
+                }
                 if (consumed == 0) {
                     var s1 = _cli_argprefix(arg, "--expect=");
                     if (s1 != 0) {
@@ -379,8 +441,10 @@ fn main() {
                             syscall(1, 2, "cyim --batch: --expect requires a non-empty pattern\n", 52);
                             return 2;
                         }
+                        if (ba_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect\n", 31); return 2; }
                         ba_expect = s1;
                         ba_expect_pol = 1;
+                        ba_expect_seen = 1;
                         consumed = 1;
                     }
                 }
@@ -391,8 +455,10 @@ fn main() {
                             syscall(1, 2, "cyim --batch: --expect-not requires a non-empty pattern\n", 56);
                             return 2;
                         }
+                        if (ba_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-not\n", 35); return 2; }
                         ba_expect = s2;
                         ba_expect_pol = 2;
+                        ba_expect_seen = 1;
                         consumed = 1;
                     }
                 }

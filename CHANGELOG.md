@@ -4,6 +4,70 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.3] — 2026-04-26
+
+Patch release — agent-drive paper cuts: silent last-wins on duplicate
+modifier flags is replaced with explicit refusal (exit 2), and the
+`cyim --help` description for `--grep` now states its matching flavor
+("literal substring, not regex"). Both surfaced in the dogfood loop as
+"two cyim observations to confirm next sweep" — neither was a bug, but
+both made the surface ambiguous to a caller who couldn't be expected to
+read source.
+
+### Changed
+
+- `cyim --help`: the `--grep <pattern> <file>` line now reads
+  `(read-only; literal substring, not regex; emit FILE:N:LINE)`.
+  Prior text didn't surface the matching flavor, so a caller reaching
+  for `--grep '^foo'` might reasonably (but wrongly) expect a regex
+  anchor instead of a literal `^` byte. The matching code itself is
+  unchanged — `_cli_match_at` in `src/cli.cyr` was always pure
+  byte-compare; the gap was documentation, not behavior.
+
+### Fixed
+
+- **Duplicate modifier flags now refused with exit 2** (was: silent
+  last-wins). Modifier flags occupy single scalar slots in the parser:
+  passing the same flag twice — or two flags from the same family —
+  used to silently overwrite the earlier value, which made the surface
+  ambiguous (and asymmetric with the existing "extra positional → exit
+  2" guard from v1.1.1). v1.1.3 adds per-family `*_seen` guards across
+  all four agent-drive verbs and emits `cyim: duplicate flag: --NAME`
+  to stderr on the second occurrence.
+
+  Family grouping (a duplicate within any family trips the check):
+  - `--expect=<pat>` and `--expect-not=<pat>` — share the same scalar
+    slot on `--write` and `--batch`; passing both is a duplicate.
+  - `--expect-N=<n>` and `--expect-1` — share the same scalar slot on
+    `--replace[-all]`; passing both is a duplicate.
+  - `--wc` / `--wc=l` / `--wc=long` — same flag with optional value
+    on `--write`/`--replace[-all]`/`--batch`.
+  - `--all` — `--batch`-only global mode.
+
+  Error message names the flag actually duplicated (so
+  `--expect=foo --expect-not=bar` errors as `--expect-not`, since
+  that's the second one parsed). Exit 2 reuses the existing
+  "bad CLI args" slot — no new exit code introduced.
+
+### Tests
+
+- `tests/cli_smoke.sh` extended from 28 → 35 cases. New cases (26–32):
+  - 26: duplicate `--expect=` on `--write` → exit 2.
+  - 27: cross-family `--expect=` + `--expect-not=` on `--write` → exit 2.
+  - 28: duplicate `--expect-1` on `--replace` → exit 2.
+  - 29: cross-family `--expect-1` + `--expect-N=` on `--replace` → exit 2.
+  - 30: duplicate `--wc` on `--write` → exit 2.
+  - 31: duplicate `--all` on `--batch` → exit 2.
+  - 32: `--grep '^foo'` regression — matches a line containing the
+    literal `^foo` byte sequence and does **not** match a line
+    containing only `foo` (would invert if `^` were a regex anchor).
+
+### Binary
+
+- `build/cyim` (DCE): **300,640 B** (v1.1.2 was 298,392 B; +2,248 B
+  for 8 duplicate-flag guards across the four verbs plus the slightly
+  longer `--grep` help string).
+
 ## [1.1.2] — 2026-04-26
 
 Patch release — `--batch` agent-drive verb + cyrius toolchain bump to

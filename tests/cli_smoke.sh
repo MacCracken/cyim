@@ -1,6 +1,7 @@
 #!/bin/sh
 # tests/cli_smoke.sh — interspersed-modifier smoke test for the
-# agent-drive CLI surface (introduced in v1.1.1; --batch added in v1.1.2).
+# agent-drive CLI surface (v1.1.1 walk-all-argv parser; v1.1.2 --batch;
+# v1.1.3 duplicate-flag refusal + --grep literal regression).
 #
 # v1.1.0 had a front-only modifier loop that bailed at the first
 # non-flag argv slot, so flags appearing AFTER positionals were
@@ -185,9 +186,72 @@ else
     echo "FAIL: --batch unicode round-trip (substituted text not present)"
 fi
 
+# ── duplicate-flag refusal (introduced in v1.1.3) ──────────────────
+# Modifier flags occupy single scalar slots in the parser. v1.1.2 and
+# earlier silently last-won when a flag appeared twice; v1.1.3 refuses
+# with exit 2 and a stderr "duplicate flag: --NAME" message.
+#
+# Family grouping (a duplicate within any family trips the check):
+#   --expect= and --expect-not=     (post-save assertion, --write/--batch)
+#   --expect-N= and --expect-1      (count assertion, --replace[-all])
+#   --wc / --wc=l / --wc=long       (wc-on-success modifier)
+#   --all                           (--batch global mode)
+
+# Case 26 — duplicate --expect= on --write.
+printf 'x\n' | "$BIN" --write --expect=foo --expect=bar "$WRITE_FIX" 2>/dev/null
+assert_rc '--write --expect=foo --expect=bar (duplicate --expect)' 2 $?
+
+# Case 27 — --expect= and --expect-not= collide on the same scalar slot.
+printf 'x\n' | "$BIN" --write --expect=foo --expect-not=bar "$WRITE_FIX" 2>/dev/null
+assert_rc '--write --expect=foo --expect-not=bar (cross-family duplicate)' 2 $?
+
+# Case 28 — duplicate --expect-1 on --replace.
+printf 'alpha\nbeta\nUNIQUE_TOKEN\ngamma\n' > "$FIX"
+"$BIN" --replace 'UNIQUE_TOKEN' 'NEW_TOKEN' --expect-1 --expect-1 "$FIX" 2>/dev/null
+assert_rc '--replace --expect-1 --expect-1 (duplicate --expect-1)' 2 $?
+
+# Case 29 — --expect-1 and --expect-N= collide on the same scalar slot.
+"$BIN" --replace 'UNIQUE_TOKEN' 'NEW_TOKEN' --expect-1 --expect-N=2 "$FIX" 2>/dev/null
+assert_rc '--replace --expect-1 --expect-N=2 (cross-family duplicate)' 2 $?
+
+# Case 30 — duplicate --wc on --write.
+printf 'x\n' | "$BIN" --write --wc --wc "$WRITE_FIX" 2>/dev/null
+assert_rc '--write --wc --wc (duplicate --wc)' 2 $?
+
+# Case 31 — duplicate --all on --batch.
+printf 'foo\nbar\nfoo\n' > "$BATCH_FIX"
+printf 'foo\0FOO\0' | "$BIN" --batch --all --all "$BATCH_FIX" 2>/dev/null
+assert_rc '--batch --all --all (duplicate --all)' 2 $?
+
+# ── --grep literal-substring assertion (clarified in v1.1.3) ────────
+# --grep PATTERN treats PATTERN as a literal byte sequence; regex
+# metacharacters (^, $, ., *, etc.) are not special. v1.1.3 added
+# "literal substring, not regex" to --help; this case asserts the
+# actual byte-for-byte matching behavior so any future regex creep
+# would regress here loudly.
+
+# Case 32 — '^foo' is a literal byte sequence: matches the line that
+# *contains* literal '^foo', NOT a line containing only 'foo'. A
+# regex flavor that treats '^' as a line anchor would invert the hits.
+GREP_FIX=/tmp/cyim-cli-smoke-grep.txt
+printf 'plain foo here\n^foo at start\nbaseline\n' > "$GREP_FIX"
+GREP_OUT=$("$BIN" --grep '^foo' "$GREP_FIX" 2>/dev/null)
+HIT_LITERAL=0
+HIT_PLAIN=0
+case "$GREP_OUT" in *":2:^foo at start"*) HIT_LITERAL=1 ;; esac
+case "$GREP_OUT" in *":1:plain foo here"*) HIT_PLAIN=1 ;; esac
+if [ "$HIT_LITERAL" = "1" ] && [ "$HIT_PLAIN" = "0" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --grep '^foo' literal: expected hit on line 2, no hit on line 1; got:"
+    echo "$GREP_OUT"
+fi
+rm -f "$GREP_FIX"
+
 rm -f "$BATCH_FIX"
 
 rm -f "$FIX" "$WRITE_FIX" "$BATCH_FIX"
 
-echo "$PASS passed, $FAIL failed (28 total)"
+echo "$PASS passed, $FAIL failed (35 total)"
 [ "$FAIL" = "0" ] || exit 1
