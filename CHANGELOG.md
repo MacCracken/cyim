@@ -20,6 +20,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   byte-identical, mid-cursor round-trip exercises the two-segment write,
   missing-file returns -1 without touching the buffer, save-then-load
   preserves a 300-byte payload past initial capacity.
+- `src/tty.cyr` — raw-mode TTY: `tty_apply_raw_flags` (pure flag-mask
+  function on a 60-byte termios buffer), `tty_raw` / `tty_cooked` (TCGETS
+  / TCSETS via ioctl, gated to `CYRIUS_TARGET_LINUX`, captures cooked
+  state so any exit path can restore), `tty_probe` (live diagnostic),
+  ANSI helpers (`tty_alt_enter` / `_leave`, `tty_clear`,
+  `tty_cursor_hide` / `_show` / `_home`, `tty_move(row, col)`,
+  `tty_itoa`).
+- `tests/tty.tcyr` — 37 assertions: 32-bit field load/store little-endian
+  round-trip, raw-flag mask clears all five iflag bits + OPOST + ECHO /
+  ICANON / IEXTEN / ISIG and forces CS8 while preserving bystander bits,
+  VMIN=1 / VTIME=0 are forced, the mask is idempotent (fixed point), and
+  `tty_itoa` formats 0 / 7 / 42 / 1024 correctly.
 
 ## [0.1.0] — 2026-04-25
 

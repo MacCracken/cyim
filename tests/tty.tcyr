@@ -1,0 +1,115 @@
+# tests/tty.tcyr — TTY flag-mask invariants and ANSI itoa helper
+#
+# We can't unit-test ioctl side effects without a real PTY (cyrius test runs
+# headless). The test target is the pure flag-mask half — `tty_apply_raw_flags`
+# operates on an in-memory 60-byte termios buffer and is the load-bearing
+# correctness boundary. If this is right, the ioctl wrapper is just plumbing.
+#
+# Strategy: hand-build a "fully cooked" termios (all bits we want cleared are
+# set, c_cflag CSIZE is non-CS8, CC chars zeroed) → apply → assert flags.
+
+include "src/tty.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("tio_load32 / tio_store32 round-trip");
+    var rt[16];
+    tio_store32(&rt, 0, 0x12345678);
+    tio_store32(&rt, 4, 0xFEEDC0DE);
+    assert_eq(tio_load32(&rt, 0), 0x12345678, "round-trip @ 0");
+    assert_eq(tio_load32(&rt, 4), 0xFEEDC0DE, "round-trip @ 4");
+    # Verify little-endian byte order at offset 0.
+    assert_eq(load8(&rt + 0), 0x78, "low byte first");
+    assert_eq(load8(&rt + 1), 0x56, "second byte");
+    assert_eq(load8(&rt + 2), 0x34, "third byte");
+    assert_eq(load8(&rt + 3), 0x12, "high byte last");
+
+    test_group("apply_raw_flags clears the right bits");
+    var t[60];
+    var i = 0;
+    while (i < 60) { store8(&t + i, 0); i = i + 1; }
+
+    # Pre-load every bit we expect to be cleared, plus a bystander bit in each
+    # field we expect to be preserved.
+    # c_iflag: BRKINT|ICRNL|INPCK|ISTRIP|IXON + bystander 0x40000000
+    tio_store32(&t, 0, TIO_BRKINT | TIO_ICRNL | TIO_INPCK | TIO_ISTRIP | TIO_IXON | 0x40000000);
+    # c_oflag: OPOST + bystander 0x40000000
+    tio_store32(&t, 4, TIO_OPOST | 0x40000000);
+    # c_cflag: CS6 (0x10) + bystander 0x40000000 — apply must clear CSIZE then set CS8
+    tio_store32(&t, 8, 0x10 | 0x40000000);
+    # c_lflag: ECHO|ICANON|IEXTEN|ISIG + bystander 0x40000000
+    tio_store32(&t, 12, TIO_ECHO | TIO_ICANON | TIO_IEXTEN | TIO_ISIG | 0x40000000);
+
+    tty_apply_raw_flags(&t);
+
+    var iflag = tio_load32(&t, 0);
+    assert_eq(iflag & TIO_BRKINT, 0, "iflag BRKINT cleared");
+    assert_eq(iflag & TIO_ICRNL, 0, "iflag ICRNL cleared");
+    assert_eq(iflag & TIO_INPCK, 0, "iflag INPCK cleared");
+    assert_eq(iflag & TIO_ISTRIP, 0, "iflag ISTRIP cleared");
+    assert_eq(iflag & TIO_IXON, 0, "iflag IXON cleared");
+    assert_eq(iflag & 0x40000000, 0x40000000, "iflag bystander preserved");
+
+    var oflag = tio_load32(&t, 4);
+    assert_eq(oflag & TIO_OPOST, 0, "oflag OPOST cleared");
+    assert_eq(oflag & 0x40000000, 0x40000000, "oflag bystander preserved");
+
+    var cflag = tio_load32(&t, 8);
+    assert_eq(cflag & TIO_CSIZE, TIO_CS8, "cflag CSIZE set to CS8");
+    assert_eq(cflag & 0x40000000, 0x40000000, "cflag bystander preserved");
+
+    var lflag = tio_load32(&t, 12);
+    assert_eq(lflag & TIO_ECHO, 0, "lflag ECHO cleared");
+    assert_eq(lflag & TIO_ICANON, 0, "lflag ICANON cleared");
+    assert_eq(lflag & TIO_IEXTEN, 0, "lflag IEXTEN cleared");
+    assert_eq(lflag & TIO_ISIG, 0, "lflag ISIG cleared");
+    assert_eq(lflag & 0x40000000, 0x40000000, "lflag bystander preserved");
+
+    test_group("apply_raw_flags sets VMIN=1 / VTIME=0");
+    # Pre-poison both before apply.
+    store8(&t + TIO_CC_BASE + TIO_VMIN, 0xAA);
+    store8(&t + TIO_CC_BASE + TIO_VTIME, 0xBB);
+    tty_apply_raw_flags(&t);
+    assert_eq(load8(&t + TIO_CC_BASE + TIO_VMIN), 1, "VMIN forced to 1");
+    assert_eq(load8(&t + TIO_CC_BASE + TIO_VTIME), 0, "VTIME forced to 0");
+
+    test_group("apply_raw_flags is idempotent");
+    # First apply already done above; second apply on the same buffer must be
+    # a fixed point — bystanders preserved, raw bits still off.
+    var iflag_before = tio_load32(&t, 0);
+    var lflag_before = tio_load32(&t, 12);
+    tty_apply_raw_flags(&t);
+    assert_eq(tio_load32(&t, 0), iflag_before, "iflag unchanged on second apply");
+    assert_eq(tio_load32(&t, 12), lflag_before, "lflag unchanged on second apply");
+
+    test_group("tty_itoa formats decimal");
+    var ib[32];
+    var i0 = 0;
+    while (i0 < 32) { store8(&ib + i0, 0); i0 = i0 + 1; }
+
+    var n0 = tty_itoa(&ib, 0, 0);
+    assert_eq(n0, 1, "0 is one digit");
+    assert_eq(load8(&ib + 0), 0x30, "0 byte == '0'");
+
+    var n1 = tty_itoa(&ib, 0, 7);
+    assert_eq(n1, 1, "7 is one digit");
+    assert_eq(load8(&ib + 0), 0x37, "7 byte == '7'");
+
+    var n2 = tty_itoa(&ib, 0, 42);
+    assert_eq(n2, 2, "42 is two digits");
+    assert_eq(load8(&ib + 0), 0x34, "first byte '4'");
+    assert_eq(load8(&ib + 1), 0x32, "second byte '2'");
+
+    var n3 = tty_itoa(&ib, 0, 1024);
+    assert_eq(n3, 4, "1024 is four digits");
+    assert_eq(load8(&ib + 0), 0x31, "[0] '1'");
+    assert_eq(load8(&ib + 1), 0x30, "[1] '0'");
+    assert_eq(load8(&ib + 2), 0x32, "[2] '2'");
+    assert_eq(load8(&ib + 3), 0x34, "[3] '4'");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

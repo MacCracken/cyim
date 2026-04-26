@@ -18,15 +18,15 @@
 
 ## Tests
 
-- Test suites: `src/test.cyr` (scaffold smoke) + `tests/cyim.tcyr` (M0 smoke) + `tests/buffer.tcyr` (M1 bite 1: gap-buffer invariants) + `tests/roundtrip.tcyr` (M1 bite 2: file load/save round-trip)
-- Assertion count: 72 (47 buffer + 23 round-trip + 2 smoke)
+- Test suites: `src/test.cyr` (scaffold smoke) + `tests/cyim.tcyr` (M0 smoke) + `tests/buffer.tcyr` (M1 bite 1: gap-buffer invariants) + `tests/roundtrip.tcyr` (M1 bite 2: file load/save round-trip) + `tests/tty.tcyr` (M1 bite 3: termios flag-mask + ANSI helpers)
+- Assertion count: 109 (47 buffer + 23 round-trip + 37 tty + 2 smoke)
 - Fuzz harnesses: planned at M2 (gap-buffer + tokenizer integration)
 - Benchmarks: planned at M5 (closeout pass)
 
 ## Active Milestone
 
 - **M0** — scaffold. *Done.*
-- **M1 (in progress)** — gap-buffer + raw-mode TTY + modal dispatch. Sliced into 8 bites; bites 1 (gap-buffer) and 2 (file round-trip) landed. See [`roadmap.md`](roadmap.md).
+- **M1 (in progress)** — gap-buffer + raw-mode TTY + modal dispatch. Sliced into 8 bites; bites 1 (gap-buffer), 2 (file round-trip), and 3 (raw-mode TTY) landed. See [`roadmap.md`](roadmap.md).
 
 ## Consumers
 
