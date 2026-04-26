@@ -15,6 +15,9 @@ include "src/motion.cyr"
 include "src/insert.cyr"
 include "src/edit.cyr"
 include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
 include "src/driver.cyr"
 
 var TMP_W   = "build/test-cmd-w.txt";
@@ -325,6 +328,71 @@ fn main() {
     editor_step(s15, 33);    # !
     editor_step(s15, 13);    # Enter
     assert_eq(editor_quit(s15), 1, "quit set: cmdline parsed as 'q!'");
+
+    test_group(":set ic / :set noic toggle ignorecase");
+    var b_set = buf_new();
+    var s_set = editor_new(b_set);
+    bl_init(s_set, b_set);
+    assert_eq(editor_cfg_ignorecase(s_set), 0, "default = 0 (case-sensitive)");
+    command_reset(s_set);
+    command_append(s_set, 115); # s
+    command_append(s_set, 101); # e
+    command_append(s_set, 116); # t
+    command_append(s_set, 32);  # ' '
+    command_append(s_set, 105); # i
+    command_append(s_set, 99);  # c
+    assert_eq(command_execute(s_set), 0, ":set ic returns 0");
+    assert_eq(editor_cfg_ignorecase(s_set), 1, "ignorecase now 1");
+    # noic
+    command_reset(s_set);
+    command_append(s_set, 115);
+    command_append(s_set, 101);
+    command_append(s_set, 116);
+    command_append(s_set, 32);
+    command_append(s_set, 110); # n
+    command_append(s_set, 111); # o
+    command_append(s_set, 105); # i
+    command_append(s_set, 99);  # c
+    assert_eq(command_execute(s_set), 0, ":set noic returns 0");
+    assert_eq(editor_cfg_ignorecase(s_set), 0, "ignorecase back to 0");
+
+    test_group(":set number / :set nonumber toggle line_numbers");
+    command_reset(s_set);
+    command_append(s_set, 115); command_append(s_set, 101); command_append(s_set, 116);
+    command_append(s_set, 32);
+    var num_str = "number";
+    var ni = 0;
+    while (ni < 6) { command_append(s_set, load8(num_str + ni)); ni = ni + 1; }
+    command_execute(s_set);
+    assert_eq(editor_cfg_line_numbers(s_set), 1, ":set number -> 1");
+
+    command_reset(s_set);
+    command_append(s_set, 115); command_append(s_set, 101); command_append(s_set, 116);
+    command_append(s_set, 32);
+    var nonum = "nonumber";
+    var ni2 = 0;
+    while (ni2 < 8) { command_append(s_set, load8(nonum + ni2)); ni2 = ni2 + 1; }
+    command_execute(s_set);
+    assert_eq(editor_cfg_line_numbers(s_set), 0, ":set nonumber -> 0");
+
+    test_group(":set tabstop=N parses integer");
+    assert_eq(editor_cfg_tabstop(s_set), 4, "default tabstop = 4");
+    command_reset(s_set);
+    command_append(s_set, 115); command_append(s_set, 101); command_append(s_set, 116);
+    command_append(s_set, 32);
+    var ts = "tabstop=8";
+    var ti = 0;
+    while (ti < 9) { command_append(s_set, load8(ts + ti)); ti = ti + 1; }
+    assert_eq(command_execute(s_set), 0, ":set tabstop=8 returns 0");
+    assert_eq(editor_cfg_tabstop(s_set), 8, "tabstop now 8");
+
+    test_group(":set unknown -> ERR_UNKNOWN_CMD");
+    command_reset(s_set);
+    command_append(s_set, 115); command_append(s_set, 101); command_append(s_set, 116);
+    command_append(s_set, 32);
+    command_append(s_set, 122); command_append(s_set, 122); # 'zz'
+    assert_eq(command_execute(s_set), 0 - 1, ":set zz returns -1");
+    assert_eq(editor_last_error(s_set), ERR_UNKNOWN_CMD, "ERR_UNKNOWN_CMD set");
 
     test_group("editor_run: Esc cancels cmdline");
     var b16 = buf_new();

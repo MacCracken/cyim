@@ -29,6 +29,9 @@ include "src/motion.cyr"
 include "src/insert.cyr"
 include "src/edit.cyr"
 include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
 include "src/driver.cyr"
 include "src/tty.cyr"
 include "src/render.cyr"
@@ -72,6 +75,11 @@ fn run_editor(file_path) {
         editor_set_file_path(s, file_path);
     }
     editor_set_modified(s, 0);
+    # Copy any explicitly-set config keys from cyimrc into editor state.
+    # Sentinel -1 means "not configured in file" — leave the default.
+    if (cyimrc_cfg_ignorecase()   != 0 - 1) { editor_set_cfg_ignorecase(s, cyimrc_cfg_ignorecase()); }
+    if (cyimrc_cfg_line_numbers() != 0 - 1) { editor_set_cfg_line_numbers(s, cyimrc_cfg_line_numbers()); }
+    if (cyimrc_cfg_tabstop()      != 0 - 1) { editor_set_cfg_tabstop(s, cyimrc_cfg_tabstop()); }
     bl_init(s, b);
     window_init(s);
 

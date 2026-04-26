@@ -204,6 +204,132 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rendered PTY stream and that the active-leaf reverse-video
   escape (`ESC[7m`) fires.
 
+### Added (M4)
+- `src/mode.cyr` — modes `MODE_SEARCH = 3` and
+  `MODE_SEARCH_BACK = 4`. Action ids 25-30:
+  `ACT_TO_SEARCH` / `ACT_TO_SEARCH_BACK` (mode-changing
+  on `/` / `?`), `ACT_SEARCH_EXECUTE` / `_CANCEL` (Enter /
+  Esc inside SEARCH), `ACT_SEARCH_REPEAT` / `_REPEAT_BACK`
+  (`n` / `N` in NORMAL). Editor state grew 112 → 128 bytes
+  for `search_pattern` (cstr) + `search_direction`
+  (0=forward, 1=back) so `n`/`N` survive mode transitions.
+  Dispatch reuses cmdbuf for SEARCH-mode pattern entry —
+  same APPEND/BACKSPACE actions, just different
+  EXECUTE/CANCEL ids that route to search instead of `:`.
+- `src/search.cyr` — naive byte-wise substring scan with
+  one wrap-around. `search_forward` starts at cursor + 1
+  (so a repeat doesn't lock onto the current match);
+  `search_backward` starts at cursor - 1 with backward
+  scan + end-wrap. `search_apply` snapshots the cmdbuf
+  pattern as a heap cstr on EXECUTE, dispatches to the
+  right scan, sets `ERR_UNKNOWN_CMD` when no match.
+- `src/render.cyr` — status row now prefixes `/` for
+  MODE_SEARCH and `?` for MODE_SEARCH_BACK; cursor is
+  positioned in the cmdline area for both.
+- `src/driver.cyr` — `editor_step` chain extended with
+  `search_apply` (after `window_apply`).
+- `tests/search.tcyr` — grew to 59 assertions: 37 from the
+  initial bite (forward/backward scan + `n`/`N` cycle +
+  cancel + cmdbuf edits + no-match + `+1` offset + empty
+  pattern), 18 added for `*` (next word under cursor) /
+  `#` (previous word) including whitespace + single-
+  occurrence + word-extraction edge cases, plus 4 new for
+  `:set ic`-driven case-fold scans (alpha FOO ↔ foo).
+- `src/search.cyr` — `_search_word_under_cursor(s)` walks
+  the cursor's CCLASS_WORD run forward + backward and
+  returns a NUL-terminated heap copy. `*` saves it as the
+  search pattern, sets direction forward, runs the scan;
+  `#` does the same in reverse. Whitespace / EOF cursor
+  is a no-op. The scan helpers gained a `fold` parameter
+  consulted by `search_forward` / `_backward` from
+  `editor_cfg_ignorecase`; `:set ic` flips it.
+- `src/undo.cyr` — snapshot-based undo / redo per buffer.
+  Snapshot record (24 B): `data` heap copy + `len` +
+  `cursor`. `Buffer` record grew 24 → 40 B for `undo_stack`
+  and `redo_stack` vec slots. `undo_record_pre_op` is the
+  single hook driver fires before any mutating action;
+  `undo_pop` snapshots-then-restores via the redo stack;
+  redo is symmetric. New edit clears the redo stack. M4's
+  cost note: O(buf_len) per edit; M5 perf can compress.
+- `tests/undo.tcyr` — 24 assertions: empty undo is no-op,
+  `iabc<Esc>u` empties + Ctrl-r restores, multi-step
+  unwinds insert sessions one at a time, new edit clears
+  redo, `x` records its own snapshot, undo on a
+  no-edits-yet buffer is no-op, undo stacks are per-buffer.
+- `src/visual.cyr` — VISUAL / VISUAL_LINE selection with
+  anchor stamping on entry, `y` (capture to register), `d`
+  (capture + delete + mark modified), `p` / `P` paste
+  from register. Single-register model (no a-z named
+  registers; system clipboard deferred to post-v1.0 per
+  roadmap). `_visual_delete` recorded under undo so visual
+  delete is rollback-safe. Editor state grew 128 → 152 B
+  for `visual_anchor` + `yank_register` + `len`.
+- `tests/visual.tcyr` — 36 assertions: v / V enter
+  modes + stamp anchor; selection lo / hi computed
+  correctly char-wise and line-wise (snap to line); y /
+  d capture-only / capture-+-delete; p / P paste at
+  before / after cursor; empty register is safe; y → p
+  duplicates the selection; d is undo-able; v / V
+  toggling and swapping; VISUAL swallows insert/command
+  transition keys.
+- `src/driver.cyr` — `editor_step` chain extended with
+  `visual_apply` (after `undo_apply`) and pre-mutation
+  undo snapshot now covers `ACT_VISUAL_DELETE`,
+  `ACT_PASTE_AFTER`, `ACT_PASTE_BEFORE`. New
+  dot-repeat tracking — `_dot_begin` / `_dot_record_byte`
+  / `_dot_replay` — captures byte-by-byte during INSERT
+  sessions; `.` (ACT_DOT_REPEAT) snapshot-replays through
+  recursive `editor_step` calls.
+- `tests/dot.tcyr` — 19 assertions: dot_buf records bytes
+  typed in `iabc<Esc>`; `.` replays at current cursor;
+  multiple `.` accumulate; `a` (entry_key=97) recorded
+  separately from `i`; `.` with no prior edit is a no-op;
+  new insert overrides dot_buf; empty session (`i<Esc>`)
+  replays nothing; dot state survives buffer switches.
+- `src/cyimrc.cyr` — config-key parsing: `ignorecase`,
+  `line_numbers`, `tabstop`. Parsed values held in
+  module globals (`-1` sentinel = "not set"); `main.cyr`
+  applies them to editor state right after `cyimrc_load()`
+  unless the file left a sentinel.
+- `src/command.cyr` — `:set <option>`: `ic` / `noic` for
+  ignorecase, `number` / `nonumber` for line_numbers,
+  `tabstop=N` for tab width. Unknown option →
+  `ERR_UNKNOWN_CMD`. `tests/command.tcyr` extended with
+  12 new assertions covering each toggle plus the
+  unknown-option path.
+- `src/mode.cyr` — editor state grew 152 → 200 bytes:
+  `dot_entry_key` / `dot_buf` / `dot_recording` (M4.5)
+  and `cfg_ignorecase` / `cfg_line_numbers` /
+  `cfg_tabstop` (M4.6). New action ids: 14-15
+  (TO_VISUAL / TO_VISUAL_LINE), 25-32 (search infra),
+  210-211 (UNDO / REDO), 220-221 (PASTE_AFTER / BEFORE),
+  230-231 (VISUAL_YANK / DELETE), 240 (DOT_REPEAT). Two
+  new modes (VISUAL = 5, VISUAL_LINE = 6) with their
+  own dispatch arms swallowing insert/command keys so
+  the selection isn't lost mid-stream.
+- `tests/integration_smoke.py` extended with three M4
+  scenarios: `/foo<Enter>iX<Esc>u:wq` proves search +
+  undo + save round-trip is identity; `iAB<Esc>$aCD<Esc>0.:wq`
+  proves `.` replays the last insert at the new cursor;
+  `vlldp:wq` proves visual-delete + paste round-trip.
+
+### Status (M4)
+- All 6 M4 bites landed: `/?nN` search + n/N repeat,
+  `*`/`#` word search, undo/redo, visual + yank/paste,
+  `.` dot-repeat, `:set` + `.cyimrc` config.
+- 812 .tcyr assertions across 18 suites + 14 PTY
+  end-to-end checks (5 M1 + 2 M2 + 4 M3 + 3 M4).
+- DCE binary: 256,344 B (M3 was 226,064 B; +30,280 B for
+  search + undo stacks + visual + dot recording + config).
+- M4 success criterion verified: vim muscle memory survives
+  a full editing session — `/`, `?`, `n`, `N`, `*`, `#`,
+  `u`, Ctrl-r, `v`, `V`, `y`, `d`, `p`, `P`, `.`, `:set`
+  all behave as expected; integration smoke proves
+  search + undo + dot + visual all work end-to-end through
+  the live PTY.
+
+### Status (M3)
+
 ### Status (M3)
 - All 6 M3 bites landed: buffer registry + `:bn/:bp/:b N`,
   `:ls` + status channel, window-tree skeleton, `:sp/:vsp`

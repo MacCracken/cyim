@@ -1,0 +1,236 @@
+# tests/visual.tcyr — VISUAL / VISUAL_LINE + yank / delete / paste
+#
+# Drives the editor through `editor_step` so the dispatcher's mode
+# transitions, the visual-mode anchor stamping, and the yank-register
+# capture all fire from the same code path the binary takes.
+
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+
+fn buf_eq(b, expected, n) {
+    if (buf_len(b) != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (buf_get(b, i) != load8(expected + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn reg_eq(s, expected, n) {
+    var data = editor_yank_register(s);
+    var len  = editor_yank_register_len(s);
+    if (data == 0) { return 0; }
+    if (len != n)  { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (load8(data + i) != load8(expected + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("v enters VISUAL and stamps the anchor at cursor");
+    var b1 = buf_new();
+    buf_insert(b1, "hello world", 11);
+    buf_move(b1, 6);  # 'w'
+    var s1 = editor_new(b1);
+    bl_init(s1, b1);
+    editor_step(s1, 118);  # v
+    assert_eq(editor_mode(s1), MODE_VISUAL, "now in VISUAL");
+    assert_eq(editor_visual_anchor(s1), 6, "anchor stamped at 6");
+    # Esc returns to NORMAL
+    editor_step(s1, 27);
+    assert_eq(editor_mode(s1), MODE_NORMAL, "back to NORMAL");
+
+    test_group("V enters VISUAL_LINE");
+    var b1b = buf_new();
+    buf_insert(b1b, "abc\ndef", 7);
+    buf_move(b1b, 5);
+    var s1b = editor_new(b1b);
+    bl_init(s1b, b1b);
+    editor_step(s1b, 86);  # V
+    assert_eq(editor_mode(s1b), MODE_VISUAL_LINE, "now in VISUAL_LINE");
+    assert_eq(editor_visual_anchor(s1b), 5, "anchor stamped");
+    editor_step(s1b, 27);
+    assert_eq(editor_mode(s1b), MODE_NORMAL, "back to NORMAL");
+
+    test_group("Selection range: char-wise (lo / hi reflect anchor + cursor)");
+    var b2 = buf_new();
+    buf_insert(b2, "alpha bravo charlie", 19);
+    buf_move(b2, 0);  # on 'a' of alpha
+    var s2 = editor_new(b2);
+    bl_init(s2, b2);
+    editor_step(s2, 118);  # v — anchor at 0
+    # Move right 4 times → cursor at 4 ('a' of alpha)
+    editor_step(s2, 108);  # l
+    editor_step(s2, 108);
+    editor_step(s2, 108);
+    editor_step(s2, 108);
+    assert_eq(buf_cursor(b2), 4, "cursor at 4");
+    assert_eq(visual_selection_lo(s2), 0, "selection lo == 0");
+    assert_eq(visual_selection_hi(s2), 4, "selection hi == 4");
+    # Move cursor BEFORE anchor (impossible from this position; let's set up new)
+    editor_step(s2, 27);  # exit visual
+    buf_move(b2, 8);
+    editor_step(s2, 118);  # v — anchor at 8
+    editor_step(s2, 104);  # h — cursor 7
+    editor_step(s2, 104);  # h — cursor 6
+    assert_eq(visual_selection_lo(s2), 6, "lo flips when cursor < anchor");
+    assert_eq(visual_selection_hi(s2), 8, "hi takes anchor");
+
+    test_group("Selection range: line-wise snaps to line boundaries");
+    var b3 = buf_new();
+    buf_insert(b3, "abc\ndef\nghi\n", 12);
+    buf_move(b3, 5);  # on 'e' of def (line 1)
+    var s3 = editor_new(b3);
+    bl_init(s3, b3);
+    editor_step(s3, 86);  # V — anchor on line 1
+    # Line 1 spans 4..6.
+    assert_eq(visual_selection_lo(s3), 4, "lo == line_start of line 1");
+    assert_eq(visual_selection_hi(s3), 6, "hi == line_end of line 1");
+    # Move down — cursor on line 2 ('g' at 8). Selection now spans lines 1..2.
+    editor_step(s3, 106);  # j
+    assert_eq(visual_selection_lo(s3), 4, "lo still 4");
+    assert_eq(visual_selection_hi(s3), 10, "hi extends to line_end of line 2 (10)");
+
+    test_group("y in VISUAL captures selection into register, returns to NORMAL");
+    var b4 = buf_new();
+    buf_insert(b4, "alpha bravo charlie", 19);
+    buf_move(b4, 6);  # on 'b' of bravo
+    var s4 = editor_new(b4);
+    bl_init(s4, b4);
+    editor_step(s4, 118); # v — anchor at 6
+    editor_step(s4, 108); # l → 7
+    editor_step(s4, 108); # l → 8
+    editor_step(s4, 108); # l → 9
+    editor_step(s4, 108); # l → 10  (cursor on 'o' of bravo; selection is "bravo")
+    editor_step(s4, 121); # y
+    assert_eq(editor_mode(s4), MODE_NORMAL, "back to NORMAL after y");
+    assert_eq(reg_eq(s4, "bravo", 5), 1, "register holds 'bravo'");
+    # Buffer untouched.
+    assert_eq(buf_eq(b4, "alpha bravo charlie", 19), 1, "buffer unchanged after y");
+
+    test_group("d in VISUAL deletes selection + captures to register");
+    var b5 = buf_new();
+    buf_insert(b5, "alpha bravo charlie", 19);
+    buf_move(b5, 6);
+    var s5 = editor_new(b5);
+    bl_init(s5, b5);
+    editor_step(s5, 118);
+    editor_step(s5, 108); editor_step(s5, 108); editor_step(s5, 108); editor_step(s5, 108);
+    editor_step(s5, 100); # d
+    assert_eq(editor_mode(s5), MODE_NORMAL, "back to NORMAL");
+    assert_eq(reg_eq(s5, "bravo", 5), 1, "register holds 'bravo'");
+    assert_eq(buf_eq(b5, "alpha  charlie", 14), 1, "buffer is 'alpha  charlie' (5 bytes removed)");
+    assert_eq(editor_modified(s5), 1, "modified set");
+
+    test_group("p pastes after cursor");
+    var b6 = buf_new();
+    buf_insert(b6, "abc", 3);
+    buf_move(b6, 0);  # on 'a'
+    var s6 = editor_new(b6);
+    bl_init(s6, b6);
+    # Pre-load register
+    var reg_data = "XYZ";
+    editor_set_yank_register(s6, reg_data, 3);
+    editor_step(s6, 112);  # p — paste after cursor (cursor is at 0, paste after = at 1)
+    assert_eq(buf_eq(b6, "aXYZbc", 6), 1, "after p: 'aXYZbc'");
+
+    test_group("P pastes before cursor");
+    var b7 = buf_new();
+    buf_insert(b7, "abc", 3);
+    buf_move(b7, 1);  # on 'b'
+    var s7 = editor_new(b7);
+    bl_init(s7, b7);
+    editor_set_yank_register(s7, "XYZ", 3);
+    editor_step(s7, 80);  # P — paste before cursor
+    assert_eq(buf_eq(b7, "aXYZbc", 6), 1, "after P: 'aXYZbc'");
+
+    test_group("p with empty register is a no-op");
+    var b8 = buf_new();
+    buf_insert(b8, "hi", 2);
+    var s8 = editor_new(b8);
+    bl_init(s8, b8);
+    # No yank → register is 0.
+    editor_step(s8, 112);
+    assert_eq(buf_eq(b8, "hi", 2), 1, "buffer unchanged");
+
+    test_group("y -> p round-trip duplicates the selection");
+    var b9 = buf_new();
+    buf_insert(b9, "foobar", 6);
+    buf_move(b9, 0);
+    var s9 = editor_new(b9);
+    bl_init(s9, b9);
+    editor_step(s9, 118);   # v
+    editor_step(s9, 108); editor_step(s9, 108); editor_step(s9, 108);  # cursor → 3 ('b')
+    editor_step(s9, 121);   # y → register holds "foob"
+    assert_eq(reg_eq(s9, "foob", 4), 1, "register == 'foob'");
+    # Cursor should still be at 3 (no move on y).
+    assert_eq(buf_cursor(b9), 3, "cursor unchanged after y");
+    editor_step(s9, 112);   # p → insert after cursor
+    assert_eq(buf_eq(b9, "foobfoobar", 10), 1, "after p: 'foobfoobar'");
+
+    test_group("d in VISUAL is undo-able");
+    var b10 = buf_new();
+    buf_insert(b10, "abcdef", 6);
+    buf_move(b10, 1);
+    var s10 = editor_new(b10);
+    bl_init(s10, b10);
+    editor_step(s10, 118);  # v
+    editor_step(s10, 108); editor_step(s10, 108);  # cursor → 3
+    editor_step(s10, 100); # d → delete bcd
+    assert_eq(buf_eq(b10, "aef", 3), 1, "after d: 'aef'");
+    editor_step(s10, 117); # u
+    assert_eq(buf_eq(b10, "abcdef", 6), 1, "u restores 'abcdef'");
+
+    test_group("v in VISUAL toggles back to NORMAL");
+    var b11 = buf_new();
+    buf_insert(b11, "abc", 3);
+    var s11 = editor_new(b11);
+    bl_init(s11, b11);
+    editor_step(s11, 118);  # v
+    assert_eq(editor_mode(s11), MODE_VISUAL, "in VISUAL");
+    editor_step(s11, 118);  # v again — toggle off
+    assert_eq(editor_mode(s11), MODE_NORMAL, "back to NORMAL via v toggle");
+
+    test_group("V swap ↔ v inside visual modes");
+    var b12 = buf_new();
+    buf_insert(b12, "x\ny", 3);
+    var s12 = editor_new(b12);
+    bl_init(s12, b12);
+    editor_step(s12, 118);  # v
+    editor_step(s12, 86);   # V — swap to VISUAL_LINE
+    assert_eq(editor_mode(s12), MODE_VISUAL_LINE, "v then V → VISUAL_LINE");
+    editor_step(s12, 118);  # v — swap back to VISUAL
+    assert_eq(editor_mode(s12), MODE_VISUAL, "V then v → VISUAL");
+
+    test_group("VISUAL swallows insert/command transition keys");
+    var b13 = buf_new();
+    buf_insert(b13, "abc", 3);
+    var s13 = editor_new(b13);
+    bl_init(s13, b13);
+    editor_step(s13, 118);  # v
+    editor_step(s13, 105);  # i — should NOT enter INSERT
+    assert_eq(editor_mode(s13), MODE_VISUAL, "stays in VISUAL on i");
+    editor_step(s13, 58);   # : — should NOT enter COMMAND
+    assert_eq(editor_mode(s13), MODE_VISUAL, "stays in VISUAL on :");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

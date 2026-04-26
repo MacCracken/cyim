@@ -1,0 +1,235 @@
+# tests/search.tcyr — `/`, `?`, `n`, `N` over a fixture buffer
+#
+# All scans target a fixture buffer with three known matches of "foo".
+# Tests cover: forward + backward scan, wrap-around, end-to-end via the
+# dispatcher (including cmdline backspace), `n`/`N` repeat in both
+# directions, no-match returns -1 + sets last_error, empty pattern is
+# a no-op, and the cursor doesn't lock onto the current match (the
+# `+1` start offset).
+
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+
+# Type a NUL-terminated cstr through editor_step + Enter.
+fn type_seq(s, cstr) {
+    var n = strlen(cstr);
+    var i = 0;
+    while (i < n) {
+        editor_step(s, load8(cstr + i));
+        i = i + 1;
+    }
+    editor_step(s, 13);
+    return n;
+}
+
+fn main() {
+    alloc_init();
+
+    # Fixture: "alpha foo beta foo gamma foo delta\n"
+    # Match positions of "foo": 6, 15, 25.
+    var b = buf_new();
+    buf_insert(b, "alpha foo beta foo gamma foo delta\n", 35);
+    buf_move(b, 0);
+    var s = editor_new(b);
+
+    test_group("_search_scan_forward finds the right offsets");
+    assert_eq(_search_scan_forward(b, "foo", 3, 0,  0),  6, "first match @ 6");
+    assert_eq(_search_scan_forward(b, "foo", 3, 7,  0), 15, "second match @ 15");
+    assert_eq(_search_scan_forward(b, "foo", 3, 16, 0), 25, "third match @ 25");
+    assert_eq(_search_scan_forward(b, "foo", 3, 26, 0), 0 - 1, "no more matches -> -1");
+
+    test_group("_search_scan_backward finds the right offsets");
+    assert_eq(_search_scan_backward(b, "foo", 3, 34, 0), 25, "last match @ 25");
+    assert_eq(_search_scan_backward(b, "foo", 3, 24, 0), 15, "previous @ 15");
+    assert_eq(_search_scan_backward(b, "foo", 3, 14, 0), 6,  "first @ 6");
+    assert_eq(_search_scan_backward(b, "foo", 3, 5,  0), 0 - 1, "before any -> -1");
+
+    test_group("_search_scan_forward with case-fold");
+    var bcase = buf_new();
+    buf_insert(bcase, "alpha FOO beta foo gamma\n", 25);
+    buf_move(bcase, 0);
+    # Case-sensitive: "foo" matches @ 15 only.
+    assert_eq(_search_scan_forward(bcase, "foo", 3, 0, 0), 15, "case-sensitive: 'foo' @ 15");
+    # Case-fold: matches @ 6 (FOO) and @ 15.
+    assert_eq(_search_scan_forward(bcase, "foo", 3, 0,  1), 6,  "case-fold: 'FOO' @ 6");
+    assert_eq(_search_scan_forward(bcase, "FOO", 3, 0,  1), 6,  "case-fold both ways");
+    assert_eq(_search_scan_forward(bcase, "foo", 3, 7,  1), 15, "case-fold next match");
+
+    test_group("/foo<Enter> moves cursor to first match");
+    buf_move(b, 0);
+    type_seq(s, "/foo");
+    assert_eq(buf_cursor(b), 6, "cursor on first 'foo'");
+    assert_eq(editor_mode(s), MODE_NORMAL, "back to NORMAL after Enter");
+    assert_eq(buf_len(editor_cmdbuf(s)), 0, "cmdbuf cleared");
+    assert_nonnull(editor_search_pattern(s), "search_pattern stored");
+    assert_streq(editor_search_pattern(s), "foo", "pattern == 'foo'");
+    assert_eq(editor_search_direction(s), 0, "direction = forward");
+
+    test_group("n repeats search in same direction (forward)");
+    editor_step(s, 110);  # 'n'
+    assert_eq(buf_cursor(b), 15, "next 'foo' @ 15");
+    editor_step(s, 110);
+    assert_eq(buf_cursor(b), 25, "next 'foo' @ 25");
+    editor_step(s, 110);
+    assert_eq(buf_cursor(b), 6, "wraps around to first match");
+
+    test_group("N repeats search in opposite direction (backward when forward saved)");
+    editor_step(s, 78);   # 'N'
+    assert_eq(buf_cursor(b), 25, "back to previous match @ 25 (wraps)");
+    editor_step(s, 78);
+    assert_eq(buf_cursor(b), 15, "back to @ 15");
+    editor_step(s, 78);
+    assert_eq(buf_cursor(b), 6, "back to @ 6");
+
+    test_group("?foo<Enter> moves cursor to last match (backward search)");
+    var b2 = buf_new();
+    buf_insert(b2, "alpha foo beta foo gamma foo delta\n", 35);
+    buf_move(b2, 34);
+    var s2 = editor_new(b2);
+    type_seq(s2, "?foo");
+    assert_eq(buf_cursor(b2), 25, "cursor on last 'foo'");
+    assert_eq(editor_search_direction(s2), 1, "direction = back");
+    editor_step(s2, 110);   # 'n' = repeat backward
+    assert_eq(buf_cursor(b2), 15, "n (backward) -> @ 15");
+    editor_step(s2, 78);    # 'N' = repeat opposite (forward)
+    assert_eq(buf_cursor(b2), 25, "N (forward when back saved) -> @ 25");
+
+    test_group("Esc cancels search without moving cursor");
+    var b3 = buf_new();
+    buf_insert(b3, "alpha foo beta\n", 15);
+    buf_move(b3, 0);
+    var s3 = editor_new(b3);
+    editor_step(s3, 47);   # /
+    editor_step(s3, 102);  # f
+    editor_step(s3, 27);   # Esc
+    assert_eq(buf_cursor(b3), 0, "cursor unchanged on Esc");
+    assert_eq(editor_mode(s3), MODE_NORMAL, "mode back to NORMAL");
+    assert_eq(buf_len(editor_cmdbuf(s3)), 0, "cmdbuf cleared on cancel");
+    # search_pattern was not set because Enter never fired.
+    assert_eq(editor_search_pattern(s3), 0, "no pattern saved on cancel");
+
+    test_group("backspace inside search edits the cmdbuf");
+    var b4 = buf_new();
+    buf_insert(b4, "alpha foo beta foo gamma\n", 25);
+    buf_move(b4, 0);
+    var s4 = editor_new(b4);
+    editor_step(s4, 47);   # /
+    editor_step(s4, 102);  # f
+    editor_step(s4, 111);  # o
+    editor_step(s4, 120);  # x — typo
+    editor_step(s4, 127);  # DEL — remove 'x'
+    editor_step(s4, 111);  # o
+    editor_step(s4, 13);   # Enter
+    assert_eq(buf_cursor(b4), 6, "/foo found @ 6 after correcting typo");
+    assert_streq(editor_search_pattern(s4), "foo", "pattern is 'foo'");
+
+    test_group("no match -> last_error set, cursor unchanged");
+    var b5 = buf_new();
+    buf_insert(b5, "alpha beta gamma\n", 17);
+    buf_move(b5, 5);
+    var s5 = editor_new(b5);
+    type_seq(s5, "/zzz");
+    assert_eq(buf_cursor(b5), 5, "cursor unchanged on no-match");
+    assert_eq(editor_last_error(s5), ERR_UNKNOWN_CMD, "last_error set on no-match");
+
+    test_group("forward search +1 offset doesn't lock onto current match");
+    var b6 = buf_new();
+    buf_insert(b6, "foo foo foo\n", 12);
+    buf_move(b6, 0);
+    var s6 = editor_new(b6);
+    type_seq(s6, "/foo");
+    assert_eq(buf_cursor(b6), 4, "first hit AFTER current cursor (was at 0)");
+    editor_step(s6, 110);
+    assert_eq(buf_cursor(b6), 8, "next 'foo'");
+    editor_step(s6, 110);
+    assert_eq(buf_cursor(b6), 0, "wraps to start");
+
+    test_group("empty pattern with no prior search is a safe no-op");
+    var b7 = buf_new();
+    buf_insert(b7, "abc\n", 4);
+    buf_move(b7, 0);
+    var s7 = editor_new(b7);
+    editor_step(s7, 47);
+    editor_step(s7, 13);   # / + Enter (empty pattern)
+    assert_eq(buf_cursor(b7), 0, "cursor unchanged");
+    assert_eq(editor_mode(s7), MODE_NORMAL, "back to NORMAL");
+
+    test_group("_search_word_under_cursor extracts the right span");
+    var b8 = buf_new();
+    buf_insert(b8, "alpha foo bar baz\n", 18);
+    buf_move(b8, 0);
+    var s8 = editor_new(b8);
+    # cursor on 'a' of "alpha"
+    var w0 = _search_word_under_cursor(s8);
+    assert_streq(w0, "alpha", "word at start");
+    buf_move(b8, 4);   # last 'a' of "alpha"
+    assert_streq(_search_word_under_cursor(s8), "alpha", "interior of same word");
+    buf_move(b8, 6);   # 'f' of "foo"
+    assert_streq(_search_word_under_cursor(s8), "foo", "second word");
+    buf_move(b8, 5);   # space between alpha and foo
+    assert_eq(_search_word_under_cursor(s8), 0, "space returns 0");
+    buf_move(b8, 17);  # newline
+    assert_eq(_search_word_under_cursor(s8), 0, "newline returns 0");
+
+    test_group("* finds next occurrence of word under cursor");
+    var b9 = buf_new();
+    buf_insert(b9, "foo bar foo baz foo end\n", 24);
+    buf_move(b9, 0);  # on 'f' of first "foo"
+    var s9 = editor_new(b9);
+    editor_step(s9, 42);  # *
+    assert_eq(buf_cursor(b9), 8, "* moves to next 'foo' @ 8");
+    assert_streq(editor_search_pattern(s9), "foo", "pattern is 'foo'");
+    assert_eq(editor_search_direction(s9), 0, "direction = forward");
+    editor_step(s9, 110); # n
+    assert_eq(buf_cursor(b9), 16, "n -> third 'foo' @ 16");
+    editor_step(s9, 110);
+    assert_eq(buf_cursor(b9), 0, "n wraps to first 'foo'");
+
+    test_group("# finds previous occurrence of word under cursor");
+    var b10 = buf_new();
+    buf_insert(b10, "foo bar foo baz foo end\n", 24);
+    buf_move(b10, 16);  # on 'f' of third "foo"
+    var s10 = editor_new(b10);
+    editor_step(s10, 35); # #
+    assert_eq(buf_cursor(b10), 8, "# moves to previous 'foo' @ 8");
+    assert_eq(editor_search_direction(s10), 1, "direction = back");
+    editor_step(s10, 110); # n (now backward)
+    assert_eq(buf_cursor(b10), 0, "n in back direction -> first 'foo'");
+    editor_step(s10, 110);
+    assert_eq(buf_cursor(b10), 16, "n wraps to last 'foo'");
+
+    test_group("* on whitespace is a safe no-op");
+    var b11 = buf_new();
+    buf_insert(b11, "alpha beta\n", 11);
+    buf_move(b11, 5);   # space
+    var s11 = editor_new(b11);
+    editor_step(s11, 42);  # *
+    assert_eq(buf_cursor(b11), 5, "cursor unchanged");
+    assert_eq(editor_search_pattern(s11), 0, "no pattern saved");
+
+    test_group("* on word with only one occurrence finds nothing -> stays");
+    var b12 = buf_new();
+    buf_insert(b12, "unique word\n", 12);
+    buf_move(b12, 0);  # on 'u' of "unique"
+    var s12 = editor_new(b12);
+    editor_step(s12, 42);  # *
+    # Only one "unique"; forward search starts at cursor+1, doesn't find,
+    # wraps to start, finds the original position which equals cursor — no move.
+    assert_eq(buf_cursor(b12), 0, "single-occurrence word stays put");
+    assert_eq(editor_last_error(s12), ERR_UNKNOWN_CMD, "ERR_UNKNOWN_CMD set");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

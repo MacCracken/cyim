@@ -36,6 +36,13 @@ var _CYIMRC_PALETTE_SLOTS = 80;
 var _cyimrc_palette[80];
 var _cyimrc_loaded = 0;
 
+# Editor config values parsed from .cyimrc. -1 = not set in file (caller
+# falls back to editor defaults). main.cyr reads these after `cyimrc_load()`
+# and copies non-sentinel values into the editor state.
+var _cyimrc_cfg_ignorecase   = 0 - 1;
+var _cyimrc_cfg_line_numbers = 0 - 1;
+var _cyimrc_cfg_tabstop      = 0 - 1;
+
 fn _cyimrc_init() {
     if (_cyimrc_loaded == 1) { return 0; }
     var i = 0;
@@ -102,8 +109,20 @@ fn _cyimrc_apply(buf, ks, ke, vs, ve) {
     if (_cyimrc_keyeq(buf, ks, ke, "palette.whitespace")   == 1) { store64(&_cyimrc_palette + 7 * 8, v); return 0; }
     if (_cyimrc_keyeq(buf, ks, ke, "palette.preprocessor") == 1) { store64(&_cyimrc_palette + 8 * 8, v); return 0; }
     if (_cyimrc_keyeq(buf, ks, ke, "palette.error")        == 1) { store64(&_cyimrc_palette + 9 * 8, v); return 0; }
+
+    # Editor config keys.
+    if (_cyimrc_keyeq(buf, ks, ke, "ignorecase")   == 1) { _cyimrc_cfg_ignorecase   = v; return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "line_numbers") == 1) { _cyimrc_cfg_line_numbers = v; return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "tabstop")      == 1) { _cyimrc_cfg_tabstop      = v; return 0; }
     return 0;
 }
+
+# Public accessors for the config block. main.cyr applies these to
+# the editor state right after `cyimrc_load()` returns; -1 means
+# "not configured — leave the editor default in place".
+fn cyimrc_cfg_ignorecase()   { return _cyimrc_cfg_ignorecase; }
+fn cyimrc_cfg_line_numbers() { return _cyimrc_cfg_line_numbers; }
+fn cyimrc_cfg_tabstop()      { return _cyimrc_cfg_tabstop; }
 
 # Trim leading + trailing whitespace from buf[s..e), then split on the first
 # `=`. Comment lines (`#` after trim) and lines without `=` are ignored.

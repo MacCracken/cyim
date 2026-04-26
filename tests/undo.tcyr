@@ -1,0 +1,163 @@
+# tests/undo.tcyr — snapshot-based undo / redo
+#
+# Drives the editor through `editor_step` so the snapshot-before-mutation
+# hooks fire from the same code path the binary takes. Each test asserts
+# the buffer's logical content, the cursor, and (where relevant) the
+# stack lengths.
+
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+
+fn buf_eq(b, expected, n) {
+    if (buf_len(b) != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (buf_get(b, i) != load8(expected + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("undo on a fresh buffer is a no-op (-1 last_error)");
+    var b1 = buf_new();
+    var s1 = editor_new(b1);
+    bl_init(s1, b1);
+    editor_step(s1, 117);  # 'u'
+    assert_eq(buf_len(b1), 0, "buffer still empty");
+    assert_eq(editor_last_error(s1), ERR_UNKNOWN_CMD, "last_error set on no-undo");
+
+    test_group("iabc<Esc> + u empties buffer; Ctrl-r restores");
+    var b2 = buf_new();
+    var s2 = editor_new(b2);
+    bl_init(s2, b2);
+    # i a b c Esc
+    editor_step(s2, 105);
+    editor_step(s2, 97);
+    editor_step(s2, 98);
+    editor_step(s2, 99);
+    editor_step(s2, 27);
+    assert_eq(buf_eq(b2, "abc", 3), 1, "buffer is 'abc' after insert");
+    # u (undo)
+    editor_step(s2, 117);
+    assert_eq(buf_len(b2), 0, "u empties buffer (back to pre-insert)");
+    assert_eq(buf_cursor(b2), 0, "cursor restored to pre-insert");
+    # Ctrl-r (redo, byte 18)
+    editor_step(s2, 18);
+    assert_eq(buf_eq(b2, "abc", 3), 1, "Ctrl-r restores 'abc'");
+
+    test_group("multi-step undo unwinds insert sessions one at a time");
+    var b3 = buf_new();
+    var s3 = editor_new(b3);
+    bl_init(s3, b3);
+    # iabc<Esc>
+    editor_step(s3, 105);
+    editor_step(s3, 97);
+    editor_step(s3, 98);
+    editor_step(s3, 99);
+    editor_step(s3, 27);
+    # iDEF<Esc> (this `i` enters at cursor, which is on 'c' (pos 2) after Esc step-back)
+    # so 'D' is inserted at pos 2 → buffer = "abDEFc"
+    editor_step(s3, 105);
+    editor_step(s3, 68);
+    editor_step(s3, 69);
+    editor_step(s3, 70);
+    editor_step(s3, 27);
+    assert_eq(buf_eq(b3, "abDEFc", 6), 1, "buffer is 'abDEFc' after second insert");
+    # First undo unwinds the second insert session.
+    editor_step(s3, 117);
+    assert_eq(buf_eq(b3, "abc", 3), 1, "first u -> 'abc' (pre-second-insert)");
+    # Second undo unwinds the first insert session.
+    editor_step(s3, 117);
+    assert_eq(buf_len(b3), 0, "second u -> empty");
+    # Two Ctrl-r redo back up.
+    editor_step(s3, 18);
+    assert_eq(buf_eq(b3, "abc", 3), 1, "first Ctrl-r -> 'abc'");
+    editor_step(s3, 18);
+    assert_eq(buf_eq(b3, "abDEFc", 6), 1, "second Ctrl-r -> 'abDEFc'");
+
+    test_group("a new edit clears the redo stack");
+    var b4 = buf_new();
+    var s4 = editor_new(b4);
+    bl_init(s4, b4);
+    editor_step(s4, 105);  # i
+    editor_step(s4, 65);   # A
+    editor_step(s4, 27);
+    editor_step(s4, 117);  # undo -> empty
+    assert_eq(buf_len(b4), 0, "after undo");
+    # New edit invalidates the pending redo.
+    editor_step(s4, 105);  # i
+    editor_step(s4, 90);   # Z
+    editor_step(s4, 27);
+    assert_eq(buf_eq(b4, "Z", 1), 1, "after new insert");
+    # Ctrl-r should now NOT bring back the original 'A' — redo stack was cleared.
+    editor_step(s4, 18);
+    assert_eq(buf_eq(b4, "Z", 1), 1, "redo cleared by new edit; buffer unchanged");
+    assert_eq(editor_last_error(s4), ERR_UNKNOWN_CMD, "last_error set on no-redo");
+
+    test_group("x records its own snapshot; u restores the deleted byte");
+    var b5 = buf_new();
+    buf_insert(b5, "abc", 3);
+    buf_move(b5, 0);
+    var s5 = editor_new(b5);
+    bl_init(s5, b5);
+    editor_step(s5, 120);  # x
+    assert_eq(buf_eq(b5, "bc", 2), 1, "x removed 'a'");
+    editor_step(s5, 117);  # u
+    assert_eq(buf_eq(b5, "abc", 3), 1, "u restored 'abc'");
+    assert_eq(buf_cursor(b5), 0, "cursor restored");
+
+    test_group("undo on a clean buffer (no edits, no insert) is a no-op");
+    var b6 = buf_new();
+    buf_insert(b6, "hello", 5);
+    buf_move(b6, 0);
+    var s6 = editor_new(b6);
+    bl_init(s6, b6);
+    # No INSERT or x has fired through editor_step → undo stack is empty.
+    editor_step(s6, 117);
+    assert_eq(buf_eq(b6, "hello", 5), 1, "buffer unchanged");
+    assert_eq(editor_last_error(s6), ERR_UNKNOWN_CMD, "no-undo sets last_error");
+
+    test_group("multi-buffer: undo stacks are per-buffer");
+    var b7a = buf_new();
+    var s7 = editor_new(b7a);
+    bl_init(s7, b7a);
+    # Insert into buffer 0
+    editor_step(s7, 105);  # i
+    editor_step(s7, 65);   # A
+    editor_step(s7, 27);
+    # Add a second buffer, switch to it
+    var b7b = buf_new();
+    bl_add(s7, b7b, "second");
+    bl_set_active(s7, 1);
+    # Insert into buffer 1
+    editor_step(s7, 105);  # i
+    editor_step(s7, 90);   # Z
+    editor_step(s7, 27);
+    assert_eq(buf_eq(b7b, "Z", 1), 1, "buffer 1 has 'Z'");
+    # Undo on buffer 1 only affects buffer 1
+    editor_step(s7, 117);
+    assert_eq(buf_len(b7b), 0, "buffer 1 undone");
+    # Switch back; buffer 0's content + undo history intact
+    bl_set_active(s7, 0);
+    assert_eq(buf_eq(editor_buf(s7), "A", 1), 1, "buffer 0 still has 'A'");
+    editor_step(s7, 117);  # undo on buffer 0
+    assert_eq(buf_len(editor_buf(s7)), 0, "buffer 0 undone independently");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

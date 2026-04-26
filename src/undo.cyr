@@ -1,0 +1,140 @@
+# undo.cyr — snapshot-based undo / redo (per-buffer)
+#
+# Each undo step is a full snapshot of the active buffer's logical
+# content + cursor position. Snapshots live in two stacks per Buffer
+# record (24 / 32 offsets in buflist.cyr): `undo_stack` and `redo_stack`.
+#
+# Boundary policy: a snapshot is recorded BEFORE a vim "undo unit" —
+# the entire `i`/`a`/`A` insert session collapses into one undo, not
+# one per character. NORMAL-mode edits (`x`) record their own snapshot.
+# `editor_step` calls `undo_record_pre_op` for the actions that begin
+# a unit; the redo stack is cleared on every new edit.
+#
+# Snapshot layout (24 B):
+#   off  0  data    heap ptr to logical bytes (NUL-terminated)
+#   off  8  len     content length
+#   off 16  cursor  pre-op cursor position
+#
+# Cost: O(buf_len) per recorded edit. Acceptable for M4; M5 perf can
+# add op-log compression keyed by an edit-counter version.
+#
+# Requires: src/buffer.cyr, src/mode.cyr, src/buflist.cyr.
+
+# ── Snapshot helpers ────────────────────────────────────────────────
+
+fn _snap_new_from_buf(b) {
+    var len = buf_len(b);
+    var snap = alloc(24);
+    var data = alloc(len + 1);
+    var i = 0;
+    while (i < len) {
+        store8(data + i, buf_get(b, i));
+        i = i + 1;
+    }
+    store8(data + len, 0);
+    store64(snap,      data);
+    store64(snap + 8,  len);
+    store64(snap + 16, buf_cursor(b));
+    return snap;
+}
+
+fn _snap_data(snap)   { return load64(snap); }
+fn _snap_len(snap)    { return load64(snap + 8); }
+fn _snap_cursor(snap) { return load64(snap + 16); }
+
+# Restore a snapshot into `b` — clear the buffer, re-insert the saved
+# bytes, restore the cursor.
+fn _snap_restore_into(b, snap) {
+    buf_clear(b);
+    var data = _snap_data(snap);
+    var len = _snap_len(snap);
+    if (len > 0) { buf_insert(b, data, len); }
+    var cur = _snap_cursor(snap);
+    if (cur > buf_len(b)) { cur = buf_len(b); }
+    buf_move(b, cur);
+    return 0;
+}
+
+# ── Stack accessors ────────────────────────────────────────────────
+
+# Lazy-init the undo / redo stacks on the active buffer's record.
+fn _undo_ensure_stacks(s) {
+    var rec = bl_active(s);
+    if (rec == 0) { return 0; }
+    if (_bl_rec_undo(rec) == 0) { _bl_rec_set_undo(rec, vec_new()); }
+    if (_bl_rec_redo(rec) == 0) { _bl_rec_set_redo(rec, vec_new()); }
+    return 0;
+}
+
+# ── Public entry points ─────────────────────────────────────────────
+
+# Snapshot the current buffer state and push it onto the active record's
+# undo stack. Clears the redo stack — fresh edit invalidates any redos.
+# Called from editor_step BEFORE a mutating action runs (so the snapshot
+# captures the pre-op state).
+fn undo_record_pre_op(s) {
+    bl_init(s, editor_buf(s));
+    _undo_ensure_stacks(s);
+    var rec = bl_active(s);
+    if (rec == 0) { return 0; }
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var undo = _bl_rec_undo(rec);
+    var redo = _bl_rec_redo(rec);
+    var snap = _snap_new_from_buf(b);
+    vec_push(undo, snap);
+    # Drop redo history on every new edit.
+    while (vec_len(redo) > 0) { vec_pop(redo); }
+    return 0;
+}
+
+# Pop the most recent undo snapshot, push the CURRENT state to the redo
+# stack, and restore the snapshot. Returns 0 on success, -1 if there is
+# nothing to undo.
+fn undo_pop(s) {
+    _undo_ensure_stacks(s);
+    var rec = bl_active(s);
+    if (rec == 0) { return 0 - 1; }
+    var undo = _bl_rec_undo(rec);
+    if (vec_len(undo) == 0) { return 0 - 1; }
+    var b = editor_buf(s);
+    if (b == 0) { return 0 - 1; }
+    var redo = _bl_rec_redo(rec);
+    vec_push(redo, _snap_new_from_buf(b));
+    var snap = vec_pop(undo);
+    _snap_restore_into(b, snap);
+    return 0;
+}
+
+# Pop the most recent redo snapshot, push the CURRENT state to the undo
+# stack, and restore the snapshot. Returns 0 on success, -1 if there is
+# nothing to redo.
+fn redo_pop(s) {
+    _undo_ensure_stacks(s);
+    var rec = bl_active(s);
+    if (rec == 0) { return 0 - 1; }
+    var redo = _bl_rec_redo(rec);
+    if (vec_len(redo) == 0) { return 0 - 1; }
+    var b = editor_buf(s);
+    if (b == 0) { return 0 - 1; }
+    var undo = _bl_rec_undo(rec);
+    vec_push(undo, _snap_new_from_buf(b));
+    var snap = vec_pop(redo);
+    _snap_restore_into(b, snap);
+    return 0;
+}
+
+# Top-level undo-action handler. Returns 1 if it consumed the action.
+fn undo_apply(s, action) {
+    if (action == ACT_UNDO) {
+        var rc = undo_pop(s);
+        if (rc < 0) { editor_set_last_error(s, ERR_UNKNOWN_CMD); }
+        return 1;
+    }
+    if (action == ACT_REDO) {
+        var rc = redo_pop(s);
+        if (rc < 0) { editor_set_last_error(s, ERR_UNKNOWN_CMD); }
+        return 1;
+    }
+    return 0;
+}

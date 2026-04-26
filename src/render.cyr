@@ -276,6 +276,42 @@ fn render_status(s, rows, cols) {
         return 0;
     }
 
+    # Search modes look like COMMAND but with a different prefix.
+    if (editor_mode(s) == MODE_SEARCH) {
+        syscall(1, 1, "/", 1);
+        var cb = editor_cmdbuf(s);
+        var clen = buf_len(cb);
+        var i = 0;
+        var line[2048];
+        var pos = 0;
+        while (i < clen) {
+            if (pos < cols - 1) {
+                store8(&line + pos, buf_get(cb, i));
+                pos = pos + 1;
+            }
+            i = i + 1;
+        }
+        if (pos > 0) { syscall(1, 1, &line, pos); }
+        return 0;
+    }
+    if (editor_mode(s) == MODE_SEARCH_BACK) {
+        syscall(1, 1, "?", 1);
+        var cb = editor_cmdbuf(s);
+        var clen = buf_len(cb);
+        var i = 0;
+        var line[2048];
+        var pos = 0;
+        while (i < clen) {
+            if (pos < cols - 1) {
+                store8(&line + pos, buf_get(cb, i));
+                pos = pos + 1;
+            }
+            i = i + 1;
+        }
+        if (pos > 0) { syscall(1, 1, &line, pos); }
+        return 0;
+    }
+
     # If a command set a status message in this step, show it (truncated
     # to cols) instead of the mode tag. The next keystroke clears it.
     var msg = editor_status(s);
@@ -287,7 +323,9 @@ fn render_status(s, rows, cols) {
     }
 
     var tag = "-- NORMAL --";
-    if (editor_mode(s) == MODE_INSERT) { tag = "-- INSERT --"; }
+    if (editor_mode(s) == MODE_INSERT)      { tag = "-- INSERT --"; }
+    if (editor_mode(s) == MODE_VISUAL)      { tag = "-- VISUAL --"; }
+    if (editor_mode(s) == MODE_VISUAL_LINE) { tag = "-- VISUAL LINE --"; }
     syscall(1, 1, tag, strlen(tag));
     syscall(1, 1, "  ", 2);
     var path = editor_file_path(s);
@@ -447,7 +485,18 @@ fn _render_frame_multi(s, rows, cols) {
 
     render_status(s, rows, cols);
 
-    if (editor_mode(s) == MODE_COMMAND) {
+    var m = editor_mode(s);
+    if (m == MODE_COMMAND) {
+        var clen = buf_len(editor_cmdbuf(s));
+        tty_move(rows, clen + 2);
+        return 0;
+    }
+    if (m == MODE_SEARCH) {
+        var clen = buf_len(editor_cmdbuf(s));
+        tty_move(rows, clen + 2);
+        return 0;
+    }
+    if (m == MODE_SEARCH_BACK) {
         var clen = buf_len(editor_cmdbuf(s));
         tty_move(rows, clen + 2);
         return 0;

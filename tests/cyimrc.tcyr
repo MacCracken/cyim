@@ -90,6 +90,14 @@ fn main() {
     assert_eq(theme_token_color(TK_IDENT),       150, "theme honors ident override");
     assert_eq(theme_token_color(TK_PUNCTUATION), 160, "theme honors punctuation override");
 
+    test_group("editor config keys: ignorecase / line_numbers / tabstop");
+    write_fixture(FIXTURE_BASIC,
+        "ignorecase = 1\nline_numbers = 1\ntabstop = 8\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_cfg_ignorecase(),   1, "ignorecase = 1");
+    assert_eq(cyimrc_cfg_line_numbers(), 1, "line_numbers = 1");
+    assert_eq(cyimrc_cfg_tabstop(),      8, "tabstop = 8");
+
     return assert_summary();
 }
 

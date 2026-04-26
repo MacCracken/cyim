@@ -18,6 +18,9 @@ include "src/motion.cyr"
 include "src/insert.cyr"
 include "src/edit.cyr"
 include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
 include "src/driver.cyr"
 
 fn main() {

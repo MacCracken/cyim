@@ -22,9 +22,13 @@
 # and the three mode-state defaults (literal-insert, cmdline-append).
 
 # ──── Modes ────────────────────────────────────────────────────────────
-var MODE_NORMAL  = 0;
-var MODE_INSERT  = 1;
-var MODE_COMMAND = 2;
+var MODE_NORMAL      = 0;
+var MODE_INSERT      = 1;
+var MODE_COMMAND     = 2;
+var MODE_SEARCH      = 3;   # `/pattern` — forward
+var MODE_SEARCH_BACK = 4;   # `?pattern` — backward
+var MODE_VISUAL      = 5;   # `v` — character-wise selection
+var MODE_VISUAL_LINE = 6;   # `V` — line-wise selection
 
 # ──── Action IDs ──────────────────────────────────────────────────────
 # 0 is reserved for "no-op / unmapped". Numeric gaps left between groups
@@ -43,9 +47,21 @@ var ACT_TO_NORMAL         = 10;
 var ACT_TO_INSERT         = 11;
 var ACT_TO_INSERT_AFTER   = 12;
 var ACT_TO_INSERT_LINE_END = 13;
+var ACT_TO_VISUAL         = 14;
+var ACT_TO_VISUAL_LINE    = 15;
 var ACT_TO_COMMAND        = 20;
 var ACT_CMDLINE_EXECUTE   = 21;
 var ACT_CMDLINE_CANCEL    = 22;
+
+# Search mode transitions + execution.
+var ACT_TO_SEARCH         = 25;
+var ACT_TO_SEARCH_BACK    = 26;
+var ACT_SEARCH_EXECUTE    = 27;   # Enter inside SEARCH/SEARCH_BACK
+var ACT_SEARCH_CANCEL     = 28;   # Esc inside SEARCH/SEARCH_BACK
+var ACT_SEARCH_REPEAT     = 29;   # `n` in NORMAL — repeat last in same direction
+var ACT_SEARCH_REPEAT_BACK = 30;  # `N` in NORMAL — repeat last in opposite direction
+var ACT_SEARCH_WORD_FWD   = 31;   # `*` — find word under cursor, forward
+var ACT_SEARCH_WORD_BACK  = 32;   # `#` — find word under cursor, backward
 
 # NORMAL-mode motions (single-byte for now).
 var ACT_MOVE_LEFT         = 100;
@@ -61,6 +77,19 @@ var ACT_MOVE_FILE_END     = 108;
 # NORMAL-mode edits.
 var ACT_DELETE_RIGHT      = 200;
 
+# Undo / redo.
+var ACT_UNDO              = 210;
+var ACT_REDO              = 211;
+
+# Yank / paste.
+var ACT_PASTE_AFTER       = 220;   # `p` in NORMAL
+var ACT_PASTE_BEFORE      = 221;   # `P` in NORMAL
+var ACT_VISUAL_YANK       = 230;   # `y` in VISUAL or VISUAL_LINE
+var ACT_VISUAL_DELETE     = 231;   # `d` in VISUAL or VISUAL_LINE
+
+# Repeat-last-edit.
+var ACT_DOT_REPEAT        = 240;   # `.` — replay last insert session
+
 # Window navigation (Ctrl-w h/j/k/l).
 var ACT_WIN_LEFT          = 400;
 var ACT_WIN_DOWN          = 401;
@@ -74,6 +103,7 @@ var KEY_LF        = 10;
 var KEY_BACKSPACE = 8;
 var KEY_DEL       = 127;
 var KEY_CTRL_W    = 23;
+var KEY_CTRL_R    = 18;
 
 # ──── Error codes (set into state.last_error) ────────────────────────
 var ERR_NONE           = 0;
@@ -83,7 +113,7 @@ var ERR_FILE_NOT_FOUND = 3;
 var ERR_SAVE_FAILED    = 4;
 var ERR_UNKNOWN_CMD    = 5;
 
-# ──── EditorState layout (112 bytes) ──────────────────────────────────
+# ──── EditorState layout (128 bytes) ──────────────────────────────────
 #   off   0  mode             i64  current mode (MODE_*)
 #   off   8  buf              i64  ACTIVE buffer's gap-buffer (mirror of
 #                                   buf-list slot; updated by bl_set_active)
@@ -101,9 +131,34 @@ var ERR_UNKNOWN_CMD    = 5;
 #   off 104  prefix_pending   i64  pending key prefix (KEY_CTRL_W after a
 #                                   Ctrl-w byte; cleared after the next
 #                                   dispatched byte). 0 = no pending prefix.
+#   off 112  search_pattern   i64  cstr of last-typed search pattern, or 0
+#   off 120  search_direction i64  0 = forward (`/`), 1 = back (`?`).
+#   off 128  visual_anchor    i64  byte position recorded on entering
+#                                   VISUAL/VISUAL_LINE; selection range
+#                                   is [min(anchor, cursor), max(...)]
+#                                   (line-clamped for VISUAL_LINE).
+#   off 136  yank_register    i64  heap ptr to last-yanked bytes (or 0).
+#                                   Single-register model (no a-z named
+#                                   registers yet).
+#   off 144  yank_register_len i64  length in bytes (handles NUL-content).
+#   off 152  dot_entry_key    i64  the byte that opened the recorded
+#                                   insert session (typically 105 = 'i',
+#                                   97 = 'a', 65 = 'A'). Used to re-fire
+#                                   the right ACT_TO_INSERT_* on `.`.
+#   off 160  dot_buf          i64  gap-buffer holding the bytes typed
+#                                   inside the recorded session (or 0).
+#   off 168  dot_recording    i64  1 while inside an insert session
+#                                   that's being captured.
+#   off 176  cfg_ignorecase   i64  0 = case-sensitive (default), 1 = fold
+#                                   case in / and ? scans.
+#   off 184  cfg_line_numbers i64  display gutter w/ line numbers (0/1).
+#                                   Wiring into render is deferred to M5
+#                                   perf pass; the config slot exists so
+#                                   `:set number` and `.cyimrc` agree.
+#   off 192  cfg_tabstop      i64  display width of TAB (default 4).
 
 fn editor_new(buf) {
-    var s = alloc(112);
+    var s = alloc(200);
     store64(s, MODE_NORMAL);
     store64(s + 8, buf);
     var nmap = map_u64_new();
@@ -120,6 +175,17 @@ fn editor_new(buf) {
     store64(s + 88, 0);    # window_root — lazy-inited by window.cyr
     store64(s + 96, 0);
     store64(s + 104, 0);
+    store64(s + 112, 0);   # search_pattern
+    store64(s + 120, 0);   # search_direction (forward by default)
+    store64(s + 128, 0);   # visual_anchor
+    store64(s + 136, 0);   # yank_register
+    store64(s + 144, 0);   # yank_register_len
+    store64(s + 152, 0);   # dot_entry_key
+    store64(s + 160, 0);   # dot_buf — lazy
+    store64(s + 168, 0);   # dot_recording
+    store64(s + 176, 0);   # cfg_ignorecase
+    store64(s + 184, 0);   # cfg_line_numbers
+    store64(s + 192, 4);   # cfg_tabstop (vim default)
     return s;
 }
 
@@ -140,6 +206,31 @@ fn editor_status(s)             { return load64(s + 80); }
 fn editor_set_status(s, msg)    { store64(s + 80, msg); return 0; }
 fn editor_prefix(s)             { return load64(s + 104); }
 fn editor_set_prefix(s, p)      { store64(s + 104, p); return 0; }
+fn editor_search_pattern(s)     { return load64(s + 112); }
+fn editor_set_search_pattern(s, p)   { store64(s + 112, p); return 0; }
+fn editor_search_direction(s)   { return load64(s + 120); }
+fn editor_set_search_direction(s, d) { store64(s + 120, d); return 0; }
+fn editor_visual_anchor(s)      { return load64(s + 128); }
+fn editor_set_visual_anchor(s, a) { store64(s + 128, a); return 0; }
+fn editor_yank_register(s)      { return load64(s + 136); }
+fn editor_yank_register_len(s)  { return load64(s + 144); }
+fn editor_set_yank_register(s, p, n) {
+    store64(s + 136, p);
+    store64(s + 144, n);
+    return 0;
+}
+fn editor_dot_entry_key(s)         { return load64(s + 152); }
+fn editor_set_dot_entry_key(s, k)  { store64(s + 152, k); return 0; }
+fn editor_dot_buf(s)               { return load64(s + 160); }
+fn editor_set_dot_buf(s, b)        { store64(s + 160, b); return 0; }
+fn editor_dot_recording(s)         { return load64(s + 168); }
+fn editor_set_dot_recording(s, v)  { store64(s + 168, v); return 0; }
+fn editor_cfg_ignorecase(s)        { return load64(s + 176); }
+fn editor_set_cfg_ignorecase(s, v) { store64(s + 176, v); return 0; }
+fn editor_cfg_line_numbers(s)      { return load64(s + 184); }
+fn editor_set_cfg_line_numbers(s, v) { store64(s + 184, v); return 0; }
+fn editor_cfg_tabstop(s)           { return load64(s + 192); }
+fn editor_set_cfg_tabstop(s, v)    { store64(s + 192, v); return 0; }
 
 # Seed NORMAL-mode keymap with the canonical single-byte vi mappings.
 fn _seed_normal_keymap(m) {
@@ -157,6 +248,19 @@ fn _seed_normal_keymap(m) {
     map_u64_set(m, 97,  ACT_TO_INSERT_AFTER);  # a
     map_u64_set(m, 65,  ACT_TO_INSERT_LINE_END); # A
     map_u64_set(m, 58,  ACT_TO_COMMAND);       # :
+    map_u64_set(m, 47,  ACT_TO_SEARCH);        # /
+    map_u64_set(m, 63,  ACT_TO_SEARCH_BACK);   # ?
+    map_u64_set(m, 110, ACT_SEARCH_REPEAT);      # n
+    map_u64_set(m, 78,  ACT_SEARCH_REPEAT_BACK); # N
+    map_u64_set(m, 42,  ACT_SEARCH_WORD_FWD);    # *
+    map_u64_set(m, 35,  ACT_SEARCH_WORD_BACK);   # #
+    map_u64_set(m, 117, ACT_UNDO);               # u
+    map_u64_set(m, 18,  ACT_REDO);               # Ctrl-r (0x12)
+    map_u64_set(m, 118, ACT_TO_VISUAL);          # v
+    map_u64_set(m, 86,  ACT_TO_VISUAL_LINE);     # V
+    map_u64_set(m, 112, ACT_PASTE_AFTER);        # p
+    map_u64_set(m, 80,  ACT_PASTE_BEFORE);       # P
+    map_u64_set(m, 46,  ACT_DOT_REPEAT);         # .
     return 0;
 }
 
@@ -190,7 +294,38 @@ fn editor_dispatch(s, key) {
         if (act == ACT_TO_INSERT_AFTER)   { store64(s, MODE_INSERT);  return act; }
         if (act == ACT_TO_INSERT_LINE_END) { store64(s, MODE_INSERT); return act; }
         if (act == ACT_TO_COMMAND)        { store64(s, MODE_COMMAND); return act; }
+        if (act == ACT_TO_SEARCH)         { store64(s, MODE_SEARCH);      return act; }
+        if (act == ACT_TO_SEARCH_BACK)    { store64(s, MODE_SEARCH_BACK); return act; }
+        if (act == ACT_TO_VISUAL)         { store64(s, MODE_VISUAL);      return act; }
+        if (act == ACT_TO_VISUAL_LINE)    { store64(s, MODE_VISUAL_LINE); return act; }
         return act;
+    }
+
+    if (mode == MODE_VISUAL) {
+        if (key == KEY_ESC) { store64(s, MODE_NORMAL); return ACT_TO_NORMAL; }
+        if (key == 118)     { store64(s, MODE_NORMAL); return ACT_TO_NORMAL; }   # v toggles off
+        if (key == 86)      { store64(s, MODE_VISUAL_LINE); return ACT_NONE; }    # V swap
+        if (key == 121)     { store64(s, MODE_NORMAL); return ACT_VISUAL_YANK; }  # y
+        if (key == 100)     { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; } # d
+        # Motions allowed; everything else is swallowed so dispatch
+        # doesn't trigger inserts / commands while a selection is open.
+        var act = map_u64_get(load64(s + 16), key);
+        if (act >= ACT_MOVE_LEFT) {
+            if (act <= ACT_MOVE_FILE_END) { return act; }
+        }
+        return ACT_NONE;
+    }
+    if (mode == MODE_VISUAL_LINE) {
+        if (key == KEY_ESC) { store64(s, MODE_NORMAL); return ACT_TO_NORMAL; }
+        if (key == 86)      { store64(s, MODE_NORMAL); return ACT_TO_NORMAL; }   # V toggles off
+        if (key == 118)     { store64(s, MODE_VISUAL); return ACT_NONE; }         # v swap
+        if (key == 121)     { store64(s, MODE_NORMAL); return ACT_VISUAL_YANK; }
+        if (key == 100)     { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
+        var act = map_u64_get(load64(s + 16), key);
+        if (act >= ACT_MOVE_LEFT) {
+            if (act <= ACT_MOVE_FILE_END) { return act; }
+        }
+        return ACT_NONE;
     }
 
     if (mode == MODE_INSERT) {
@@ -204,6 +339,23 @@ fn editor_dispatch(s, key) {
         if (key == KEY_ESC)       { store64(s, MODE_NORMAL); return ACT_CMDLINE_CANCEL; }
         if (key == KEY_ENTER)     { store64(s, MODE_NORMAL); return ACT_CMDLINE_EXECUTE; }
         if (key == KEY_LF)        { store64(s, MODE_NORMAL); return ACT_CMDLINE_EXECUTE; }
+        if (key == KEY_DEL)       { return ACT_CMDLINE_BACKSPACE; }
+        if (key == KEY_BACKSPACE) { return ACT_CMDLINE_BACKSPACE; }
+        return ACT_CMDLINE_APPEND;
+    }
+
+    if (mode == MODE_SEARCH) {
+        if (key == KEY_ESC)       { store64(s, MODE_NORMAL); return ACT_SEARCH_CANCEL; }
+        if (key == KEY_ENTER)     { store64(s, MODE_NORMAL); return ACT_SEARCH_EXECUTE; }
+        if (key == KEY_LF)        { store64(s, MODE_NORMAL); return ACT_SEARCH_EXECUTE; }
+        if (key == KEY_DEL)       { return ACT_CMDLINE_BACKSPACE; }
+        if (key == KEY_BACKSPACE) { return ACT_CMDLINE_BACKSPACE; }
+        return ACT_CMDLINE_APPEND;
+    }
+    if (mode == MODE_SEARCH_BACK) {
+        if (key == KEY_ESC)       { store64(s, MODE_NORMAL); return ACT_SEARCH_CANCEL; }
+        if (key == KEY_ENTER)     { store64(s, MODE_NORMAL); return ACT_SEARCH_EXECUTE; }
+        if (key == KEY_LF)        { store64(s, MODE_NORMAL); return ACT_SEARCH_EXECUTE; }
         if (key == KEY_DEL)       { return ACT_CMDLINE_BACKSPACE; }
         if (key == KEY_BACKSPACE) { return ACT_CMDLINE_BACKSPACE; }
         return ACT_CMDLINE_APPEND;

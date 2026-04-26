@@ -135,6 +135,52 @@ def main():
         print("  FAIL: reset escape not found in PTY output")
         ok = False
 
+    print("=== M4 search + undo: /foo<Enter> jumps cursor; u rolls back an edit ===")
+    # Layout (positions of "foo"):  alpha foo beta foo gamma foo
+    #                                     6      15     25
+    # Drive: /foo<Enter> i_X<Esc> u :wq
+    # After the edit the cursor is on the 'foo' that we modified, then `u`
+    # rolls it back, so the saved file should match the fixture.
+    out = drive(
+        b"/foo\riX\x1bu:wq\r",
+        b"alpha foo beta foo gamma\n",
+    )
+    ok &= assert_eq(out, b"alpha foo beta foo gamma\n", "search + edit + undo + save = identity")
+
+    print("=== M4 . repeat: insert once, repeat at new cursor ===")
+    # Drive: iAB<Esc> $ a CD<Esc> 0 . :wq
+    # Result expected: AB at start; CD appended at end of original line; then
+    # `.` at start re-runs the LAST insert ("a CD<Esc>") at cursor 0:
+    #   `a` advances cursor by 1 (past 'A'), inserts 'C' 'D' at pos 1, Esc.
+    # Final buffer: "ACDB hello CD\n" wait — let's compute precisely.
+    #   Initial:  "hello\n"   cursor 0
+    #   iAB<Esc>: "ABhello\n" cursor 1 (on 'B')
+    #   $:         cursor 6 (line_end of "ABhello")
+    #   aCD<Esc>:  cursor advances to 7, inserts CD, Esc steps back: "ABhelloCD\n" cursor 8
+    #   0:         cursor 0 (line_start)
+    #   .:         replay "aCD<Esc>" at cursor 0:
+    #              `a` -> cursor 1 (past 'A'), insert 'C' 'D' at 1: "ACDBhelloCD\n" cursor 3
+    #   :wq saves "ACDBhelloCD\n"
+    out = drive(
+        b"iAB\x1b$aCD\x1b0.:wq\r",
+        b"hello\n",
+    )
+    ok &= assert_eq(out, b"ACDBhelloCD\n", ". repeat replays last insert at new cursor")
+
+    print("=== M4 visual + d: vlld removes 3 chars; p pastes them ===")
+    # Drive: v l l d p  :wq
+    # Initial: "abcdef\n" cursor 0 (on 'a')
+    # vlld: visual select a,b,c (3 chars), d deletes, register holds "abc"
+    #       buffer: "def\n" cursor 0
+    # p: paste after cursor — cursor advances to 1 (between 'd' and 'e'),
+    #    inserts "abc" → "dabcef\n" cursor 3
+    # :wq saves "dabcef\n"
+    out = drive(
+        b"vlld" + b"p:wq\r",
+        b"abcdef\n",
+    )
+    ok &= assert_eq(out, b"dabcef\n", "vlld then p produces 'dabcef'")
+
     print("=== M3 multi-window: 3 files in 2 splits, navigate, :q cascades ===")
     file_a = "/tmp/cyim-smoke-a.cyr"
     file_b = "/tmp/cyim-smoke-b.cyr"

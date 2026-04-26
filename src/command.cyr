@@ -129,6 +129,80 @@ fn _cmd_bp(s) { bl_prev(s); return 0; }
 fn _cmd_sp(s)  { window_split_active(s, WIN_SPLIT_H); return 0; }
 fn _cmd_vsp(s) { window_split_active(s, WIN_SPLIT_V); return 0; }
 
+# Match a NUL-terminated literal against cmdbuf bytes [start..start+len).
+fn _cmd_arg_eq(cb, start, len, lit) {
+    var lit_len = strlen(lit);
+    if (len != lit_len) { return 0; }
+    var i = 0;
+    while (i < len) {
+        if (buf_get(cb, start + i) != load8(lit + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Parse a non-negative decimal from cmdbuf bytes [start..start+len).
+# Returns -1 on empty / non-digit.
+fn _cmd_arg_uint(cb, start, len) {
+    if (len <= 0) { return 0 - 1; }
+    var v = 0;
+    var i = 0;
+    while (i < len) {
+        var c = buf_get(cb, start + i);
+        if (c < 48) { return 0 - 1; }
+        if (c > 57) { return 0 - 1; }
+        v = v * 10 + (c - 48);
+        i = i + 1;
+    }
+    return v;
+}
+
+# `:set <option>` — runtime config toggle. Recognised tokens:
+#   ic / noic              ignorecase on/off (search case-fold)
+#   number / nonumber      line_numbers on/off
+#   tabstop=N              integer width
+# Unknown options return ERR_UNKNOWN_CMD without changing state.
+fn _cmd_set(s, cb, arg_start, arg_len) {
+    if (arg_len <= 0) {
+        editor_set_last_error(s, ERR_UNKNOWN_CMD);
+        return 0 - 1;
+    }
+    if (_cmd_arg_eq(cb, arg_start, arg_len, "ic")        == 1) { editor_set_cfg_ignorecase(s, 1);   return 0; }
+    if (_cmd_arg_eq(cb, arg_start, arg_len, "noic")      == 1) { editor_set_cfg_ignorecase(s, 0);   return 0; }
+    if (_cmd_arg_eq(cb, arg_start, arg_len, "number")    == 1) { editor_set_cfg_line_numbers(s, 1); return 0; }
+    if (_cmd_arg_eq(cb, arg_start, arg_len, "nonumber")  == 1) { editor_set_cfg_line_numbers(s, 0); return 0; }
+
+    # tabstop=N
+    if (arg_len >= 9) {
+        if (buf_get(cb, arg_start + 0) == 116) {  # 't'
+            if (buf_get(cb, arg_start + 1) == 97) {   # 'a'
+                if (buf_get(cb, arg_start + 2) == 98) {   # 'b'
+                    if (buf_get(cb, arg_start + 3) == 115) { # 's'
+                        if (buf_get(cb, arg_start + 4) == 116) { # 't'
+                            if (buf_get(cb, arg_start + 5) == 111) { # 'o'
+                                if (buf_get(cb, arg_start + 6) == 112) { # 'p'
+                                    if (buf_get(cb, arg_start + 7) == 61) {  # '='
+                                        var n = _cmd_arg_uint(cb, arg_start + 8, arg_len - 8);
+                                        if (n < 0) {
+                                            editor_set_last_error(s, ERR_UNKNOWN_CMD);
+                                            return 0 - 1;
+                                        }
+                                        editor_set_cfg_tabstop(s, n);
+                                        return 0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    editor_set_last_error(s, ERR_UNKNOWN_CMD);
+    return 0 - 1;
+}
+
 # Static scratch for the :ls status string. Reused across calls so we
 # don't leak a 4KB buffer per invocation. NUL-terminated.
 var _CMD_LS_BUF_SIZE = 4096;
@@ -315,6 +389,7 @@ fn command_execute(s) {
     if (_cmd_eq(cb, 0, name_end, "ls")  == 1) { return _cmd_ls(s); }
     if (_cmd_eq(cb, 0, name_end, "sp")  == 1) { return _cmd_sp(s); }
     if (_cmd_eq(cb, 0, name_end, "vsp") == 1) { return _cmd_vsp(s); }
+    if (_cmd_eq(cb, 0, name_end, "set") == 1) { return _cmd_set(s, cb, arg_start, arg_len); }
 
     editor_set_last_error(s, ERR_UNKNOWN_CMD);
     return 0 - 1;

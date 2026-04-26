@@ -15,27 +15,38 @@
 # Required include order: alloc / vec stdlib → src/mode.cyr → this file
 # (this file uses editor_buf / editor_modified / editor_file_path).
 
-# ── Buffer record (24 B) ─────────────────────────────────────────────
-#   off 0   buf        gap-buffer ptr (or 0)
-#   off 8   file_path  cstr or 0
-#   off 16  modified   i64
+# ── Buffer record (40 B) ─────────────────────────────────────────────
+#   off  0  buf          gap-buffer ptr (or 0)
+#   off  8  file_path    cstr or 0
+#   off 16  modified     i64
+#   off 24  undo_stack   vec of Snapshot records (or 0 = not init'd)
+#   off 32  redo_stack   vec of Snapshot records (or 0 = not init'd)
+#
+# undo / redo stacks are populated by src/undo.cyr — buflist owns the
+# storage slots, undo.cyr owns the snapshot semantics.
 
-var BUFFER_REC_SIZE = 24;
+var BUFFER_REC_SIZE = 40;
 
 fn _bl_record_new(buf, path) {
-    var r = alloc(24);
-    store64(r, buf);
-    store64(r + 8, path);
+    var r = alloc(40);
+    store64(r,      buf);
+    store64(r + 8,  path);
     store64(r + 16, 0);
+    store64(r + 24, 0);
+    store64(r + 32, 0);
     return r;
 }
 
 fn _bl_rec_buf(r)           { return load64(r); }
 fn _bl_rec_path(r)          { return load64(r + 8); }
 fn _bl_rec_modified(r)      { return load64(r + 16); }
+fn _bl_rec_undo(r)          { return load64(r + 24); }
+fn _bl_rec_redo(r)          { return load64(r + 32); }
 fn _bl_rec_set_buf(r, b)        { store64(r, b);      return 0; }
 fn _bl_rec_set_path(r, p)       { store64(r + 8, p);  return 0; }
 fn _bl_rec_set_modified(r, m)   { store64(r + 16, m); return 0; }
+fn _bl_rec_set_undo(r, v)       { store64(r + 24, v); return 0; }
+fn _bl_rec_set_redo(r, v)       { store64(r + 32, v); return 0; }
 
 # Editor-state offsets for the buffer-list pair. Editor state grew from
 # 64 → 80 bytes when the registry landed; the new tail is:

@@ -1,0 +1,189 @@
+# visual.cyr — VISUAL / VISUAL_LINE selection + yank/delete + paste
+#
+# Selection range:
+#   - VISUAL char-wise: [min(anchor, cursor), max(anchor, cursor)] inclusive
+#   - VISUAL_LINE: [line_start(min), line_end(max)] inclusive (snaps to line)
+#
+# Single yank register lives on the editor state (offset 136 / 144). `y`
+# copies the selected bytes into a fresh heap buffer; `d` does the same
+# AND deletes the bytes from the buffer. `p` pastes after cursor; `P`
+# pastes before. No system-clipboard wiring (post-v1.0 per roadmap).
+#
+# Snapshot-for-undo: visual_apply records a pre-op snapshot for
+# ACT_VISUAL_DELETE and the two paste actions (they mutate the buffer).
+#
+# Requires: src/buffer.cyr, src/mode.cyr, src/buflist.cyr, src/undo.cyr.
+
+# ── Selection range helpers ─────────────────────────────────────────
+
+# Returns the selection's lower bound (byte offset). Returns -1 when not
+# in a visual mode.
+fn visual_selection_lo(s) {
+    var mode = editor_mode(s);
+    if (mode != MODE_VISUAL) {
+        if (mode != MODE_VISUAL_LINE) { return 0 - 1; }
+    }
+    var b = editor_buf(s);
+    if (b == 0) { return 0 - 1; }
+    var anchor = editor_visual_anchor(s);
+    var cursor = buf_cursor(b);
+    var lo = anchor;
+    if (cursor < lo) { lo = cursor; }
+    if (mode == MODE_VISUAL_LINE) { lo = buf_line_start(b, lo); }
+    return lo;
+}
+
+# Returns the selection's upper bound (inclusive byte offset).
+fn visual_selection_hi(s) {
+    var mode = editor_mode(s);
+    if (mode != MODE_VISUAL) {
+        if (mode != MODE_VISUAL_LINE) { return 0 - 1; }
+    }
+    var b = editor_buf(s);
+    if (b == 0) { return 0 - 1; }
+    var anchor = editor_visual_anchor(s);
+    var cursor = buf_cursor(b);
+    var hi = anchor;
+    if (cursor > hi) { hi = cursor; }
+    if (mode == MODE_VISUAL_LINE) { hi = buf_line_end(b, hi); }
+    return hi;
+}
+
+# ── Yank-register I/O ───────────────────────────────────────────────
+
+# Copy bytes [lo, hi] (inclusive on both ends) from `b` into a fresh
+# heap buffer; pin it as the editor's yank register.
+fn _visual_capture_register(s, b, lo, hi) {
+    if (lo < 0)              { return 0; }
+    if (hi < lo)             { return 0; }
+    if (hi >= buf_len(b))    { hi = buf_len(b) - 1; }
+    var n = hi - lo + 1;
+    var data = alloc(n + 1);
+    var i = 0;
+    while (i < n) {
+        store8(data + i, buf_get(b, lo + i));
+        i = i + 1;
+    }
+    store8(data + n, 0);
+    editor_set_yank_register(s, data, n);
+    return n;
+}
+
+# Delete bytes [lo, hi] (inclusive) from `b`. Cursor is left at lo.
+# Linear in (hi - lo + 1) — every byte is removed via buf_delete_right.
+fn _visual_delete_range(b, lo, hi) {
+    if (lo < 0)              { return 0; }
+    if (hi < lo)             { return 0; }
+    if (hi >= buf_len(b))    { hi = buf_len(b) - 1; }
+    buf_move(b, lo);
+    var n = hi - lo + 1;
+    var i = 0;
+    while (i < n) {
+        buf_delete_right(b);
+        i = i + 1;
+    }
+    return n;
+}
+
+# ── Action handlers ─────────────────────────────────────────────────
+
+# Anchor stamping: when ACT_TO_VISUAL or ACT_TO_VISUAL_LINE fires, the
+# dispatcher has just set the mode but hasn't recorded an anchor yet.
+# This handler captures cursor as the anchor.
+fn _visual_on_enter(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    editor_set_visual_anchor(s, buf_cursor(b));
+    return 0;
+}
+
+# y in VISUAL — copy selection to register, return to NORMAL (mode
+# already flipped by dispatch).
+fn _visual_yank(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var lo = visual_selection_lo_at(s);
+    var hi = visual_selection_hi_at(s);
+    if (lo < 0) { return 0; }
+    _visual_capture_register(s, b, lo, hi);
+    return 0;
+}
+
+# d in VISUAL — copy + delete + return to NORMAL.
+fn _visual_delete(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var lo = visual_selection_lo_at(s);
+    var hi = visual_selection_hi_at(s);
+    if (lo < 0) { return 0; }
+    _visual_capture_register(s, b, lo, hi);
+    _visual_delete_range(b, lo, hi);
+    editor_set_modified(s, 1);
+    return 0;
+}
+
+# Returns the saved-by-anchor selection lo even after dispatch flipped
+# mode back to NORMAL — yank/delete handlers fire AFTER the mode change.
+# Computes the same range visual_selection_lo would have returned, but
+# without the mode check.
+fn visual_selection_lo_at(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0 - 1; }
+    var anchor = editor_visual_anchor(s);
+    var cursor = buf_cursor(b);
+    var lo = anchor;
+    if (cursor < lo) { lo = cursor; }
+    return lo;
+}
+
+fn visual_selection_hi_at(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0 - 1; }
+    var anchor = editor_visual_anchor(s);
+    var cursor = buf_cursor(b);
+    var hi = anchor;
+    if (cursor > hi) { hi = cursor; }
+    return hi;
+}
+
+# p / P in NORMAL — insert register contents.
+#   p: after cursor (advance cursor by 1, then insert; cursor lands at
+#      end of pasted segment).
+#   P: before cursor (insert at current cursor; cursor lands at end of
+#      pasted segment, like P in vim).
+fn _visual_paste_after(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var data = editor_yank_register(s);
+    var n = editor_yank_register_len(s);
+    if (data == 0) { return 0; }
+    if (n == 0)    { return 0; }
+    var cursor = buf_cursor(b);
+    if (cursor < buf_len(b)) { buf_move(b, cursor + 1); }
+    buf_insert(b, data, n);
+    editor_set_modified(s, 1);
+    return 0;
+}
+
+fn _visual_paste_before(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var data = editor_yank_register(s);
+    var n = editor_yank_register_len(s);
+    if (data == 0) { return 0; }
+    if (n == 0)    { return 0; }
+    buf_insert(b, data, n);
+    editor_set_modified(s, 1);
+    return 0;
+}
+
+# Top-level visual-action handler. Returns 1 if it consumed the action.
+fn visual_apply(s, action) {
+    if (action == ACT_TO_VISUAL)       { _visual_on_enter(s); return 1; }
+    if (action == ACT_TO_VISUAL_LINE)  { _visual_on_enter(s); return 1; }
+    if (action == ACT_VISUAL_YANK)     { _visual_yank(s);   return 1; }
+    if (action == ACT_VISUAL_DELETE)   { _visual_delete(s); return 1; }
+    if (action == ACT_PASTE_AFTER)     { _visual_paste_after(s);  return 1; }
+    if (action == ACT_PASTE_BEFORE)    { _visual_paste_before(s); return 1; }
+    return 0;
+}

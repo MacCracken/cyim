@@ -1,0 +1,263 @@
+# search.cyr — `/pattern`, `?pattern`, `n`, `N`
+#
+# Reuses the COMMAND-mode cmdbuf for pattern entry: when `/` is pressed
+# in NORMAL, dispatch transitions to MODE_SEARCH and command_apply
+# (already wired) handles the per-byte cmdbuf grow/shrink. Enter fires
+# ACT_SEARCH_EXECUTE, which we handle here: snapshot the pattern as a
+# heap cstr, save the direction, scan, and move the cursor.
+#
+# `n` / `N` re-run the saved pattern in the saved / opposite direction.
+#
+# Algorithm: naive byte-wise substring scan with one wrap-around. The
+# scan starts from cursor + 1 (forward) or cursor - 1 (backward) so a
+# repeat doesn't lock onto the current match. M4 ships case-sensitive
+# only; `:set ic` is queued for bite 6.
+#
+# Requires: src/buffer.cyr, src/mode.cyr (consumer includes them
+# beforehand).
+
+# ── Pattern snapshot ────────────────────────────────────────────────
+
+# Copy the current cmdbuf into a NUL-terminated heap cstr and pin it
+# as the editor's last_search_pattern. Returns 0 on empty (caller is
+# expected to fall back to the previous pattern), 1 on success.
+fn _search_snapshot_pattern(s) {
+    var cb = editor_cmdbuf(s);
+    var n = buf_len(cb);
+    if (n == 0) { return 0; }
+    var p = alloc(n + 1);
+    var i = 0;
+    while (i < n) {
+        store8(p + i, buf_get(cb, i));
+        i = i + 1;
+    }
+    store8(p + n, 0);
+    editor_set_search_pattern(s, p);
+    return 1;
+}
+
+# ── Forward / backward scan ─────────────────────────────────────────
+
+# Fold a single byte to lowercase for case-insensitive comparison.
+fn _search_lower(c) {
+    if (c < 65) { return c; }
+    if (c > 90) { return c; }
+    return c + 32;
+}
+
+# Compare two bytes, optionally case-folded.
+fn _search_byte_eq(a, b, fold) {
+    if (fold == 1) { return _search_lower(a) == _search_lower(b); }
+    return a == b;
+}
+
+# Find the first occurrence of `pattern` (length `plen`) in `b` starting
+# at byte offset `from`. Returns the match position, or -1 if no match
+# in [from, buf_len). Used by both forward search (linear) and the
+# wrap-around fallback.
+fn _search_scan_forward(b, pattern, plen, from, fold) {
+    if (plen == 0) { return 0 - 1; }
+    var blen = buf_len(b);
+    if (plen > blen) { return 0 - 1; }
+    var limit = blen - plen;
+    var i = from;
+    if (i < 0) { i = 0; }
+    while (i <= limit) {
+        var matched = 1;
+        var j = 0;
+        while (j < plen) {
+            if (_search_byte_eq(buf_get(b, i + j), load8(pattern + j), fold) == 0) {
+                matched = 0;
+                j = plen;   # break the inner loop
+            }
+            j = j + 1;
+        }
+        if (matched == 1) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+# Find the last occurrence of `pattern` in `b` ending at byte offset
+# `<= upto`. Returns -1 if no match.
+fn _search_scan_backward(b, pattern, plen, upto, fold) {
+    if (plen == 0) { return 0 - 1; }
+    var blen = buf_len(b);
+    if (plen > blen) { return 0 - 1; }
+    var limit = upto;
+    if (limit > blen - plen) { limit = blen - plen; }
+    var i = limit;
+    while (i >= 0) {
+        var matched = 1;
+        var j = 0;
+        while (j < plen) {
+            if (_search_byte_eq(buf_get(b, i + j), load8(pattern + j), fold) == 0) {
+                matched = 0;
+                j = plen;
+            }
+            j = j + 1;
+        }
+        if (matched == 1) { return i; }
+        i = i - 1;
+    }
+    return 0 - 1;
+}
+
+# ── Public search entry points ──────────────────────────────────────
+
+# Search forward from cursor + 1. Wraps to start of buffer if no match
+# in the tail. Updates cursor on success. Returns 0 on success, -1 on
+# no match (last_error left to caller — search_apply sets ERR_*).
+fn search_forward(s) {
+    var pattern = editor_search_pattern(s);
+    if (pattern == 0) { return 0 - 1; }
+    var plen = strlen(pattern);
+    if (plen == 0) { return 0 - 1; }
+    var b = editor_buf(s);
+    if (b == 0) { return 0 - 1; }
+    var fold = editor_cfg_ignorecase(s);
+    var cursor = buf_cursor(b);
+    var hit = _search_scan_forward(b, pattern, plen, cursor + 1, fold);
+    if (hit < 0) {
+        hit = _search_scan_forward(b, pattern, plen, 0, fold);
+    }
+    if (hit < 0) { return 0 - 1; }
+    if (hit == cursor) { return 0 - 1; }
+    buf_move(b, hit);
+    return 0;
+}
+
+# Search backward from cursor - 1. Wraps to end of buffer if no match
+# in the head.
+fn search_backward(s) {
+    var pattern = editor_search_pattern(s);
+    if (pattern == 0) { return 0 - 1; }
+    var plen = strlen(pattern);
+    if (plen == 0) { return 0 - 1; }
+    var b = editor_buf(s);
+    if (b == 0) { return 0 - 1; }
+    var fold = editor_cfg_ignorecase(s);
+    var cursor = buf_cursor(b);
+    var hit = _search_scan_backward(b, pattern, plen, cursor - 1, fold);
+    if (hit < 0) {
+        hit = _search_scan_backward(b, pattern, plen, buf_len(b) - plen, fold);
+    }
+    if (hit < 0) { return 0 - 1; }
+    if (hit == cursor) { return 0 - 1; }
+    buf_move(b, hit);
+    return 0;
+}
+
+# ── Word-under-cursor extraction ────────────────────────────────────
+
+# Build a NUL-terminated heap cstr containing the word currently under
+# the cursor (a maximal run of CCLASS_WORD bytes containing the cursor
+# position). Returns 0 if the cursor isn't on a word char (cursor on
+# whitespace, punctuation, or past EOF).
+fn _search_word_under_cursor(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var cursor = buf_cursor(b);
+    var len = buf_len(b);
+    if (cursor >= len) { return 0; }
+    if (motion_cclass(buf_get(b, cursor)) != CCLASS_WORD) { return 0; }
+
+    var start = cursor;
+    var dn1 = 0;
+    while (dn1 == 0) {
+        if (start == 0) { dn1 = 1; }
+        if (dn1 == 0) {
+            if (motion_cclass(buf_get(b, start - 1)) != CCLASS_WORD) { dn1 = 1; }
+        }
+        if (dn1 == 0) { start = start - 1; }
+    }
+
+    var end = cursor;
+    var dn2 = 0;
+    while (dn2 == 0) {
+        if (end >= len) { dn2 = 1; }
+        if (dn2 == 0) {
+            if (motion_cclass(buf_get(b, end)) != CCLASS_WORD) { dn2 = 1; }
+        }
+        if (dn2 == 0) { end = end + 1; }
+    }
+
+    var wlen = end - start;
+    var p = alloc(wlen + 1);
+    var i = 0;
+    while (i < wlen) {
+        store8(p + i, buf_get(b, start + i));
+        i = i + 1;
+    }
+    store8(p + wlen, 0);
+    return p;
+}
+
+# ── Action handler ──────────────────────────────────────────────────
+
+# Top-level search-action handler. Returns 1 if the action was a search
+# action (so callers know it was consumed), 0 otherwise.
+fn search_apply(s, action, key) {
+    if (action == ACT_TO_SEARCH) {
+        # Reset cmdbuf for fresh pattern entry; default direction = forward.
+        buf_clear(editor_cmdbuf(s));
+        editor_set_search_direction(s, 0);
+        return 1;
+    }
+    if (action == ACT_TO_SEARCH_BACK) {
+        buf_clear(editor_cmdbuf(s));
+        editor_set_search_direction(s, 1);
+        return 1;
+    }
+    if (action == ACT_SEARCH_CANCEL) {
+        buf_clear(editor_cmdbuf(s));
+        return 1;
+    }
+    if (action == ACT_SEARCH_EXECUTE) {
+        var ok = _search_snapshot_pattern(s);
+        buf_clear(editor_cmdbuf(s));
+        if (ok == 0) {
+            # Empty pattern — fall back to last_search_pattern if any.
+            if (editor_search_pattern(s) == 0) { return 1; }
+        }
+        var rc = 0 - 1;
+        if (editor_search_direction(s) == 0) { rc = search_forward(s); }
+        else                                  { rc = search_backward(s); }
+        if (rc < 0) { editor_set_last_error(s, ERR_UNKNOWN_CMD); }
+        return 1;
+    }
+    if (action == ACT_SEARCH_REPEAT) {
+        var rc = 0 - 1;
+        if (editor_search_direction(s) == 0) { rc = search_forward(s); }
+        else                                  { rc = search_backward(s); }
+        if (rc < 0) { editor_set_last_error(s, ERR_UNKNOWN_CMD); }
+        return 1;
+    }
+    if (action == ACT_SEARCH_REPEAT_BACK) {
+        var rc = 0 - 1;
+        # `N` repeats in OPPOSITE direction.
+        if (editor_search_direction(s) == 0) { rc = search_backward(s); }
+        else                                  { rc = search_forward(s); }
+        if (rc < 0) { editor_set_last_error(s, ERR_UNKNOWN_CMD); }
+        return 1;
+    }
+    if (action == ACT_SEARCH_WORD_FWD) {
+        var w = _search_word_under_cursor(s);
+        if (w == 0) { return 1; }
+        editor_set_search_pattern(s, w);
+        editor_set_search_direction(s, 0);
+        var rc = search_forward(s);
+        if (rc < 0) { editor_set_last_error(s, ERR_UNKNOWN_CMD); }
+        return 1;
+    }
+    if (action == ACT_SEARCH_WORD_BACK) {
+        var w = _search_word_under_cursor(s);
+        if (w == 0) { return 1; }
+        editor_set_search_pattern(s, w);
+        editor_set_search_direction(s, 1);
+        var rc = search_backward(s);
+        if (rc < 0) { editor_set_last_error(s, ERR_UNKNOWN_CMD); }
+        return 1;
+    }
+    return 0;
+}

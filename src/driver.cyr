@@ -10,7 +10,61 @@
 # takes, just without the read(stdin) wrapper.
 #
 # Requires: src/buffer.cyr, src/mode.cyr, src/motion.cyr, src/insert.cyr,
-# src/edit.cyr, src/command.cyr (consumer includes them in that order).
+# src/edit.cyr, src/command.cyr, src/search.cyr, src/undo.cyr,
+# src/visual.cyr (consumer includes them in that order).
+
+# ── Dot-repeat tracking ─────────────────────────────────────────────
+# A "vim undo unit" is recorded into editor.dot_buf so `.` can replay
+# it. Today only insert sessions are captured (i/a/A → bytes → Esc);
+# x / paste / visual aren't dot-replayable yet (deferred to keep the
+# bite tight; the same hook structure will accept them later).
+
+fn _dot_begin(s, key) {
+    var db = editor_dot_buf(s);
+    if (db == 0) {
+        db = buf_new();
+        editor_set_dot_buf(s, db);
+    }
+    buf_clear(db);
+    editor_set_dot_entry_key(s, key);
+    editor_set_dot_recording(s, 1);
+    return 0;
+}
+
+fn _dot_record_byte(s, key) {
+    var db = editor_dot_buf(s);
+    if (db == 0) { return 0; }
+    buf_insert_byte(db, key);
+    return 0;
+}
+
+fn _dot_replay(s) {
+    var entry = editor_dot_entry_key(s);
+    if (entry == 0)               { return 0; }
+    var db = editor_dot_buf(s);
+    if (db == 0)                  { return 0; }
+    var n = buf_len(db);
+
+    # Snapshot the recorded bytes — the recursive editor_step calls
+    # below will rewrite dot_buf as they fire ACT_TO_INSERT and the
+    # subsequent ACT_INSERT_LITERAL chain.
+    var snap[2048];
+    if (n > 2048)                 { return 0; }
+    var i = 0;
+    while (i < n) {
+        store8(&snap + i, buf_get(db, i));
+        i = i + 1;
+    }
+
+    editor_step(s, entry);
+    var j = 0;
+    while (j < n) {
+        editor_step(s, load8(&snap + j));
+        j = j + 1;
+    }
+    editor_step(s, KEY_ESC);
+    return 0;
+}
 
 fn editor_step(s, key) {
     # Clear the previous status line at the top of every step so a
@@ -18,11 +72,47 @@ fn editor_step(s, key) {
     # one render frame.
     editor_set_status(s, 0);
     var action = editor_dispatch(s, key);
+
+    # Dot-repeat short-circuits the regular apply chain — the recursive
+    # editor_step calls inside _dot_replay run that chain themselves.
+    if (action == ACT_DOT_REPEAT) {
+        _dot_replay(s);
+        return action;
+    }
+
+    # Dot-repeat recording state machine:
+    # - Entering INSERT begins a fresh recording (clears dot_buf).
+    # - Each ACT_INSERT_LITERAL inside the session appends its byte.
+    # - Leaving INSERT (ACT_TO_NORMAL) finalizes; subsequent `.` replays.
+    if (action == ACT_TO_INSERT)         { _dot_begin(s, key); }
+    if (action == ACT_TO_INSERT_AFTER)   { _dot_begin(s, key); }
+    if (action == ACT_TO_INSERT_LINE_END) { _dot_begin(s, key); }
+    if (action == ACT_INSERT_LITERAL) {
+        if (editor_dot_recording(s) == 1) { _dot_record_byte(s, key); }
+    }
+    if (action == ACT_TO_NORMAL) {
+        if (editor_dot_recording(s) == 1) { editor_set_dot_recording(s, 0); }
+    }
+
+    # Record an undo snapshot BEFORE any mutating handler runs. The
+    # boundary covers the "vim undo unit": entering INSERT records once
+    # for the whole insert session; NORMAL-mode edits (like `x`) record
+    # their own. Adding a new editing action just adds an `if` here.
+    if (action == ACT_TO_INSERT)         { undo_record_pre_op(s); }
+    if (action == ACT_TO_INSERT_AFTER)   { undo_record_pre_op(s); }
+    if (action == ACT_TO_INSERT_LINE_END) { undo_record_pre_op(s); }
+    if (action == ACT_DELETE_RIGHT)      { undo_record_pre_op(s); }
+    if (action == ACT_VISUAL_DELETE)     { undo_record_pre_op(s); }
+    if (action == ACT_PASTE_AFTER)       { undo_record_pre_op(s); }
+    if (action == ACT_PASTE_BEFORE)      { undo_record_pre_op(s); }
     insert_apply(s, action, key);
     motion_apply(s, action);
     edit_apply(s, action);
     command_apply(s, action, key);
     window_apply(s, action);
+    search_apply(s, action, key);
+    undo_apply(s, action);
+    visual_apply(s, action);
     return action;
 }
 

@@ -1,0 +1,142 @@
+# tests/dot.tcyr — `.` (repeat last edit)
+#
+# Drives editor_step so the dot-recording state machine fires through
+# the same code path the binary takes. Today's recording covers insert
+# sessions (i/a/A → bytes → Esc); x / paste / visual edits aren't
+# captured yet (deferred per M4.5 scope notes).
+
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+
+fn buf_eq(b, expected, n) {
+    if (buf_len(b) != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (buf_get(b, i) != load8(expected + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("After iabc<Esc>, dot_buf holds 'abc' and entry_key = 'i'");
+    var b1 = buf_new();
+    var s1 = editor_new(b1);
+    bl_init(s1, b1);
+    editor_step(s1, 105); # i
+    editor_step(s1, 97);
+    editor_step(s1, 98);
+    editor_step(s1, 99);
+    editor_step(s1, 27);  # Esc
+    assert_eq(editor_dot_recording(s1), 0, "recording finalized");
+    assert_eq(editor_dot_entry_key(s1), 105, "entry key is 'i'");
+    var db = editor_dot_buf(s1);
+    assert_nonnull(db, "dot_buf allocated");
+    assert_eq(buf_eq(db, "abc", 3), 1, "dot_buf == 'abc'");
+
+    test_group(". replays the last insert at the current cursor");
+    # Cursor is on 'c' (pos 2) after Esc step-back. Move to start.
+    buf_move(b1, 0);
+    editor_step(s1, 46);  # .
+    # Replay: i (cursor stays 0) + 'a' (insert at 0) + 'b' + 'c' + Esc.
+    # Expected: "abc" inserted before original "abc" → "abcabc". Cursor
+    # post-Esc step-back: 2.
+    assert_eq(buf_eq(b1, "abcabc", 6), 1, "buffer is 'abcabc' after .");
+
+    test_group("multiple . replays accumulate");
+    buf_move(b1, 0);
+    editor_step(s1, 46);  # .
+    # Now buffer should have another "abc" inserted at start: "abcabcabc"... wait
+    # Actually the replay inserts at cursor 0, which produces "abc" prepended → "abcabcabc".
+    assert_eq(buf_eq(b1, "abcabcabc", 9), 1, "second . prepends another 'abc'");
+
+    test_group("a (append) is recorded with entry_key = 97");
+    var b2 = buf_new();
+    buf_insert(b2, "X", 1);
+    buf_move(b2, 0);
+    var s2 = editor_new(b2);
+    bl_init(s2, b2);
+    editor_step(s2, 97);  # a — cursor moves to 1, INSERT
+    editor_step(s2, 89);  # Y
+    editor_step(s2, 27);  # Esc
+    assert_eq(buf_eq(b2, "XY", 2), 1, "buffer is 'XY' after aY<Esc>");
+    assert_eq(editor_dot_entry_key(s2), 97, "entry key is 'a'");
+    assert_eq(buf_eq(editor_dot_buf(s2), "Y", 1), 1, "dot_buf == 'Y'");
+    # Replay at end: cursor was at 0 (Esc step-back), . will fire `a` (advance
+    # cursor by 1 to 1, insert mode), then 'Y' (insert at 1), Esc.
+    editor_step(s2, 46);
+    # Expected: original "XY", `a` from cursor 0 → cursor 1 (on 'Y'),
+    # 'Y' inserted at 1 → "XYYY"... wait let me re-trace.
+    # After previous edit: buf = "XY", cursor = 0 (Esc step-back from 1).
+    # `a` advances cursor to 1 (on 'Y'). `Y` inserts at 1 → "XYY", cursor=2.
+    # Esc → cursor=1.
+    assert_eq(buf_eq(b2, "XYY", 3), 1, "after . at start: 'XYY'");
+
+    test_group(". with no prior edit is a safe no-op");
+    var b3 = buf_new();
+    buf_insert(b3, "abc", 3);
+    buf_move(b3, 0);
+    var s3 = editor_new(b3);
+    bl_init(s3, b3);
+    editor_step(s3, 46);  # . — no prior edit
+    assert_eq(buf_eq(b3, "abc", 3), 1, "buffer unchanged");
+
+    test_group("New insert overrides the dot_buf for next .");
+    var b4 = buf_new();
+    var s4 = editor_new(b4);
+    bl_init(s4, b4);
+    editor_step(s4, 105); editor_step(s4, 65); editor_step(s4, 27); # iA<Esc>
+    assert_eq(buf_eq(editor_dot_buf(s4), "A", 1), 1, "dot_buf == 'A'");
+    editor_step(s4, 105); editor_step(s4, 90); editor_step(s4, 27); # iZ<Esc>
+    assert_eq(buf_eq(editor_dot_buf(s4), "Z", 1), 1, "dot_buf overwritten to 'Z'");
+    # After iA<Esc>iZ<Esc>: buf is "ZA" (Z inserted at 0 in front of A),
+    # cursor at 0. `.` replays "iZ<Esc>" at cursor 0 — inserts another Z
+    # at the front: "ZZA".
+    buf_move(b4, 0);
+    editor_step(s4, 46);  # .
+    assert_eq(buf_eq(b4, "ZZA", 3), 1, "after . at start: 'ZZA'");
+
+    test_group(". on empty insert session (i<Esc>) replays nothing");
+    var b5 = buf_new();
+    buf_insert(b5, "x", 1);
+    buf_move(b5, 0);
+    var s5 = editor_new(b5);
+    bl_init(s5, b5);
+    editor_step(s5, 105); editor_step(s5, 27); # i<Esc> — empty session
+    assert_eq(editor_dot_entry_key(s5), 105, "entry recorded");
+    assert_eq(buf_len(editor_dot_buf(s5)), 0, "dot_buf empty");
+    editor_step(s5, 46);  # .
+    assert_eq(buf_eq(b5, "x", 1), 1, "buffer unchanged on empty replay");
+
+    test_group("dot recording isolated per buffer");
+    var b6a = buf_new();
+    var s6 = editor_new(b6a);
+    bl_init(s6, b6a);
+    editor_step(s6, 105); editor_step(s6, 65); editor_step(s6, 27); # iA<Esc>
+    var b6b = buf_new();
+    bl_add(s6, b6b, "second");
+    bl_set_active(s6, 1);
+    # Switching buffers does not clear dot state — dot is editor-global,
+    # not per-buffer. (Vim's behavior matches; the last edit can be
+    # repeated in any buffer.)
+    assert_eq(buf_eq(editor_dot_buf(s6), "A", 1), 1, "dot_buf preserved across buffer switch");
+    editor_step(s6, 46);  # . in second buffer
+    assert_eq(buf_eq(editor_buf(s6), "A", 1), 1, "second buffer received 'A'");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);
