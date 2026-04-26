@@ -32,6 +32,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ICANON / IEXTEN / ISIG and forces CS8 while preserving bystander bits,
   VMIN=1 / VTIME=0 are forced, the mask is idempotent (fixed point), and
   `tty_itoa` formats 0 / 7 / 42 / 1024 correctly.
+- `src/mode.cyr` — modal dispatch state machine: `editor_new(buf)`,
+  `editor_dispatch(s, key)`, `editor_drive(s, keys, n, out_actions)`
+  (headless agent-drive entry point). Three modes (NORMAL / INSERT /
+  COMMAND); single-byte NORMAL keymap (`h j k l 0 $ w b G x i a A :`)
+  via `map_u64`; INSERT and COMMAND fall through to literal-insert /
+  cmdline-append by default with hard-coded specials for Esc / Enter /
+  Backspace / DEL. Stable action-id enum with numbered groups so future
+  actions land without renumbering. Multi-byte sequences (gg, dd, arrow
+  escapes) deferred.
+- `tests/dispatch.tcyr` — 57 assertions over 16 groups covering each
+  motion, mode-default, every transition path, Backspace/DEL/Enter/LF
+  equivalences, and an 8-key headless drive (`i H i Esc l : q Enter`)
+  that asserts the full action sequence and final mode.
 
 ## [0.1.0] — 2026-04-25
 

@@ -1,0 +1,160 @@
+# mode.cyr — modal dispatch for cyim
+#
+# A vi-style modal editor is a state machine: the same byte means different
+# things depending on what mode you're in. This module owns that state
+# machine and the keymap tables that drive it.
+#
+# Two consumer classes share this surface:
+#   - Humans at a TTY — the byte stream comes from stdin in raw mode.
+#   - Agents driving programmatically — the byte stream comes from a buffer.
+# Both call the same `editor_dispatch(s, key)`. The headless driver
+# (`editor_drive`) is the API surface for the second case; per the roadmap
+# it lands inside M1 rather than as a post-v1.0 retrofit.
+#
+# Action IDs are a stable enum. Mode-transitioning actions (ACT_TO_*) update
+# `state.mode` inside dispatch as a side effect — the caller doesn't need
+# to special-case them. Motions, edits, and other in-mode actions leave
+# the mode unchanged; the caller is expected to apply them to the buffer.
+#
+# Multi-byte sequences (gg, dd, di(, escape codes for arrow keys, ...) are
+# NOT handled here yet. They need a small parsing state on top of the byte
+# stream; deferred to a later bite. This module does single-byte mappings
+# and the three mode-state defaults (literal-insert, cmdline-append).
+
+# ──── Modes ────────────────────────────────────────────────────────────
+var MODE_NORMAL  = 0;
+var MODE_INSERT  = 1;
+var MODE_COMMAND = 2;
+
+# ──── Action IDs ──────────────────────────────────────────────────────
+# 0 is reserved for "no-op / unmapped". Numeric gaps left between groups
+# so future actions can land without renumbering.
+var ACT_NONE              = 0;
+
+# Mode-default actions (the dispatcher returns these for unmapped bytes
+# in INSERT / COMMAND so the caller knows to consume the byte).
+var ACT_INSERT_LITERAL    = 1;
+var ACT_DELETE_LEFT       = 2;
+var ACT_CMDLINE_APPEND    = 3;
+var ACT_CMDLINE_BACKSPACE = 4;
+
+# Mode transitions — the dispatcher updates `state.mode` itself.
+var ACT_TO_NORMAL         = 10;
+var ACT_TO_INSERT         = 11;
+var ACT_TO_INSERT_AFTER   = 12;
+var ACT_TO_INSERT_LINE_END = 13;
+var ACT_TO_COMMAND        = 20;
+var ACT_CMDLINE_EXECUTE   = 21;
+var ACT_CMDLINE_CANCEL    = 22;
+
+# NORMAL-mode motions (single-byte for now).
+var ACT_MOVE_LEFT         = 100;
+var ACT_MOVE_DOWN         = 101;
+var ACT_MOVE_UP           = 102;
+var ACT_MOVE_RIGHT        = 103;
+var ACT_MOVE_LINE_START   = 104;
+var ACT_MOVE_LINE_END     = 105;
+var ACT_MOVE_WORD_FWD     = 106;
+var ACT_MOVE_WORD_BACK    = 107;
+var ACT_MOVE_FILE_END     = 108;
+
+# NORMAL-mode edits.
+var ACT_DELETE_RIGHT      = 200;
+
+# ──── Key codes (ASCII / control) ─────────────────────────────────────
+var KEY_ESC       = 27;
+var KEY_ENTER     = 13;
+var KEY_LF        = 10;
+var KEY_BACKSPACE = 8;
+var KEY_DEL       = 127;
+
+# ──── EditorState layout (24 bytes) ───────────────────────────────────
+#   off  0  mode  i64  current mode (MODE_*)
+#   off  8  buf   i64  pointer to gap-buffer (may be 0 in tests)
+#   off 16  nmap  i64  pointer to NORMAL-mode keymap (map_u64)
+
+fn editor_new(buf) {
+    var s = alloc(24);
+    store64(s, MODE_NORMAL);
+    store64(s + 8, buf);
+    var nmap = map_u64_new();
+    _seed_normal_keymap(nmap);
+    store64(s + 16, nmap);
+    return s;
+}
+
+fn editor_mode(s) { return load64(s); }
+fn editor_buf(s)  { return load64(s + 8); }
+
+fn editor_set_mode(s, m) {
+    store64(s, m);
+    return 0;
+}
+
+# Seed NORMAL-mode keymap with the canonical single-byte vi mappings.
+fn _seed_normal_keymap(m) {
+    map_u64_set(m, 104, ACT_MOVE_LEFT);        # h
+    map_u64_set(m, 106, ACT_MOVE_DOWN);        # j
+    map_u64_set(m, 107, ACT_MOVE_UP);          # k
+    map_u64_set(m, 108, ACT_MOVE_RIGHT);       # l
+    map_u64_set(m, 48,  ACT_MOVE_LINE_START);  # 0
+    map_u64_set(m, 36,  ACT_MOVE_LINE_END);    # $
+    map_u64_set(m, 119, ACT_MOVE_WORD_FWD);    # w
+    map_u64_set(m, 98,  ACT_MOVE_WORD_BACK);   # b
+    map_u64_set(m, 71,  ACT_MOVE_FILE_END);    # G
+    map_u64_set(m, 120, ACT_DELETE_RIGHT);     # x
+    map_u64_set(m, 105, ACT_TO_INSERT);        # i
+    map_u64_set(m, 97,  ACT_TO_INSERT_AFTER);  # a
+    map_u64_set(m, 65,  ACT_TO_INSERT_LINE_END); # A
+    map_u64_set(m, 58,  ACT_TO_COMMAND);       # :
+    return 0;
+}
+
+# Translate one input byte into an action and update mode-state if the action
+# is a mode transition. Returns the action id; the caller is responsible for
+# applying its semantics (motion, insert, command-line append, ...) using
+# the `key` argument when the action is a literal-byte default.
+fn editor_dispatch(s, key) {
+    var mode = load64(s);
+
+    if (mode == MODE_NORMAL) {
+        var act = map_u64_get(load64(s + 16), key);
+        if (act == ACT_TO_INSERT)         { store64(s, MODE_INSERT);  return act; }
+        if (act == ACT_TO_INSERT_AFTER)   { store64(s, MODE_INSERT);  return act; }
+        if (act == ACT_TO_INSERT_LINE_END) { store64(s, MODE_INSERT); return act; }
+        if (act == ACT_TO_COMMAND)        { store64(s, MODE_COMMAND); return act; }
+        return act;
+    }
+
+    if (mode == MODE_INSERT) {
+        if (key == KEY_ESC)       { store64(s, MODE_NORMAL); return ACT_TO_NORMAL; }
+        if (key == KEY_DEL)       { return ACT_DELETE_LEFT; }
+        if (key == KEY_BACKSPACE) { return ACT_DELETE_LEFT; }
+        return ACT_INSERT_LITERAL;
+    }
+
+    if (mode == MODE_COMMAND) {
+        if (key == KEY_ESC)       { store64(s, MODE_NORMAL); return ACT_CMDLINE_CANCEL; }
+        if (key == KEY_ENTER)     { store64(s, MODE_NORMAL); return ACT_CMDLINE_EXECUTE; }
+        if (key == KEY_LF)        { store64(s, MODE_NORMAL); return ACT_CMDLINE_EXECUTE; }
+        if (key == KEY_DEL)       { return ACT_CMDLINE_BACKSPACE; }
+        if (key == KEY_BACKSPACE) { return ACT_CMDLINE_BACKSPACE; }
+        return ACT_CMDLINE_APPEND;
+    }
+
+    return ACT_NONE;
+}
+
+# Headless drive: walk a byte array of length `n` through the dispatcher,
+# writing the action id produced by each byte into `out_actions[i]`.
+# Returns `n`. This is the agent-drive API surface — the same code path
+# a TTY consumer takes, just fed from a buffer instead of stdin.
+fn editor_drive(s, keys, n, out_actions) {
+    var i = 0;
+    while (i < n) {
+        var act = editor_dispatch(s, load8(keys + i));
+        store64(out_actions + i * 8, act);
+        i = i + 1;
+    }
+    return n;
+}

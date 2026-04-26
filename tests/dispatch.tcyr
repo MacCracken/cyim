@@ -1,0 +1,139 @@
+# tests/dispatch.tcyr — modal dispatch state machine
+#
+# Tests the keymap → action translation and mode-transition side effects.
+# Buffer ops aren't exercised here; bites 5–7 cover those. This bite proves
+# the API surface is right for both the human-TTY and headless-agent drivers.
+
+include "src/mode.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("editor_new defaults");
+    var s = editor_new(0);
+    assert_nonnull(s, "state alloc");
+    assert_eq(editor_mode(s), MODE_NORMAL, "starts in NORMAL");
+    assert_eq(editor_buf(s), 0, "buf passthrough");
+
+    test_group("NORMAL: hjkl motions");
+    assert_eq(editor_dispatch(s, 104), ACT_MOVE_LEFT, "h -> MOVE_LEFT");
+    assert_eq(editor_mode(s), MODE_NORMAL, "h does not transition");
+    assert_eq(editor_dispatch(s, 106), ACT_MOVE_DOWN, "j -> MOVE_DOWN");
+    assert_eq(editor_dispatch(s, 107), ACT_MOVE_UP, "k -> MOVE_UP");
+    assert_eq(editor_dispatch(s, 108), ACT_MOVE_RIGHT, "l -> MOVE_RIGHT");
+
+    test_group("NORMAL: line / word / file motions");
+    assert_eq(editor_dispatch(s, 48),  ACT_MOVE_LINE_START, "0 -> LINE_START");
+    assert_eq(editor_dispatch(s, 36),  ACT_MOVE_LINE_END,   "$ -> LINE_END");
+    assert_eq(editor_dispatch(s, 119), ACT_MOVE_WORD_FWD,   "w -> WORD_FWD");
+    assert_eq(editor_dispatch(s, 98),  ACT_MOVE_WORD_BACK,  "b -> WORD_BACK");
+    assert_eq(editor_dispatch(s, 71),  ACT_MOVE_FILE_END,   "G -> FILE_END");
+
+    test_group("NORMAL: x deletes right");
+    assert_eq(editor_dispatch(s, 120), ACT_DELETE_RIGHT, "x -> DELETE_RIGHT");
+    assert_eq(editor_mode(s), MODE_NORMAL, "x does not transition");
+
+    test_group("NORMAL: unmapped byte returns ACT_NONE");
+    # 'q' (113) is unmapped in NORMAL — :q is the COMMAND-mode path.
+    assert_eq(editor_dispatch(s, 113), ACT_NONE, "q -> NONE in NORMAL");
+    # Random control byte
+    assert_eq(editor_dispatch(s, 7),   ACT_NONE, "BEL -> NONE");
+
+    test_group("NORMAL -> INSERT via i");
+    assert_eq(editor_dispatch(s, 105), ACT_TO_INSERT, "i -> TO_INSERT");
+    assert_eq(editor_mode(s), MODE_INSERT, "mode now INSERT");
+
+    test_group("INSERT: arbitrary printable -> INSERT_LITERAL");
+    # In INSERT, every non-special byte becomes a literal-insert. The byte
+    # itself is the data — dispatch returns the action id only; the caller
+    # already has the byte.
+    assert_eq(editor_dispatch(s, 97),  ACT_INSERT_LITERAL, "'a' -> LITERAL");
+    assert_eq(editor_mode(s), MODE_INSERT, "still INSERT");
+    assert_eq(editor_dispatch(s, 32),  ACT_INSERT_LITERAL, "space -> LITERAL");
+    assert_eq(editor_dispatch(s, 126), ACT_INSERT_LITERAL, "~ -> LITERAL");
+
+    test_group("INSERT: backspace + DEL both -> DELETE_LEFT");
+    assert_eq(editor_dispatch(s, 127), ACT_DELETE_LEFT, "DEL -> DELETE_LEFT");
+    assert_eq(editor_mode(s), MODE_INSERT, "BS does not transition");
+    assert_eq(editor_dispatch(s, 8),   ACT_DELETE_LEFT, "^H -> DELETE_LEFT");
+
+    test_group("INSERT: Esc -> NORMAL");
+    assert_eq(editor_dispatch(s, 27), ACT_TO_NORMAL, "Esc -> TO_NORMAL");
+    assert_eq(editor_mode(s), MODE_NORMAL, "back to NORMAL");
+
+    test_group("NORMAL -> INSERT via a / A");
+    assert_eq(editor_dispatch(s, 97), ACT_TO_INSERT_AFTER, "a -> TO_INSERT_AFTER");
+    assert_eq(editor_mode(s), MODE_INSERT, "now INSERT (from a)");
+    editor_dispatch(s, 27);  # back to NORMAL
+    assert_eq(editor_mode(s), MODE_NORMAL, "Esc returns to NORMAL");
+
+    assert_eq(editor_dispatch(s, 65), ACT_TO_INSERT_LINE_END, "A -> TO_INSERT_LINE_END");
+    assert_eq(editor_mode(s), MODE_INSERT, "now INSERT (from A)");
+    editor_dispatch(s, 27);
+
+    test_group("NORMAL -> COMMAND via :");
+    assert_eq(editor_dispatch(s, 58), ACT_TO_COMMAND, ": -> TO_COMMAND");
+    assert_eq(editor_mode(s), MODE_COMMAND, "now COMMAND");
+
+    test_group("COMMAND: arbitrary byte -> CMDLINE_APPEND");
+    assert_eq(editor_dispatch(s, 113), ACT_CMDLINE_APPEND, "q -> APPEND");
+    assert_eq(editor_mode(s), MODE_COMMAND, "still COMMAND");
+    assert_eq(editor_dispatch(s, 32),  ACT_CMDLINE_APPEND, "space -> APPEND");
+
+    test_group("COMMAND: backspace + DEL both -> CMDLINE_BACKSPACE");
+    assert_eq(editor_dispatch(s, 127), ACT_CMDLINE_BACKSPACE, "DEL -> CMD_BS");
+    assert_eq(editor_dispatch(s, 8),   ACT_CMDLINE_BACKSPACE, "^H -> CMD_BS");
+
+    test_group("COMMAND: Enter / LF -> EXECUTE + back to NORMAL");
+    assert_eq(editor_dispatch(s, 13), ACT_CMDLINE_EXECUTE, "CR -> EXECUTE");
+    assert_eq(editor_mode(s), MODE_NORMAL, "EXECUTE returns to NORMAL");
+
+    # Re-enter COMMAND, then test LF transition
+    editor_dispatch(s, 58);
+    assert_eq(editor_mode(s), MODE_COMMAND, "back in COMMAND");
+    assert_eq(editor_dispatch(s, 10), ACT_CMDLINE_EXECUTE, "LF -> EXECUTE");
+    assert_eq(editor_mode(s), MODE_NORMAL, "back to NORMAL after LF");
+
+    test_group("COMMAND: Esc -> CANCEL + back to NORMAL");
+    editor_dispatch(s, 58);  # NORMAL -> COMMAND
+    editor_dispatch(s, 113); # 'q' appended
+    assert_eq(editor_dispatch(s, 27), ACT_CMDLINE_CANCEL, "Esc -> CANCEL");
+    assert_eq(editor_mode(s), MODE_NORMAL, "CANCEL returns to NORMAL");
+
+    test_group("editor_drive: end-to-end key sequence");
+    # Drive the canonical "edit a buffer" sequence:
+    #   i  H  i  Esc  l   :   q   Enter
+    # Expected actions:
+    #   TO_INSERT, LITERAL, LITERAL, TO_NORMAL, MOVE_RIGHT, TO_COMMAND, CMDLINE_APPEND, CMDLINE_EXECUTE
+    # And the final mode is NORMAL.
+    var s2 = editor_new(0);
+    var keys[8];
+    store8(&keys + 0, 105); # i
+    store8(&keys + 1, 72);  # H
+    store8(&keys + 2, 105); # i (literal in INSERT)
+    store8(&keys + 3, 27);  # Esc
+    store8(&keys + 4, 108); # l
+    store8(&keys + 5, 58);  # :
+    store8(&keys + 6, 113); # q
+    store8(&keys + 7, 13);  # Enter
+
+    var actions[64];
+    var n = editor_drive(s2, &keys, 8, &actions);
+    assert_eq(n, 8, "drive returns key count");
+
+    assert_eq(load64(&actions + 0),  ACT_TO_INSERT,        "[0] TO_INSERT");
+    assert_eq(load64(&actions + 8),  ACT_INSERT_LITERAL,   "[1] H -> LITERAL");
+    assert_eq(load64(&actions + 16), ACT_INSERT_LITERAL,   "[2] i in INSERT -> LITERAL");
+    assert_eq(load64(&actions + 24), ACT_TO_NORMAL,        "[3] Esc -> TO_NORMAL");
+    assert_eq(load64(&actions + 32), ACT_MOVE_RIGHT,       "[4] l -> MOVE_RIGHT");
+    assert_eq(load64(&actions + 40), ACT_TO_COMMAND,       "[5] : -> TO_COMMAND");
+    assert_eq(load64(&actions + 48), ACT_CMDLINE_APPEND,   "[6] q -> APPEND");
+    assert_eq(load64(&actions + 56), ACT_CMDLINE_EXECUTE,  "[7] CR -> EXECUTE");
+
+    assert_eq(editor_mode(s2), MODE_NORMAL, "ends in NORMAL");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);
