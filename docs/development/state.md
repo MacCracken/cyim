@@ -31,7 +31,10 @@
 - **M2** — syntax highlighting via `vyakarana`. *Done.*
 - **M3** — multi-buffer + splits + window navigation. *Done.*
 - **M4** — search, undo, visual, `.` repeat, `:set` + `.cyimrc`. *Done.* All 6 bites landed.
-- **M5 (next)** — polish, perf benchmarks, docs, agnoshi + aethersafha integration. v1.0 target. See [`roadmap.md`](roadmap.md).
+- **M5 (next)** — polish: docs pass, perf benchmarks (1 / 10 / 100 MB fixtures), fuzz the tokenizer + gap-buffer + driver. Consumer integration (`agnoshi`, `aethersafha`) deferred to those projects. See [`roadmap.md`](roadmap.md).
+- **M6** — P(-1) hardening: cleanliness gate, internal deep review, refactor pass, dead-code audit, doc audit.
+- **M7** — Security audit: external 0-day / CVE corpus review (vim, neovim, terminal apps), security-hardening checklist, audit report; CRITICAL / HIGH closed before v1.0.
+- **v1.0** — release; downstream consumers take over.
 
 ## Consumers
 

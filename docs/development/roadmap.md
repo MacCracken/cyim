@@ -115,18 +115,120 @@ editing session.
 
 ---
 
-## Milestone 5 — Polish & v1.0
+## Milestone 5 — Polish
+
+**Goal:** the editor stops surprising you. Edges smoothed, perf measured,
+fuzz catches the next class of bugs.
+
+- **Documentation pass**:
+  - `docs/usage.md` — getting started; day-1 vim user moving to cyim
+  - `docs/keymap.md` — full reference (NORMAL / INSERT / COMMAND /
+    SEARCH / VISUAL keymaps; Ctrl-w prefix; `:` ex-style commands)
+  - `docs/cyimrc.md` — config schema; every `:set` option; palette
+    overrides; bundled-grammar list
+  - `docs/architecture/` ADRs as earned during the loop
+- **Performance pass**:
+  - Large-file fixtures: 1 MB / 10 MB / 100 MB
+  - Open + load + render-frame cost (per-leaf retokenize is the obvious
+    M5 hot-path candidate; M2 left a "deferred until perf surfaces"
+    note specifically here)
+  - Search latency on 100 MB
+  - Track in `BENCHMARKS.md`; numbers vs. claims in CHANGELOG
+- **Stability pass**:
+  - Fuzz the tokenizer → highlighter pipeline (random bytes; vyakarana
+    already ships fuzz infra to borrow against)
+  - Fuzz the gap-buffer (random `insert`/`delete`/`move` sequences)
+  - Fuzz the `editor_step` driver (random keystroke sequences against
+    random fixtures — exercises the dispatch / undo / dot interactions)
+- **Receipts**: lines-of-code, binary size, .tcyr assertion count,
+  PTY-smoke check count, all vs. `vim`/`neovim` baselines
+
+**Done when:** docs read end-to-end, benchmarks land in `BENCHMARKS.md`,
+fuzz harnesses run clean for a sustained run.
+
+> **Consumer integration** (`agnoshi`, `aethersafha`) is owner-driven
+> from the consumer side and tracked in those projects — when each
+> consumer is ready to embed cyim, that work happens there, not here.
+
+---
+
+## Milestone 6 — P(-1) Hardening
+
+**Goal:** internal review pass before going public — per CLAUDE.md's
+P(-1) discipline, applied to the whole codebase now that the editor is
+feature-complete.
+
+- **Cleanliness gate**: `cyrius build`, `cyrius lint`, `cyrius audit`
+  all clean on every source file
+- **Internal deep review** — gaps, optimizations, correctness, docs;
+  walk every module end-to-end with a fresh head
+- **Performance deltas vs. M5 baseline** — prove the wins from any
+  M6 changes against the M5 numbers, or accept the cost in writing
+- **Refactor pass** — consolidate parallel codepaths that accreted
+  through M1–M4 (e.g. the per-mode dispatch arms in `editor_dispatch`,
+  the duplicated cmdline-prefix render arms in `render.cyr`)
+- **Dead code audit** — record the floor in CHANGELOG; remove
+  unreferenced helpers
+- **Additional tests / benchmarks** from review findings
+- **Documentation audit** — ADRs for decisions made during the
+  hardening loop; source citations for any non-obvious algorithm or
+  reference; user-facing guides updated
+
+**Done when:** the internal review notebook is empty; perf is justified
+or improved; refactor pass produces zero behavior change.
+
+---
+
+## Milestone 7 — Security Audit
+
+**Goal:** external CVE corpus review + security findings filed.
+The "external research around 0-days and CVEs" half of P(-1), elevated
+to its own milestone because the editor's threat model deserves a
+dedicated drill.
+
+- **External research**:
+  - vim CVE history — modeline RCE, escape-sequence injection, regex
+    catastrophic backtracking, integer overflow in Ex-mode
+  - neovim CVE history — Lua sandbox escapes (N/A for cyim by design,
+    but instructive for the no-embedded-scripting refusal)
+  - terminal-app CVE patterns — escape-sequence handling, large-input
+    DoS, paste-as-command attacks
+  - File the corpus survey in `docs/security/0day-corpus-YYYY-MM-DD.md`
+- **Security audit** per CLAUDE.md's security-hardening checklist:
+  1. **Input validation** — file content, key escape sequences, command-
+     mode input all bounds-checked
+  2. **Buffer safety** — every `var buf[N]` verified; gap-buffer bounds
+     tested at edges; no memory-corrupting overruns
+  3. **Syscall review** — termios, read/write, fs syscalls all checked:
+     args, return values, error paths
+  4. **Pointer validation** — no raw pointer dereference of untrusted
+     input without bounds
+  5. **No command injection** — no `:!cmd` shipped (still); confirm
+     `exec_vec()` if it ever lands; never `sys_system()` with
+     unsanitized input
+  6. **No path traversal** — `:e <path>` validates if a restricted-
+     mode lands; document the assumed trust model
+  7. **Document findings** in `docs/audit/YYYY-MM-DD-audit.md` with
+     severity (CRITICAL / HIGH / MEDIUM / LOW)
+  8. **Triage**: CRITICAL / HIGH MUST be fixed before v1.0; MEDIUM /
+     LOW tracked with explicit rationale
+
+**Done when:** audit report filed; all CRITICAL / HIGH findings closed;
+the 0-day corpus survey is checked in and referenced from CHANGELOG.
+
+---
+
+## Milestone v1.0 — Release
 
 **Goal:** ship.
 
-- Documentation pass: `docs/usage.md`, `docs/keymap.md`, `docs/cyimrc.md`
-- Performance pass: large-file (10MB+) edit benchmarks
-- Stability pass: fuzz the tokenizer→highlighter pipeline on random bytes
-- `agnoshi` integration verified end-to-end
-- `aethersafha` integration verified end-to-end (Wayland)
-- Receipts: lines-of-code, binary size, vs. `vim`/`neovim` baselines
+- `VERSION` = `1.0.0`
+- All M0–M7 work landed, audited, documented
+- CHANGELOG header in sync; closeout pass per CLAUDE.md run end-to-end
+- Tag, release notes, downstream consumers (`agnoshi`, `aethersafha`,
+  `daimon`-orchestrated agents) take over from here
 
-**Done when:** the user is editing AGNOS code in cyim daily.
+**Done when:** `git tag 1.0.0` is pushed and the release workflow passes.
 
 ---
 
@@ -165,4 +267,4 @@ in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-04-25 (v0.1.0 scaffold)*
+*Last updated: 2026-04-25 (M0–M4 landed; M5 polish, M6 P(-1) hardening, M7 security audit pre-v1.0)*
