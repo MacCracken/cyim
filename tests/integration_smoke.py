@@ -181,10 +181,62 @@ def main():
     )
     ok &= assert_eq(out, b"dabcef\n", "vlld then p produces 'dabcef'")
 
+    print("=== --write: stdin replaces file content ===")
+    import subprocess
+    write_fixture = "/tmp/cyim-write-fixture.txt"
+    with open(write_fixture, "wb") as f:
+        f.write(b"OLD CONTENT\n")
+    proc = subprocess.run(
+        [CYIM, "--write", write_fixture],
+        input=b"replaced\n",
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --write exited {proc.returncode}")
+        ok = False
+    else:
+        with open(write_fixture, "rb") as f:
+            ok &= assert_eq(f.read(), b"replaced\n", "--write replaces file with stdin")
+
+    print("=== --replace: unique OLD substitutes; non-unique exits 5 ===")
+    repl_fixture = "/tmp/cyim-replace-fixture.txt"
+    # Unique-mode success
+    with open(repl_fixture, "wb") as f:
+        f.write(b"alpha foo bravo\n")
+    proc = subprocess.run([CYIM, "--replace", b"foo", b"BAR", repl_fixture], timeout=5)
+    if proc.returncode != 0:
+        print(f"  FAIL: --replace exited {proc.returncode}")
+        ok = False
+    else:
+        with open(repl_fixture, "rb") as f:
+            ok &= assert_eq(f.read(), b"alpha BAR bravo\n", "--replace substituted unique OLD")
+    # Non-unique exits 5; file untouched
+    with open(repl_fixture, "wb") as f:
+        f.write(b"foo and foo\n")
+    proc = subprocess.run([CYIM, "--replace", b"foo", b"BAR", repl_fixture], timeout=5,
+                          capture_output=True)
+    if proc.returncode != 5:
+        print(f"  FAIL: --replace on non-unique OLD exited {proc.returncode}, expected 5")
+        ok = False
+    else:
+        print("  PASS: --replace on non-unique OLD exits 5")
+    with open(repl_fixture, "rb") as f:
+        ok &= assert_eq(f.read(), b"foo and foo\n", "--replace left file untouched on refusal")
+
+    print("=== --replace-all: substitutes every occurrence ===")
+    with open(repl_fixture, "wb") as f:
+        f.write(b"foo and foo and foo\n")
+    proc = subprocess.run([CYIM, "--replace-all", b"foo", b"BAR", repl_fixture], timeout=5)
+    if proc.returncode != 0:
+        print(f"  FAIL: --replace-all exited {proc.returncode}")
+        ok = False
+    else:
+        with open(repl_fixture, "rb") as f:
+            ok &= assert_eq(f.read(), b"BAR and BAR and BAR\n", "--replace-all hits every match")
+
     print("=== --headless: read keystrokes from stdin, no PTY required ===")
     # The headless drive doesn't need pty.fork — it reads stdin directly
     # and never touches termios. Agent-friendly: just pipe bytes.
-    import subprocess
     headless_fixture = "/tmp/cyim-headless-fixture.txt"
     with open(headless_fixture, "wb") as f:
         f.write(b"hello\n")

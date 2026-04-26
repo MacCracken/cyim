@@ -1,0 +1,164 @@
+# cli.cyr — non-interactive CLI surfaces for agent-drive workflows.
+#
+# `cyim --write FILE`        — read stdin, replace FILE with it.
+# `cyim --replace OLD NEW FILE`     — first occurrence; OLD must be unique.
+# `cyim --replace-all OLD NEW FILE` — every occurrence.
+#
+# These are direct buffer ops — they don't go through the dispatch +
+# apply chain because there's no edit-history / undo / mode state to
+# care about. They're tools, not models of user edits. The dispatch
+# chain is still available via `cyim --headless` for cases where you
+# want the full editor semantics from a script.
+#
+# Exit codes (matched against `~/.local/bin/cyim-edit` so the wrapper
+# can become an `exec` one-liner):
+#   0 — success
+#   1 — save failed (disk full, permission denied, etc.)
+#   2 — bad CLI args (missing OLD/NEW/FILE, empty OLD)
+#   3 — file not found
+#   4 — OLD not found in FILE
+#   5 — OLD occurs more than once and --replace-all wasn't passed
+#
+# Requires: src/buffer.cyr (buf_*), stdlib (file_read / file_save_*
+# / strlen / load8 / store8).
+
+# `mode` argument for run_replace.
+var REPLACE_FIRST_UNIQUE = 0;
+var REPLACE_ALL          = 1;
+
+# Read all of stdin into `b`. Returns total bytes read.
+fn _cli_drain_stdin(b) {
+    var chunk[4096];
+    var total = 0;
+    var go = 1;
+    while (go == 1) {
+        var n = file_read(0, &chunk, 4096);
+        if (n <= 0) { go = 0; }
+        if (n > 0) {
+            buf_insert(b, &chunk, n);
+            total = total + n;
+        }
+    }
+    return total;
+}
+
+# Byte-wise compare needle (length nlen) against b at pos.
+fn _cli_match_at(b, pos, needle, nlen) {
+    var blen = buf_len(b);
+    if (pos + nlen > blen) { return 0; }
+    var i = 0;
+    while (i < nlen) {
+        if (buf_get(b, pos + i) != load8(needle + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Count non-overlapping occurrences of `needle` in `b`.
+fn _cli_count_matches(b, needle) {
+    var nlen = strlen(needle);
+    if (nlen == 0) { return 0; }
+    var blen = buf_len(b);
+    var i = 0;
+    var count = 0;
+    while (i + nlen <= blen) {
+        if (_cli_match_at(b, i, needle, nlen) == 1) {
+            count = count + 1;
+            i = i + nlen;
+        } else {
+            i = i + 1;
+        }
+    }
+    return count;
+}
+
+# Build a fresh gap-buffer copy of `src` with `old` replaced by `new`.
+# `mode` = REPLACE_ALL substitutes every occurrence; otherwise just the
+# first. Caller takes ownership of the returned buffer; `src` untouched.
+fn _cli_substitute(src, old, new, mode) {
+    var olen = strlen(old);
+    var nlen = strlen(new);
+    var slen = buf_len(src);
+    var out = buf_new();
+    var i = 0;
+    var done_first = 0;
+    while (i < slen) {
+        var hit = 0;
+        if (i + olen <= slen) {
+            if (_cli_match_at(src, i, old, olen) == 1) { hit = 1; }
+        }
+        if (hit == 1) {
+            if (mode == 0) {
+                if (done_first == 1) { hit = 0; }
+            }
+        }
+        if (hit == 1) {
+            var j = 0;
+            while (j < nlen) {
+                buf_insert_byte(out, load8(new + j));
+                j = j + 1;
+            }
+            i = i + olen;
+            done_first = 1;
+        } else {
+            buf_insert_byte(out, buf_get(src, i));
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
+# `cyim --write FILE` — read stdin, replace FILE's contents with it.
+fn run_write(file_path) {
+    if (file_path == 0) {
+        syscall(1, 2, "cyim --write: missing FILE argument\n", 36);
+        return 2;
+    }
+    var b = buf_new();
+    _cli_drain_stdin(b);
+    var n = buf_save_file(b, file_path);
+    if (n < 0) {
+        syscall(1, 2, "cyim --write: save failed\n", 26);
+        return 1;
+    }
+    return 0;
+}
+
+# `cyim --replace OLD NEW FILE` (mode = REPLACE_FIRST_UNIQUE) or
+# `cyim --replace-all OLD NEW FILE` (mode = REPLACE_ALL).
+fn run_replace(old_str, new_str, file_path, mode) {
+    if (old_str == 0)   { syscall(1, 2, "cyim --replace: missing OLD\n", 28);  return 2; }
+    if (new_str == 0)   { syscall(1, 2, "cyim --replace: missing NEW\n", 28);  return 2; }
+    if (file_path == 0) { syscall(1, 2, "cyim --replace: missing FILE\n", 29); return 2; }
+    if (strlen(old_str) == 0) {
+        syscall(1, 2, "cyim --replace: OLD must be non-empty\n", 38);
+        return 2;
+    }
+
+    var b = buf_new();
+    var loaded = buf_load_file(b, file_path);
+    if (loaded < 0) {
+        syscall(1, 2, "cyim --replace: file not found\n", 31);
+        return 3;
+    }
+
+    var count = _cli_count_matches(b, old_str);
+    if (count == 0) {
+        syscall(1, 2, "cyim --replace: OLD not found in FILE\n", 38);
+        return 4;
+    }
+    if (mode == 0) {
+        if (count > 1) {
+            syscall(1, 2, "cyim --replace: OLD occurs more than once — not unique. Use --replace-all or pick a more specific OLD.\n", 105);
+            return 5;
+        }
+    }
+
+    var out = _cli_substitute(b, old_str, new_str, mode);
+    var rc = buf_save_file(out, file_path);
+    if (rc < 0) {
+        syscall(1, 2, "cyim --replace: save failed\n", 28);
+        return 1;
+    }
+    return 0;
+}

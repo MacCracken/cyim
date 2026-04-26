@@ -24,7 +24,13 @@ Own the editor surface in the AGNOS library. Modal grammar in the lineage of `vi
 
 - **`agnoshi`** — the AI shell embeds cyim as the in-shell editor.
 - **`aethersafha`** — the Wayland compositor hosts cyim in its terminal surface.
-- **`daimon`-orchestrated agents** — AI assistants (Claude-style and AGNOS-native agents alike) drive cyim programmatically. The same modal surface humans use, agents drive headlessly. The edit loop closes through cyim — nothing in the loop ships from outside the library. Design the keymap dispatch and the (eventual) headless mode with this consumer first-class, not retrofit.
+- **`daimon`-orchestrated agents** — AI assistants (Claude-style and AGNOS-native agents alike) drive cyim programmatically. The same modal surface humans use, agents drive headlessly. The edit loop closes through cyim — nothing in the loop ships from outside the library. Four CLI surfaces serve this consumer:
+  1. `cyim --headless <file>` — low-level keystroke stream over stdin. Full editor semantics: search / undo / dot / visual / multi-window / multi-buffer all available. Encoding-sensitive (raw bytes, `\x1b` for Esc). Use when an agent wants to model arbitrary edits.
+  2. `cyim --write <file>` — high-level "set file content from stdin" (matches the Claude Code `Write` tool shape). Direct buffer op, no dispatch detour.
+  3. `cyim --replace OLD NEW <file>` — high-level find/replace; OLD must be unique (matches the Claude Code `Edit` tool's uniqueness invariant). Exit 5 if the constraint fails.
+  4. `cyim --replace-all OLD NEW <file>` — same, every occurrence.
+
+  Exit codes match `~/.local/bin/cyim-edit` so wrapper scripts collapse to `exec` one-liners. The keymap dispatch (M1) was designed with this consumer first-class, not retrofit.
 
 ## Current State
 

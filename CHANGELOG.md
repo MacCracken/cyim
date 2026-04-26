@@ -4,6 +4,73 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-04-25
+
+Agent-drive surface, first-class.
+
+### Added
+
+- `cyim --write <file>` — read stdin, replace `<file>`'s contents
+  with it. One syscall path: `buf_load_file` skipped, `buf_clear`
+  + `buf_insert` from stdin chunks, `buf_save_file`. No dispatch
+  detour. Use case: shell-script "Write the new content here, please."
+- `cyim --replace <old> <new> <file>` — substitute the first
+  occurrence of `<old>` with `<new>`. **`<old>` must be unique
+  in the file.** If it occurs more than once, the command refuses
+  with exit 5 (matches the Claude Code Edit invariant — pick a
+  more specific OLD or use `--replace-all`).
+- `cyim --replace-all <old> <new> <file>` — same, every
+  occurrence. Returns exit 0 with the file rewritten regardless
+  of count (zero matches still exits 4 — "OLD not found").
+- `src/cli.cyr` — new module hosting the three runners +
+  `_cli_drain_stdin`, `_cli_match_at`, `_cli_count_matches`,
+  `_cli_substitute` helpers. Direct gap-buffer ops; no
+  dispatch-chain detour because there's no edit-history /
+  mode-state / undo to model — these are tools, not user edits.
+- `tests/integration_smoke.py` — three new regression checks:
+  `--write` round-trip, `--replace` unique-mode success +
+  not-unique exit-5 refusal, `--replace-all` multi-substitution.
+
+### Exit codes (consumer contract)
+
+Mirrors `~/.local/bin/cyim-edit` so existing wrapper scripts can
+collapse to `exec cyim --write "$@"` / `exec cyim --replace "$@"`
+one-liners:
+
+| Code | Meaning |
+|------|---------|
+| 0    | Success                                                |
+| 1    | Save failed (disk full, permission denied)             |
+| 2    | Bad CLI args (missing OLD/NEW/FILE, empty OLD)         |
+| 3    | File not found                                         |
+| 4    | OLD not found in FILE                                  |
+| 5    | OLD occurs more than once and `--replace-all` not used |
+
+### Daimon-orchestrated agent surface
+
+CLAUDE.md's consumer story now points at four CLI shapes:
+
+1. `cyim <file>` — interactive (humans).
+2. `cyim --headless <file>` — keystroke stream (low-level agent
+   drive, full editor semantics including search/undo/dot/visual).
+3. `cyim --write <file>` — high-level "set file content" (matches
+   the Claude Code `Write` tool shape).
+4. `cyim --replace [--all] OLD NEW <file>` — high-level
+   "find/replace" (matches the Claude Code `Edit` tool shape, with
+   the same uniqueness invariant by default).
+
+`~/.local/bin/cyim-write` and `cyim-edit` wrapper scripts can now
+become `exec` shims; they predated the native surface.
+
+### Receipts at v1.0.1
+
+- DCE binary: 283,984 B (1.0.0 was 275,640 B; +8,344 B for the
+  three new runners + helpers).
+- 18 / 18 .tcyr suites pass.
+- 18 integration checks (15 from 1.0.0 + 3 new for `--write` /
+  `--replace` / `--replace-all`).
+- 0 CRITICAL / HIGH / MEDIUM security findings (unchanged).
+
 ## [1.0.0] — 2026-04-25
 
 First release. The M0–M7 work that started as the M0 scaffold

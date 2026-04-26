@@ -35,21 +35,25 @@ include "src/visual.cyr"
 include "src/driver.cyr"
 include "src/tty.cyr"
 include "src/render.cyr"
+include "src/cli.cyr"
 
 var DEFAULT_ROWS = 24;
 var DEFAULT_COLS = 80;
 
 fn print_version() {
-    syscall(1, 1, "cyim 1.0.0\n", 11);
+    syscall(1, 1, "cyim 1.0.1\n", 11);
     return 0;
 }
 
 fn print_help() {
-    syscall(1, 1, "usage: cyim [<file>]\n", 21);
+    syscall(1, 1, "usage: cyim [<file>]                         (interactive)\n", 59);
     syscall(1, 1, "       cyim --version\n", 22);
     syscall(1, 1, "       cyim --help\n", 19);
-    syscall(1, 1, "       cyim --probe   (TTY round-trip diagnostic)\n", 50);
-    syscall(1, 1, "       cyim --headless [<file>]   (read keystrokes from stdin; no TTY)\n", 71);
+    syscall(1, 1, "       cyim --probe                          (TTY round-trip diagnostic)\n", 73);
+    syscall(1, 1, "       cyim --headless [<file>]              (read keystrokes from stdin; no TTY)\n", 82);
+    syscall(1, 1, "       cyim --write <file>                   (replace <file> with stdin)\n", 73);
+    syscall(1, 1, "       cyim --replace <old> <new> <file>     (substitute first; OLD must be unique)\n", 84);
+    syscall(1, 1, "       cyim --replace-all <old> <new> <file> (substitute every occurrence)\n", 75);
     return 0;
 }
 
@@ -184,6 +188,25 @@ fn main() {
             var hfp = 0;
             if (ac > 2) { hfp = argv(2); }
             return run_headless(hfp);
+        }
+        if (streq(a1, "--write") == 1) {
+            var wfp = 0;
+            if (ac > 2) { wfp = argv(2); }
+            return run_write(wfp);
+        }
+        if (streq(a1, "--replace") == 1) {
+            if (ac < 5) {
+                syscall(1, 2, "usage: cyim --replace <old> <new> <file>\n", 41);
+                return 2;
+            }
+            return run_replace(argv(2), argv(3), argv(4), 0);
+        }
+        if (streq(a1, "--replace-all") == 1) {
+            if (ac < 5) {
+                syscall(1, 2, "usage: cyim --replace-all <old> <new> <file>\n", 45);
+                return 2;
+            }
+            return run_replace(argv(2), argv(3), argv(4), 1);
         }
         fpath = a1;
     }

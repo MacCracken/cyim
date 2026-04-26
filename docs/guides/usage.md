@@ -12,12 +12,15 @@ For configuration, see [`cyimrc.md`](cyimrc.md).
 ## Starting cyim
 
 ```sh
-cyim                # open a scratch buffer
-cyim foo.cyr        # open foo.cyr
+cyim                                       # open a scratch buffer
+cyim foo.cyr                               # open foo.cyr
 cyim --version
 cyim --help
-cyim --probe        # TTY round-trip diagnostic (raw on / sleep / cooked off)
-cyim --headless [<file>]   # read keystrokes from stdin; no TTY
+cyim --probe                               # TTY round-trip diagnostic (raw on / sleep / cooked off)
+cyim --headless [<file>]                   # read keystrokes from stdin; no TTY
+cyim --write <file>                        # replace <file> with stdin content
+cyim --replace <old> <new> <file>          # substitute first occurrence; OLD must be unique
+cyim --replace-all <old> <new> <file>      # substitute every occurrence
 ```
 
 `cyim --probe` is the smoke test for "does my terminal cooperate?" — it
@@ -48,11 +51,48 @@ Encoding notes:
   closed cleanly); non-zero only on file-load failure.
 
 Same dispatch chain as the TTY path — search / undo / dot / visual /
-multi-window / multi-buffer all available. This is the surface for
-shell scripts, CI checks, and `daimon`-orchestrated agents per the
-roadmap. For higher-level wrappers (sed-style search/replace, an
-`--apply` macro language, etc.), build them on top of this — they
-compose cleanly through `printf`.
+multi-window / multi-buffer all available. This is the low-level
+surface for shell scripts, CI checks, and `daimon`-orchestrated
+agents per the roadmap.
+
+For higher-level operations the binary ships two more flags that
+skip the dispatch chain entirely (no edit-history / mode-state to
+model — they're tools, not user edits):
+
+### `cyim --write <file>` — bulk content replace
+
+```sh
+printf 'new file content\n' | cyim --write foo.txt
+```
+
+Reads stdin, replaces `<file>` contents. Trailing newlines preserved
+exactly (no `$(cat)`-style stripping). Equivalent of "Write" in
+agent tool vocabularies.
+
+### `cyim --replace <old> <new> <file>` — unique find/replace
+
+```sh
+cyim --replace 'fn old_name(' 'fn new_name(' src/foo.cyr
+```
+
+Substitutes the **first** occurrence of `<old>` with `<new>`.
+**`<old>` must be unique in the file.** If it occurs more than once,
+the command refuses with exit 5 — pick a more specific OLD or use
+`--replace-all`. Matches the Claude Code `Edit` tool's invariant.
+
+`cyim --replace-all <old> <new> <file>` does the same without the
+uniqueness check; substitutes every occurrence.
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| 0    | Success |
+| 1    | Save failed |
+| 2    | Bad CLI args |
+| 3    | File not found |
+| 4    | OLD not found in FILE |
+| 5    | OLD occurs more than once and `--replace-all` not used |
 
 ---
 
