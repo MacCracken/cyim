@@ -495,10 +495,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     not yet shipped); M7-5 documented in usage.md (byte-vs-glyph
     column counting).
 - **v1.0 gate clear:** CLAUDE.md's "CRITICAL/HIGH must close
-  before v1.0" rule satisfied. M7.5 WebFetch pass is a
-  document-quality follow-up, not a v1.0 blocker — class
-  taxonomy and findings stand independent of specific CVE
-  references.
+  before v1.0" rule satisfied.
+- M7.5 — CVE verification pass (WebSearch + WebFetch against
+  NIST NVD, MITRE, vim/neovim GitHub Security Advisories,
+  Red Hat / Ubuntu / SUSE bulletins). The corpus survey now
+  carries verified CVE citations with primary-source links per
+  class: CVE-2019-12735 / CVE-2016-1248 / CVE-2002-1377
+  (modeline RCE), CVE-2017-17087 / CVE-2017-1000382
+  (swap files), CVE-2008-2712 (Vimscript injection),
+  CVE-2023-4738 (heap overflow in vim_regsub_both),
+  CVE-2022-0413 / CVE-2022-0351 / CVE-2021-3778 / CVE-2025-22134
+  (memory corruption family), GHSA-q22m-h7m2-9mgm /
+  GHSA-6g74-hr6q-pr8g / GHSA-f2m2-v387-gv87 (vim integer
+  overflow advisories), GHSA-2gmj-rpqf-pxvh / CVE-2026-34714
+  (tabpanel %{expr} format-string-class), CVE-2017-8386 (less
+  paste-as-command bypass via git-shell), CVE-2013-1862
+  (Apache mod_rewrite — exemplary terminal-escape-injection),
+  GHSA-6f9m-hj8h-xjgj (neovim treesitter path traversal). The
+  corpus's "verification pending" warning was removed; the
+  audit-doc cross-reference updated to match.
 
 ### Status (M6)
 - All 6 M6 bites landed: tokenbuf cache, F-1 escape-injection
