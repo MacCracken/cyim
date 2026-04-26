@@ -1,0 +1,36 @@
+[package]
+name = "cyim"
+version = "${file:VERSION}"
+description = "Sovereign Cyrius-native text editor — VIM-inspired, zero attack surface"
+license = "GPL-3.0-only"
+repository = "https://github.com/MacCracken/cyim"
+language = "cyrius"
+cyrius = "5.7.1"
+
+[build]
+entry = "src/main.cyr"
+test = "src/test.cyr"
+output = "cyim"
+
+# Stdlib footprint — minimal modal editor baseline:
+#   syscalls/alloc/fmt/io — required core
+#   str/string/vec        — buffer, line, gap-buffer scaffolding
+#   args                  — CLI: `cyim <file>`
+#   fs                    — file read/write
+#   hashmap               — keymap tables, mode dispatch
+#   assert                — tests/cyim.tcyr
+# vyakarana grammar/tokenizer dep added when M2 highlighting lands.
+[deps]
+stdlib = [
+    "syscalls",
+    "alloc",
+    "fmt",
+    "io",
+    "fs",
+    "str",
+    "string",
+    "vec",
+    "args",
+    "hashmap",
+    "assert",
+]
