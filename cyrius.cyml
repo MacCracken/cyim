@@ -33,6 +33,7 @@ stdlib = [
     "args",
     "hashmap",
     "assert",
+    "bench",
 ]
 
 # vyakarana — token-level grammar/tokenizer library. M2 syntax-highlighting

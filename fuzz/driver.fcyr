@@ -1,0 +1,95 @@
+# fuzz/driver.fcyr — random keystrokes through editor_step
+#
+# Drives 5K random byte keystrokes through the full dispatch / apply
+# chain. Asserts the editor stays in a valid mode (one of the 7),
+# the cursor never falls outside the active buffer, and the active
+# buffer's gap-buffer invariants stay intact. Catches:
+#   - dispatch panicking on adversarial keystroke sequences
+#   - mode field corruption
+#   - buffer underflow / overflow under extreme key spam
+
+include "lib/syscalls.cyr"
+include "lib/alloc.cyr"
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/vec.cyr"
+include "lib/io.cyr"
+include "lib/hashmap.cyr"
+include "lib/vyakarana.cyr"
+include "src/buffer.cyr"
+include "src/highlight.cyr"
+include "src/lang.cyr"
+include "src/cyimrc.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+include "src/tty.cyr"
+include "src/render.cyr"
+include "lib/vyakarana.cyr"
+
+var _rng = 0;
+fn rng_seed(s)  { _rng = s; return 0; }
+fn rng_next()   { _rng = _rng * 6364136223846793005 + 1442695040888963407; return _rng; }
+fn rng_pos() {
+    var v = rng_next();
+    if (v < 0) { return 0 - v - 1; }
+    return v;
+}
+
+fn fuzz_main(data, len) {
+    rng_seed(0xBADCAFE);
+    var b = buf_new();
+    var s = editor_new(b);
+    bl_init(s, b);
+    window_init(s);
+
+    var i = 0;
+    while (i < 5000) {
+        # Bias keystroke distribution: 70% printable ASCII, 30%
+        # control / extended bytes (Esc, Ctrl-w, Ctrl-r, DEL, etc.).
+        var key = 0;
+        if ((rng_pos() & 7) < 5) {
+            key = 32 + (rng_pos() % 95);   # printable
+        } else {
+            key = rng_pos() & 0x7F;
+            if (key == 0) { key = 1; }
+        }
+        editor_step(s, key);
+        # Quit may have been set by random ":q" — clear it so we keep going.
+        editor_set_quit(s, 0);
+
+        # Invariants
+        var mode = editor_mode(s);
+        if (mode < 0) { syscall(1, 2, "fuzz/driver: mode < 0\n", 22); return 1; }
+        if (mode > 6) { syscall(1, 2, "fuzz/driver: mode > 6\n", 22); return 1; }
+
+        var ab = editor_buf(s);
+        if (ab != 0) {
+            var c = buf_cursor(ab);
+            var nl = buf_len(ab);
+            if (c < 0)   { syscall(1, 2, "fuzz/driver: cursor < 0\n", 24); return 1; }
+            if (c > nl)  { syscall(1, 2, "fuzz/driver: cursor > buf_len\n", 30); return 1; }
+            if (nl < 0)  { syscall(1, 2, "fuzz/driver: buf_len < 0\n", 25); return 1; }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var rc = fuzz_main("seed", 4);
+    if (rc == 0) { syscall(1, 1, "fuzz/driver: ok (5000 random keystrokes, mode + cursor + buf_len all valid)\n", 76); }
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

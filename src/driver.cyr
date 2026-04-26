@@ -38,6 +38,12 @@ fn _dot_record_byte(s, key) {
     return 0;
 }
 
+# Snapshot capacity for dot-replay. Audit F-4 raised this from 2048
+# (M5) to 16384 — large enough to cover an entire 200-line code
+# block typed in one insert session. On overflow we now surface a
+# status message instead of silently no-op'ing.
+var DOT_REPLAY_MAX = 16384;
+
 fn _dot_replay(s) {
     var entry = editor_dot_entry_key(s);
     if (entry == 0)               { return 0; }
@@ -45,11 +51,15 @@ fn _dot_replay(s) {
     if (db == 0)                  { return 0; }
     var n = buf_len(db);
 
+    if (n > DOT_REPLAY_MAX) {
+        editor_set_status(s, ". skipped — recorded edit exceeds replay cap (16 KB)");
+        return 0;
+    }
+
     # Snapshot the recorded bytes — the recursive editor_step calls
     # below will rewrite dot_buf as they fire ACT_TO_INSERT and the
     # subsequent ACT_INSERT_LITERAL chain.
-    var snap[2048];
-    if (n > 2048)                 { return 0; }
+    var snap[16384];
     var i = 0;
     while (i < n) {
         store8(&snap + i, buf_get(db, i));

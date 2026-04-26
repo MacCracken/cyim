@@ -158,11 +158,26 @@ fn render_build_line(b, line, cols, tb, out, out_max) {
                             current_kind = kind;
                         }
                     }
-                    if (pos < byte_cap) {
-                        store8(out + pos, c);
-                        pos = pos + 1;
+                    var sub = render_ctrl_substitute(c);
+                    if (sub != 0) {
+                        # ^X substitution — 2 visual cols, 2 bytes.
+                        # Audit F-1 — prevents terminal escape injection
+                        # from buffer bytes echoing as control sequences.
+                        if (col + 1 < cols) {
+                            if (pos + 2 <= byte_cap) {
+                                store8(out + pos, 94);
+                                store8(out + pos + 1, sub);
+                                pos = pos + 2;
+                            }
+                            col = col + 2;
+                        }
+                    } else {
+                        if (pos < byte_cap) {
+                            store8(out + pos, c);
+                            pos = pos + 1;
+                        }
+                        col = col + 1;
                     }
-                    col = col + 1;
                 }
                 i = i + 1;
             }
@@ -179,6 +194,20 @@ fn render_build_line(b, line, cols, tb, out, out_max) {
     store8(out + pos, 10);
     pos = pos + 1;
     return pos;
+}
+
+# Decide whether `c` is a control byte that needs ^X substitution
+# (security audit F-1: prevents terminal escape injection from
+# buffer content). Returns:
+#    0           — no substitution; emit `c` verbatim (1 col)
+#    `b` (>0)    — substitute as `^b` (2 cols); caller writes '^' then b
+# Tab (9) is preserved. LF (10) never reaches this path — the line
+# iterator stops at line_end, before the terminator.
+fn render_ctrl_substitute(c) {
+    if (c == 9)   { return 0; }                  # Tab — keep
+    if (c < 32)   { return c + 64; }             # 0x00..0x1F (except Tab) -> ^@..^_
+    if (c == 127) { return 63; }                 # DEL -> ^?
+    return 0;
 }
 
 # Same as render_build_line but WITHOUT the trailing CRLF. Multi-window
@@ -226,11 +255,26 @@ fn render_build_line_naked(b, line, cols, tb, out, out_max) {
                             current_kind = kind;
                         }
                     }
-                    if (pos < byte_cap) {
-                        store8(out + pos, c);
-                        pos = pos + 1;
+                    var sub = render_ctrl_substitute(c);
+                    if (sub != 0) {
+                        # ^X substitution — 2 visual cols, 2 bytes.
+                        # Audit F-1 — prevents terminal escape injection
+                        # from buffer bytes echoing as control sequences.
+                        if (col + 1 < cols) {
+                            if (pos + 2 <= byte_cap) {
+                                store8(out + pos, 94);
+                                store8(out + pos + 1, sub);
+                                pos = pos + 2;
+                            }
+                            col = col + 2;
+                        }
+                    } else {
+                        if (pos < byte_cap) {
+                            store8(out + pos, c);
+                            pos = pos + 1;
+                        }
+                        col = col + 1;
                     }
-                    col = col + 1;
                 }
                 i = i + 1;
             }
@@ -252,65 +296,43 @@ fn render_line(b, line, cols, tb) {
     return 0;
 }
 
-# Bottom status row. In COMMAND mode shows ":<cmdbuf>"; otherwise mode tag,
-# filename, modified flag.
+# Render `<prefix><cmdbuf>` into the status row. Used by COMMAND, SEARCH,
+# and SEARCH_BACK — all three have the same shape, only the prefix
+# byte differs (`:` / `/` / `?`). Truncates the cmdbuf at `cols - 1`
+# so the prefix always fits.
+fn _render_cmdline(s, prefix_byte, cols) {
+    var pbuf[1];
+    store8(&pbuf, prefix_byte);
+    syscall(1, 1, &pbuf, 1);
+    var cb = editor_cmdbuf(s);
+    var clen = buf_len(cb);
+    var line[2048];
+    var pos = 0;
+    var i = 0;
+    while (i < clen) {
+        if (pos < cols - 1) {
+            store8(&line + pos, buf_get(cb, i));
+            pos = pos + 1;
+        }
+        i = i + 1;
+    }
+    if (pos > 0) { syscall(1, 1, &line, pos); }
+    return 0;
+}
+
+# Bottom status row. In COMMAND/SEARCH modes shows `<prefix><cmdbuf>`;
+# otherwise mode tag, filename, modified flag.
 fn render_status(s, rows, cols) {
     tty_move(rows, 1);
     syscall(1, 1, "\x1b[2K", 4);  # clear current line first
 
-    if (editor_mode(s) == MODE_COMMAND) {
-        syscall(1, 1, ":", 1);
-        var cb = editor_cmdbuf(s);
-        var clen = buf_len(cb);
-        var i = 0;
-        var line[2048];
-        var pos = 0;
-        while (i < clen) {
-            if (pos < cols - 1) {
-                store8(&line + pos, buf_get(cb, i));
-                pos = pos + 1;
-            }
-            i = i + 1;
-        }
-        if (pos > 0) { syscall(1, 1, &line, pos); }
-        return 0;
-    }
-
-    # Search modes look like COMMAND but with a different prefix.
-    if (editor_mode(s) == MODE_SEARCH) {
-        syscall(1, 1, "/", 1);
-        var cb = editor_cmdbuf(s);
-        var clen = buf_len(cb);
-        var i = 0;
-        var line[2048];
-        var pos = 0;
-        while (i < clen) {
-            if (pos < cols - 1) {
-                store8(&line + pos, buf_get(cb, i));
-                pos = pos + 1;
-            }
-            i = i + 1;
-        }
-        if (pos > 0) { syscall(1, 1, &line, pos); }
-        return 0;
-    }
-    if (editor_mode(s) == MODE_SEARCH_BACK) {
-        syscall(1, 1, "?", 1);
-        var cb = editor_cmdbuf(s);
-        var clen = buf_len(cb);
-        var i = 0;
-        var line[2048];
-        var pos = 0;
-        while (i < clen) {
-            if (pos < cols - 1) {
-                store8(&line + pos, buf_get(cb, i));
-                pos = pos + 1;
-            }
-            i = i + 1;
-        }
-        if (pos > 0) { syscall(1, 1, &line, pos); }
-        return 0;
-    }
+    # COMMAND, SEARCH, and SEARCH_BACK all render as `<prefix><cmdbuf>`
+    # in the status row. The prefix byte is the only thing that
+    # differs (`:` / `/` / `?`); _render_cmdline factors the rest.
+    var rm = editor_mode(s);
+    if (rm == MODE_COMMAND)     { return _render_cmdline(s, 58, cols); }
+    if (rm == MODE_SEARCH)      { return _render_cmdline(s, 47, cols); }
+    if (rm == MODE_SEARCH_BACK) { return _render_cmdline(s, 63, cols); }
 
     # If a command set a status message in this step, show it (truncated
     # to cols) instead of the mode tag. The next keystroke clears it.
@@ -485,20 +507,12 @@ fn _render_frame_multi(s, rows, cols) {
 
     render_status(s, rows, cols);
 
+    # Cmdline modes park the cursor in the status row, one past the
+    # `<prefix>` plus the typed bytes (1-indexed: +1 for the prefix,
+    # +1 for 1-indexing).
     var m = editor_mode(s);
-    if (m == MODE_COMMAND) {
-        var clen = buf_len(editor_cmdbuf(s));
-        tty_move(rows, clen + 2);
-        return 0;
-    }
-    if (m == MODE_SEARCH) {
-        var clen = buf_len(editor_cmdbuf(s));
-        tty_move(rows, clen + 2);
-        return 0;
-    }
-    if (m == MODE_SEARCH_BACK) {
-        var clen = buf_len(editor_cmdbuf(s));
-        tty_move(rows, clen + 2);
+    if (m == MODE_COMMAND || m == MODE_SEARCH || m == MODE_SEARCH_BACK) {
+        tty_move(rows, buf_len(editor_cmdbuf(s)) + 2);
         return 0;
     }
 

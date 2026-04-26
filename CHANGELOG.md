@@ -313,6 +313,160 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   proves `.` replays the last insert at the new cursor;
   `vlldp:wq` proves visual-delete + paste round-trip.
 
+### Added (M5)
+- `docs/guides/usage.md` — getting started for the day-1 vim user.
+  Modes table, NORMAL bindings cheat-sheet, INSERT semantics, search
+  behaviour, visual + register, multi-file + windows, save/quit,
+  differences-from-vim section, troubleshooting.
+- `docs/guides/keymap.md` — full keybinding reference. Per-mode
+  tables (NORMAL motions, edits, mode transitions, search repeat,
+  Ctrl-w window navigation; INSERT; COMMAND; SEARCH; VISUAL).
+  Action-id column links every binding to the dispatcher's enum. Also
+  documents the action-ID space layout (10s = transitions, 100s =
+  motions, 200s = edits, 220s = paste, 230s = visual, 400s = window).
+- `docs/guides/cyimrc.md` — config schema. File location, format
+  rules, palette overrides table (10 token kinds + bundled defaults),
+  editor options table (`ignorecase`, `line_numbers`, `tabstop`),
+  boot order, forward-compat policy, and an explicit
+  "what's not in the config surface" section for vim users hunting
+  for `:nmap` / `:autocmd` / `:!cmd`.
+- `docs/audit/2026-04-25-security-audit.md` — initial security audit.
+  Internal-only pass against CLAUDE.md's security-hardening checklist;
+  external CVE corpus survey deferred to M7. Six findings filed:
+  - **F-1 [MEDIUM]** Terminal escape injection — buffer content with
+    raw ESC bytes echoes to terminal verbatim. Fix: control-byte
+    substitution in render. Tracked for M5 polish or M6.
+  - **F-2 [LOW]** Unbounded `:e` file load (DoS).
+  - **F-3 [LOW]** Unbounded cmdbuf grow (DoS).
+  - **F-4 [LOW]** `_dot_replay` silently fails on > 2048-byte
+    insert.
+  - **F-5 [LOW]** `:e <path>` accepts arbitrary paths (assumed
+    trust model — documenting for future restricted-mode).
+  - **F-6 [LOW]** `grammar_load` reads from search path
+    (supply-chain shape note for future user-grammar overlays).
+
+  No CRITICAL or HIGH findings — the obvious vim/neovim vuln classes
+  are absent by design (no embedded scripting, no `:!cmd`, no
+  plugins, no modeline parsing).
+
+- `tests/perf.bcyr` — 8 microbenchmarks driven by `cyrius bench`.
+  Gap-buffer fill (1 / 10 / 100 MB), cursor moves on 10 MB, search
+  scan (best / worst / case-fold worst), `render_build_line` ×
+  1000, `highlight_buf` 1 MB. Surfaces the M2-deferred
+  tokenization hot-path: 269 ms / MB → ~3.7 fps for per-frame
+  retokenize on a 1 MB file. Flagged for M6 hardening (cache
+  tokenbuf keyed by version-counter).
+- `BENCHMARKS.md` — top-level perf log. M5 baseline tables
+  (gap-buffer, cursor moves, search, render, highlight),
+  vim/nvim comparison receipts, test-surface receipts, build
+  size by milestone.
+- `fuzz/buffer.fcyr` — 10 K random gap-buffer ops with cursor /
+  buf_len invariants. Deterministic LCG seed.
+- `fuzz/tokenizer.fcyr` — 100 random 1 KB buffers through
+  `highlight_buf`; walks every emitted token's kind / start /
+  len; asserts spans stay inside `buf_len` and kind is in
+  TK_IDENT..TK_ERROR.
+- `fuzz/driver.fcyr` — 5 K random keystrokes through
+  `editor_step` with a 70/30 printable/control bias; mode +
+  cursor + `buf_len` invariants.
+- `cyrius.cyml` — `bench` added to stdlib deps for the
+  `lib/bench.cyr` framework.
+
+### Added (M6)
+- `src/buffer.cyr` — gap-buffer header grew 32 → 64 B for the
+  tokenbuf cache: `version` (bumped on every content mutation),
+  `cached_tb`, `cached_version`, `cached_lang`. Accessors:
+  `buf_version` / `buf_bump_version` / `buf_cached_*` /
+  `buf_set_cache`. Mutation helpers (`buf_insert_byte`,
+  `buf_delete_left`, `buf_delete_right`, `buf_clear`) now bump
+  the version. Cursor moves don't.
+- `src/highlight.cyr` — `highlight_buf` consults the per-buffer
+  cache: hits when (cached_tb != 0, cached_version == version,
+  cached_lang ptr == lang). Pointer-equality is robust because
+  `lang_name(i)` returns stable string literals. Closes the
+  M5-flagged 3.7 MB/s tokenize hot path — read-only render
+  frames now hit a 17 ns pointer compare.
+- `src/render.cyr` — `render_ctrl_substitute(c)` returns the
+  `^X`-encoded second byte for control bytes (< 0x20 except Tab,
+  plus 0x7F DEL). Tab is preserved (indent display); LF never
+  reaches the path (line iterator stops at line_end). Both
+  `render_build_line_naked` and `render_build_line` now substitute
+  control bytes before emitting them — closes M5 audit F-1
+  (terminal escape injection). Substituted bytes count as 2 visible
+  columns.
+- `src/command.cyr` — `command_append` caps cmdbuf at
+  `COMMAND_MAX_LEN = 4096`; overflow drops the byte and surfaces
+  a status message. Closes audit F-3.
+- `src/driver.cyr` — `_dot_replay` snapshot cap raised 2048 →
+  16384; overflow surfaces a status message instead of silent
+  no-op. Closes audit F-4.
+- `tests/perf.bcyr` — new bench `highlight_buf_cache_hit_x1000`
+  measures the cache-hit path. M6 result: 17 μs total / 1000 calls
+  = ~17 ns per call. ~15.5 million× faster than the cold-tokenize
+  baseline (265 ms).
+- `tests/render.tcyr` — 23 new assertions covering F-1: ESC /
+  BEL / DEL all substituted as `^X`; Tab preserved verbatim; the
+  `render_ctrl_substitute` unit table.
+- `tests/command.tcyr` — 3 new assertions covering F-3: cmdbuf
+  caps at `COMMAND_MAX_LEN`, byte past cap dropped, overflow
+  status message set.
+- `BENCHMARKS.md` — M6 perf delta table at the top: cache-hit
+  ~15.5M× win on the read-only render path; +27% raw-fill cost
+  from the per-byte version bump (acceptable trade-off given
+  the editing workflow has more renders than mutations).
+- `src/mode.cyr` — refactor: the byte-identical SEARCH and
+  SEARCH_BACK dispatch arms collapsed into one `||`-guarded
+  block (zero behavior change).
+- `src/render.cyr` — refactor: the three nearly-identical
+  cmdline-prefix render arms (COMMAND / SEARCH / SEARCH_BACK)
+  collapsed via a new `_render_cmdline(s, prefix_byte, cols)`
+  helper; the three cursor-positioning arms in
+  `_render_frame_multi` collapsed into a single `||` branch.
+  Net: ~50 lines of duplication removed, zero behavior change.
+- `cyrius/docs/development/proposals/relax-uninitialized-var-or-improve-error.md`
+  — proposal filed upstream against cc5 5.7.x: relax the
+  parse-time rejection of `var X;` (uninitialized) or improve the
+  diagnostic to point at the missing initializer rather than the
+  `;`. Discovered while writing `fuzz/driver.fcyr` — the misleading
+  error message cost ~10 minutes of debugging time across two
+  hits in M5.
+
+### Status (M6)
+- All 6 M6 bites landed: tokenbuf cache, F-1 escape-injection
+  fix, F-3/F-4 caps, cleanliness gate, refactor pass, closeout.
+- 838 .tcyr assertions across 18 suites + 14 PTY end-to-end
+  checks + 3 fuzz harnesses + 9 perf benches; all green.
+- DCE binary: 273,912 B (M5 was 262,504 B; +11 KB for the
+  cache slots + control-byte substitution + cap-and-message
+  handling).
+- M5 audit findings closed: F-1 fixed (control-byte
+  substitution); F-3 fixed (cmdbuf cap + status); F-4 fixed
+  (replay cap raised + status). F-2 (file-load DoS) and F-5/F-6
+  (path traversal / supply-chain notes) remain documented for
+  M7 / post-v1.0 work.
+- M6 perf wins: tokenbuf cache → 15.5M× on read-only render
+  path. Trade-off: +27% raw-fill cost from version bump.
+- `cyrius lint`: 0 correctness warnings; ~30 advisory line-length
+  warnings (style only).
+- `cyrius fmt --check`: clean across all `src/*.cyr`.
+
+### Status (M5)
+- All 4 M5 bites landed: docs pass (usage / keymap / cyimrc /
+  initial security audit), perf benchmarks (1/10/100 MB
+  fixtures), fuzz harnesses, receipts.
+- 812 .tcyr assertions across 18 suites + 14 PTY end-to-end
+  checks + 3 fuzz harnesses + 8 performance benchmarks; all
+  green.
+- DCE binary: 262,504 B (M4 was 256,344 B; +6 KB for `:set`
+  cfg fields + `lib/bench.cyr` dep).
+- M5 baseline benches recorded in `BENCHMARKS.md`. Hot path
+  identified: vyakarana tokenization at ~3.7 MB/s. Flagged for
+  M6 hardening with proposed fix (tokenbuf cache by version).
+- Initial security audit (`docs/audit/2026-04-25-security-audit.md`)
+  filed with 0 CRITICAL / 0 HIGH / 1 MEDIUM (F-1: terminal
+  escape injection from buffer content) / 5 LOW. Full M7 audit
+  will pair with external CVE corpus survey.
+
 ### Status (M4)
 - All 6 M4 bites landed: `/?nN` search + n/N repeat,
   `*`/`#` word search, undo/redo, visual + yank/paste,

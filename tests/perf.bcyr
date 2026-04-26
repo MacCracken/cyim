@@ -1,0 +1,165 @@
+# tests/perf.bcyr — cyim performance benchmarks
+#
+# Runs via: cyrius bench tests/perf.bcyr
+#
+# Coverage targets the surfaces that M2/M3/M4 left "deferred until perf
+# surfaces" notes against:
+#   - Gap-buffer ops at 1 MB / 10 MB / 100 MB
+#   - render_build_line cost (per-line tokenize + ANSI emit)
+#   - Search scan latency on a 100 MB fixture
+#
+# Numbers from this run land in BENCHMARKS.md as the M5 baseline.
+
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+include "src/highlight.cyr"
+include "src/lang.cyr"
+include "src/cyimrc.cyr"
+include "src/tty.cyr"
+include "src/render.cyr"
+include "lib/vyakarana.cyr"
+
+var ONE_MB   = 1048576;
+var TEN_MB   = 10485760;
+var HUND_MB  = 104857600;
+
+# Fill `b` with `n` bytes drawn from a 16-byte cycle (mostly ASCII letters
+# so vyakarana tokenization has something realistic to chew on).
+fn fill_buffer(b, n) {
+    var pattern[16];
+    store8(&pattern + 0,  104);  # 'h'
+    store8(&pattern + 1,  101);  # 'e'
+    store8(&pattern + 2,  108);  # 'l'
+    store8(&pattern + 3,  108);  # 'l'
+    store8(&pattern + 4,  111);  # 'o'
+    store8(&pattern + 5,  32);   # ' '
+    store8(&pattern + 6,  119);  # 'w'
+    store8(&pattern + 7,  111);  # 'o'
+    store8(&pattern + 8,  114);  # 'r'
+    store8(&pattern + 9,  108);  # 'l'
+    store8(&pattern + 10, 100);  # 'd'
+    store8(&pattern + 11, 32);   # ' '
+    store8(&pattern + 12, 102);  # 'f'
+    store8(&pattern + 13, 111);  # 'o'
+    store8(&pattern + 14, 111);  # 'o'
+    store8(&pattern + 15, 10);   # '\n'
+    var i = 0;
+    while (i < n) {
+        buf_insert_byte(b, load8(&pattern + (i & 15)));
+        i = i + 1;
+    }
+    return n;
+}
+
+fn main() {
+    alloc_init();
+
+    syscall(1, 1, "=== gap-buffer fill ===\n", 24);
+    var b1 = buf_new();
+    var bench_1mb = bench_new("buf_fill_1MB");
+    bench_start(bench_1mb);
+    fill_buffer(b1, ONE_MB);
+    bench_stop(bench_1mb);
+    bench_report(bench_1mb);
+
+    var b10 = buf_new();
+    var bench_10mb = bench_new("buf_fill_10MB");
+    bench_start(bench_10mb);
+    fill_buffer(b10, TEN_MB);
+    bench_stop(bench_10mb);
+    bench_report(bench_10mb);
+
+    var b100 = buf_new();
+    var bench_100mb = bench_new("buf_fill_100MB");
+    bench_start(bench_100mb);
+    fill_buffer(b100, HUND_MB);
+    bench_stop(bench_100mb);
+    bench_report(bench_100mb);
+
+    syscall(1, 1, "\n=== gap-buffer cursor moves on 10 MB ===\n", 42);
+    # Random-walk cursor moves: 10 K back-and-forth cycles across 10 MB.
+    var bench_move = bench_new("buf_move_10K_cycles_10MB");
+    bench_start(bench_move);
+    var k = 0;
+    while (k < 10000) {
+        buf_move(b10, k * 1000);
+        buf_move(b10, k * 1000 + 500);
+        k = k + 1;
+    }
+    bench_stop(bench_move);
+    bench_report(bench_move);
+
+    syscall(1, 1, "\n=== search scan on 10 MB ===\n", 30);
+    # First-hit scan — pattern appears every 16 bytes, so this is best-case.
+    var bench_search_best = bench_new("search_forward_10MB_best_case");
+    buf_move(b10, 0);
+    bench_start(bench_search_best);
+    _search_scan_forward(b10, "world", 5, 0, 0);
+    bench_stop(bench_search_best);
+    bench_report(bench_search_best);
+
+    # Worst-case scan — pattern not in buffer, so we walk every byte.
+    var bench_search_worst = bench_new("search_forward_10MB_worst_case");
+    bench_start(bench_search_worst);
+    _search_scan_forward(b10, "ZZZZZZ", 6, 0, 0);
+    bench_stop(bench_search_worst);
+    bench_report(bench_search_worst);
+
+    # Same pattern with case-fold — exercises the per-byte lower() cost.
+    var bench_search_fold = bench_new("search_forward_10MB_worst_case_ic");
+    bench_start(bench_search_fold);
+    _search_scan_forward(b10, "ZZZZZZ", 6, 0, 1);
+    bench_stop(bench_search_fold);
+    bench_report(bench_search_fold);
+
+    syscall(1, 1, "\n=== render_build_line of an 80-col line on a 1 MB buffer ===\n", 62);
+    # Tokenize once, then time the per-line render path.
+    var tb = highlight_buf(b1, "plain");
+    var out[8192];
+    var bench_render = bench_new("render_build_line_80c_x1000");
+    bench_start(bench_render);
+    var r = 0;
+    while (r < 1000) {
+        render_build_line(b1, 0, 80, tb, &out, 8192);
+        r = r + 1;
+    }
+    bench_stop(bench_render);
+    bench_report(bench_render);
+
+    syscall(1, 1, "\n=== highlight_buf (vyakarana tokenize) on 1 MB ===\n", 52);
+    var bench_tok = bench_new("highlight_buf_1MB_cyrius");
+    bench_start(bench_tok);
+    highlight_buf(b1, "cyrius");
+    bench_stop(bench_tok);
+    bench_report(bench_tok);
+
+    # Cache-hit path — 1000 repeat highlight_buf calls on an unmodified
+    # buffer. After M6's tokenbuf cache, the 1000 calls collapse to a
+    # single hashmap-keyed pointer compare per call. Reports the
+    # average; expect sub-microsecond.
+    syscall(1, 1, "\n=== highlight_buf cache hit × 1000 on unchanged 1 MB buffer ===\n", 65);
+    var bench_cached = bench_new("highlight_buf_cache_hit_x1000");
+    bench_start(bench_cached);
+    var rt = 0;
+    while (rt < 1000) {
+        highlight_buf(b1, "cyrius");
+        rt = rt + 1;
+    }
+    bench_stop(bench_cached);
+    bench_report(bench_cached);
+
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

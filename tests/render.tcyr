@@ -193,6 +193,54 @@ fn main() {
     assert_eq(nc, ep2, "comment line byte count matches expected");
     assert_eq(bytes_eq(&out, &exp2, ep2), 1, "exact ANSI for trailing comment");
 
+    test_group("F-1 — control bytes substituted as ^X (terminal escape injection)");
+    var bf1 = buf_new();
+    # Buffer: "a" + ESC (0x1B) + "b" + BEL (0x07) + "c" + DEL (0x7F) + "d"
+    buf_insert_byte(bf1, 97);
+    buf_insert_byte(bf1, 0x1B);
+    buf_insert_byte(bf1, 98);
+    buf_insert_byte(bf1, 7);
+    buf_insert_byte(bf1, 99);
+    buf_insert_byte(bf1, 127);
+    buf_insert_byte(bf1, 100);
+    buf_move(bf1, 0);
+    var nf = render_build_line_naked(bf1, 0, 80, 0, &out, 256);
+    # Expected output: a ^ [ b ^ G c ^ ? d  (10 visible bytes)
+    # 97  '^' 0x5B 98  '^' 0x47 99  '^' 0x3F 100
+    assert_eq(nf, 10, "naked render is 10 bytes (4 normal + 3 substitutions × 2)");
+    assert_eq(load8(&out + 0), 97,   "[0] = 'a'");
+    assert_eq(load8(&out + 1), 94,   "[1] = '^' (escape for ESC)");
+    assert_eq(load8(&out + 2), 0x5B, "[2] = '[' (ESC mapped to ^[)");
+    assert_eq(load8(&out + 3), 98,   "[3] = 'b'");
+    assert_eq(load8(&out + 4), 94,   "[4] = '^' (escape for BEL)");
+    assert_eq(load8(&out + 5), 0x47, "[5] = 'G' (BEL mapped to ^G)");
+    assert_eq(load8(&out + 6), 99,   "[6] = 'c'");
+    assert_eq(load8(&out + 7), 94,   "[7] = '^' (escape for DEL)");
+    assert_eq(load8(&out + 8), 0x3F, "[8] = '?' (DEL mapped to ^?)");
+    assert_eq(load8(&out + 9), 100,  "[9] = 'd'");
+
+    test_group("F-1 — Tab is preserved (NOT substituted)");
+    var bf2 = buf_new();
+    buf_insert_byte(bf2, 97);
+    buf_insert_byte(bf2, 9);   # Tab
+    buf_insert_byte(bf2, 98);
+    buf_move(bf2, 0);
+    var ntab = render_build_line_naked(bf2, 0, 80, 0, &out, 256);
+    assert_eq(ntab, 3, "Tab passes through as 1 byte");
+    assert_eq(load8(&out + 0), 97, "[0] = 'a'");
+    assert_eq(load8(&out + 1), 9,  "[1] = Tab (0x09 verbatim)");
+    assert_eq(load8(&out + 2), 98, "[2] = 'b'");
+
+    test_group("F-1 — substitution function unit cases");
+    assert_eq(render_ctrl_substitute(0),    64,  "0x00 -> ^@ (64)");
+    assert_eq(render_ctrl_substitute(7),    71,  "0x07 BEL -> ^G (71)");
+    assert_eq(render_ctrl_substitute(9),    0,   "0x09 Tab kept (0)");
+    assert_eq(render_ctrl_substitute(0x1B), 91,  "0x1B ESC -> ^[ (91)");
+    assert_eq(render_ctrl_substitute(0x1F), 95,  "0x1F -> ^_ (95)");
+    assert_eq(render_ctrl_substitute(32),   0,   "0x20 space kept (0)");
+    assert_eq(render_ctrl_substitute(127),  63,  "0x7F DEL -> ^? (63)");
+    assert_eq(render_ctrl_substitute(65),   0,   "'A' kept (0)");
+
     test_group("render_build_line highlighted: empty line stays uncolored");
     var b5 = buf_new();
     buf_insert(b5, "var x\n\nfn", 9);

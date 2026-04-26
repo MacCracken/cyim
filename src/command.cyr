@@ -24,9 +24,21 @@ fn command_reset(s) {
     return 0;
 }
 
-# Append one typed byte to the cmdbuf.
+# Hard cap on cmdbuf length. Audit F-3: prevents an attacker (or
+# stuck key) from growing cmdbuf without bound, exhausting the
+# bump allocator. 4 KB is well above any reasonable command line
+# (longest realistic: `:w /very/long/path` < 256 bytes).
+var COMMAND_MAX_LEN = 4096;
+
+# Append one typed byte to the cmdbuf. Drops the byte (and emits a
+# bell-equivalent status) once the cap is reached.
 fn command_append(s, key) {
-    buf_insert_byte(editor_cmdbuf(s), key);
+    var cb = editor_cmdbuf(s);
+    if (buf_len(cb) >= COMMAND_MAX_LEN) {
+        editor_set_status(s, "cmdline at max length (4 KB) — input dropped");
+        return 0;
+    }
+    buf_insert_byte(cb, key);
     return 0;
 }
 

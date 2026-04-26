@@ -344,15 +344,10 @@ fn editor_dispatch(s, key) {
         return ACT_CMDLINE_APPEND;
     }
 
-    if (mode == MODE_SEARCH) {
-        if (key == KEY_ESC)       { store64(s, MODE_NORMAL); return ACT_SEARCH_CANCEL; }
-        if (key == KEY_ENTER)     { store64(s, MODE_NORMAL); return ACT_SEARCH_EXECUTE; }
-        if (key == KEY_LF)        { store64(s, MODE_NORMAL); return ACT_SEARCH_EXECUTE; }
-        if (key == KEY_DEL)       { return ACT_CMDLINE_BACKSPACE; }
-        if (key == KEY_BACKSPACE) { return ACT_CMDLINE_BACKSPACE; }
-        return ACT_CMDLINE_APPEND;
-    }
-    if (mode == MODE_SEARCH_BACK) {
+    # SEARCH and SEARCH_BACK share dispatch logic byte-for-byte —
+    # the difference is purely the direction recorded by search.cyr's
+    # ACT_TO_SEARCH / ACT_TO_SEARCH_BACK transitions earlier.
+    if (mode == MODE_SEARCH || mode == MODE_SEARCH_BACK) {
         if (key == KEY_ESC)       { store64(s, MODE_NORMAL); return ACT_SEARCH_CANCEL; }
         if (key == KEY_ENTER)     { store64(s, MODE_NORMAL); return ACT_SEARCH_EXECUTE; }
         if (key == KEY_LF)        { store64(s, MODE_NORMAL); return ACT_SEARCH_EXECUTE; }

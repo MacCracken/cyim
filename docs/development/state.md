@@ -14,15 +14,17 @@
 
 ## Binary
 
-- `build/cyim` — DCE build size: **256,344 B** (M4 closer; M3 was 226,064 B; M2 was 162,184 B; M1 was 101,560 B; M0 stub was 57,728 B)
+- `build/cyim` — DCE build size: **273,912 B** (M6 closer; M5 was 262,504 B; M4 was 256,344 B; M3 was 226,064 B; M2 was 162,184 B; M1 was 101,560 B; M0 stub was 57,728 B). Source: ~4 100 LOC editor + ~5 000 LOC tests/fuzz/grammars. ~60 source bytes per binary byte.
 
 ## Tests
 
-- Test suites: M0 + M1 (8) + M2 (4) + M3 (2) + M4 (`tests/search.tcyr` + `tests/undo.tcyr` + `tests/visual.tcyr` + `tests/dot.tcyr`)
-- Assertion count: 812 (M1 350; M2 +117 = 467; M3 +192 = 659; M4 +153 = 812)
+- Test suites: M0 + M1 (8) + M2 (4) + M3 (2) + M4 (4)
+- Assertion count: 838 (M1 350; M2 +117 = 467; M3 +192 = 659; M4 +153 = 812; M6 +26 = 838)
 - Integration smoke: `tests/integration_smoke.py` — 14 PTY-driven end-to-end checks (5 M1 + 2 M2 + 4 M3 + 3 M4)
-- Fuzz harnesses: planned (gap-buffer + tokenizer integration)
-- Benchmarks: planned at M5 (closeout pass)
+- Fuzz harnesses: 3 (`fuzz/buffer.fcyr` + `fuzz/tokenizer.fcyr` + `fuzz/driver.fcyr`); all pass under `cyrius fuzz`
+- Performance benches: 9 (`tests/perf.bcyr`); baseline + M6 cache-hit bench in [`BENCHMARKS.md`](../../BENCHMARKS.md)
+- Security audit: initial pass at [`docs/audit/2026-04-25-security-audit.md`](../audit/2026-04-25-security-audit.md) — F-1 / F-3 / F-4 closed in M6; F-2 / F-5 / F-6 remain documented for M7 / post-v1.0
+- Cleanliness: `cyrius lint` 0 correctness warnings (~30 advisory line-length only); `cyrius fmt --check` clean across all `src/*.cyr`
 
 ## Active Milestone
 
@@ -30,10 +32,10 @@
 - **M1** — gap-buffer + raw-mode TTY + modal dispatch. *Done.*
 - **M2** — syntax highlighting via `vyakarana`. *Done.*
 - **M3** — multi-buffer + splits + window navigation. *Done.*
-- **M4** — search, undo, visual, `.` repeat, `:set` + `.cyimrc`. *Done.* All 6 bites landed.
-- **M5 (next)** — polish: docs pass, perf benchmarks (1 / 10 / 100 MB fixtures), fuzz the tokenizer + gap-buffer + driver. Consumer integration (`agnoshi`, `aethersafha`) deferred to those projects. See [`roadmap.md`](roadmap.md).
-- **M6** — P(-1) hardening: cleanliness gate, internal deep review, refactor pass, dead-code audit, doc audit.
-- **M7** — Security audit: external 0-day / CVE corpus review (vim, neovim, terminal apps), security-hardening checklist, audit report; CRITICAL / HIGH closed before v1.0.
+- **M4** — search, undo, visual, `.` repeat, `:set` + `.cyimrc`. *Done.*
+- **M5** — polish: docs, perf benchmarks, fuzz, receipts. *Done.*
+- **M6** — P(-1) hardening: tokenbuf cache, audit-finding fixes (F-1/F-3/F-4), cleanliness gate, refactor pass. *Done.* All 6 bites landed.
+- **M7 (next)** — Security audit: external 0-day / CVE corpus review (vim, neovim, terminal apps), full security-hardening checklist re-walk, audit report; remaining CRITICAL / HIGH closed before v1.0. F-2 / F-5 / F-6 triaged here.
 - **v1.0** — release; downstream consumers take over.
 
 ## Consumers

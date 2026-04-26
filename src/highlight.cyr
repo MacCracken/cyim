@@ -162,10 +162,34 @@ fn _hl_buf_to_cstr(b) {
 
 # Tokenize the buffer's content as `lang`. Returns the tokenbuf or 0
 # when no grammar matches (caller falls back to plain rendering).
+#
+# Per-buffer cache: each gap-buffer carries a (cached_tb, cached_version,
+# cached_lang) triple. Cache hits when:
+#   - cached_tb is non-zero,
+#   - cached_lang pointer equals `lang` (lang_name() returns stable
+#     literals so pointer compare is robust),
+#   - cached_version equals the buffer's current version.
+# Misses retokenize and update the cache. M6 hot-path fix for the
+# M5-flagged 3.7 MB/s tokenize cost — read-only navigation now hits
+# the cache after the first frame.
 fn highlight_buf(b, lang) {
     highlight_init();
+    if (b == 0) { return 0; }
+    if (lang == 0) { return 0; }
+
+    var cached = buf_cached_tb(b);
+    if (cached != 0) {
+        if (buf_cached_version(b) == buf_version(b)) {
+            if (buf_cached_lang(b) == lang) {
+                return cached;
+            }
+        }
+    }
+
     var src = _hl_buf_to_cstr(b);
-    return tokenize_source(src, lang);
+    var tb = tokenize_source(src, lang);
+    if (tb != 0) { buf_set_cache(b, tb, buf_version(b), lang); }
+    return tb;
 }
 
 # Linear scan of `tb` for the token whose [start, start+len) covers

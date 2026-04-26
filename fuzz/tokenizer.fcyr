@@ -1,0 +1,72 @@
+# fuzz/tokenizer.fcyr — random bytes through highlight_buf
+#
+# Builds 100 random 1KB buffers, tokenizes each as cyrius, walks every
+# returned token's kind/start/len. Catches:
+#   - tokenizer crashes on adversarial byte sequences
+#   - out-of-bounds token spans (start + len > buf_len)
+#   - invalid kind values (not in TK_IDENT..TK_ERROR range)
+
+include "lib/syscalls.cyr"
+include "lib/alloc.cyr"
+include "lib/string.cyr"
+include "lib/vec.cyr"
+include "lib/io.cyr"
+include "lib/vyakarana.cyr"
+include "src/buffer.cyr"
+include "src/highlight.cyr"
+
+var _rng = 0;
+fn rng_seed(s)  { _rng = s; return 0; }
+fn rng_next()   { _rng = _rng * 6364136223846793005 + 1442695040888963407; return _rng; }
+fn rng_pos() {
+    var v = rng_next();
+    if (v < 0) { return 0 - v - 1; }
+    return v;
+}
+
+fn fuzz_main(data, len) {
+    rng_seed(0xDEADBEEF);
+    var iter = 0;
+    while (iter < 100) {
+        var b = buf_new();
+        var k = 0;
+        while (k < 1024) {
+            var byte = rng_pos() & 0xFF;
+            # vyakarana's tokenize_source uses strlen(src), so embedded
+            # NULs would truncate — substitute with space to keep the
+            # full 1024 bytes in play.
+            if (byte == 0) { byte = 32; }
+            buf_insert_byte(b, byte);
+            k = k + 1;
+        }
+        var tb = highlight_buf(b, "cyrius");
+        if (tb != 0) {
+            var n = tokenbuf_count(tb);
+            var blen = buf_len(b);
+            var j = 0;
+            while (j < n) {
+                var kind  = tokenbuf_kind(tb, j);
+                var start = tokenbuf_start(tb, j);
+                var tlen  = tokenbuf_len(tb, j);
+                if (kind < 0)              { syscall(1, 2, "tok kind < 0\n", 13); return 1; }
+                if (kind > 9)              { syscall(1, 2, "tok kind > 9\n", 13); return 1; }
+                if (start < 0)             { syscall(1, 2, "tok start < 0\n", 14); return 1; }
+                if (tlen < 0)              { syscall(1, 2, "tok len < 0\n", 12); return 1; }
+                if (start + tlen > blen)   { syscall(1, 2, "tok span past EOB\n", 18); return 1; }
+                j = j + 1;
+            }
+        }
+        iter = iter + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var rc = fuzz_main("seed", 4);
+    if (rc == 0) { syscall(1, 1, "fuzz/tokenizer: ok (100 random 1KB buffers, all token spans valid)\n", 67); }
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

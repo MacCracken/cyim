@@ -23,15 +23,45 @@
 
 var BUF_INIT_CAP = 64;
 
+# Header layout: 64 bytes
+#   0  data       8  gap_start    16 gap_end       24 cap
+#   32 version    40 cached_tb    48 cached_ver    56 cached_lang
+#
+# version is bumped on every CONTENT mutation (insert / delete / clear).
+# Cursor moves don't change content and don't bump it. The cached_tb
+# slot lets `highlight_buf` skip retokenizing when version + lang are
+# unchanged — closes the M5 perf hot-path note (3.7 MB/s tokenize on
+# 1 MB → instant cache hit on the next render).
+
 # Create a new empty gap-buffer with initial capacity.
 fn buf_new() {
-    var b = alloc(32);
+    var b = alloc(64);
     var data = alloc(BUF_INIT_CAP);
     store64(b, data);
     store64(b + 8, 0);
     store64(b + 16, BUF_INIT_CAP);
     store64(b + 24, BUF_INIT_CAP);
+    store64(b + 32, 0);    # version
+    store64(b + 40, 0);    # cached_tb
+    store64(b + 48, 0);    # cached_version
+    store64(b + 56, 0);    # cached_lang
     return b;
+}
+
+# ──── Version + tokenbuf-cache accessors ────────────────────────────
+# Public; called from highlight.cyr and from anywhere that needs to
+# notice mutation without parsing the buffer.
+
+fn buf_version(b)            { return load64(b + 32); }
+fn buf_bump_version(b)       { store64(b + 32, load64(b + 32) + 1); return 0; }
+fn buf_cached_tb(b)          { return load64(b + 40); }
+fn buf_cached_version(b)     { return load64(b + 48); }
+fn buf_cached_lang(b)        { return load64(b + 56); }
+fn buf_set_cache(b, tb, ver, lang) {
+    store64(b + 40, tb);
+    store64(b + 48, ver);
+    store64(b + 56, lang);
+    return 0;
 }
 
 # Logical length (bytes of content; excludes the gap).
@@ -125,7 +155,7 @@ fn buf_grow(b, min_cap) {
     return 0;
 }
 
-# Insert one byte at the cursor. Grows on demand.
+# Insert one byte at the cursor. Grows on demand. Bumps version.
 fn buf_insert_byte(b, ch) {
     var gs = load64(b + 8);
     var ge = load64(b + 16);
@@ -136,6 +166,7 @@ fn buf_insert_byte(b, ch) {
     }
     store8(load64(b) + gs, ch);
     store64(b + 8, gs + 1);
+    buf_bump_version(b);
     return 0;
 }
 
@@ -154,6 +185,7 @@ fn buf_delete_left(b) {
     var gs = load64(b + 8);
     if (gs == 0) { return 0; }
     store64(b + 8, gs - 1);
+    buf_bump_version(b);
     return 1;
 }
 
@@ -163,15 +195,18 @@ fn buf_delete_right(b) {
     var cap = load64(b + 24);
     if (ge >= cap) { return 0; }
     store64(b + 16, ge + 1);
+    buf_bump_version(b);
     return 1;
 }
 
 # Drop all logical content. Allocation is preserved (the freelist allocator
 # can't reclaim arbitrary blocks anyway); we just collapse the live region
-# into the gap. Cursor returns to 0.
+# into the gap. Cursor returns to 0. Version bumps so cached tokenbufs
+# invalidate.
 fn buf_clear(b) {
     store64(b + 8, 0);
     store64(b + 16, load64(b + 24));
+    buf_bump_version(b);
     return 0;
 }
 

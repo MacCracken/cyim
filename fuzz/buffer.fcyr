@@ -1,0 +1,66 @@
+# fuzz/buffer.fcyr — random insert / delete / move on a gap-buffer
+#
+# Drives 10K random ops; asserts the cursor stays in [0, buf_len] after
+# every op and that buf_len stays >= 0. Catches off-by-one bugs in the
+# gap migration and the bounds checks on delete_left / delete_right.
+#
+# Deterministic via a fixed LCG seed so failures reproduce.
+
+include "lib/syscalls.cyr"
+include "lib/alloc.cyr"
+include "lib/string.cyr"
+include "lib/io.cyr"
+include "src/buffer.cyr"
+
+var _rng = 0;
+fn rng_seed(s)  { _rng = s; return 0; }
+fn rng_next()   { _rng = _rng * 6364136223846793005 + 1442695040888963407; return _rng; }
+fn rng_pos() {
+    var v = rng_next();
+    if (v < 0) { return 0 - v - 1; }
+    return v;
+}
+fn rng_int(max) {
+    if (max <= 0) { return 0; }
+    return rng_pos() % max;
+}
+
+fn fuzz_main(data, len) {
+    rng_seed(0xCAFEBABE);
+    var b = buf_new();
+    var i = 0;
+    while (i < 10000) {
+        var op = rng_int(4);
+        var blen = buf_len(b);
+        if (op == 0) {
+            buf_insert_byte(b, 65 + rng_int(26));
+        }
+        if (op == 1) {
+            buf_delete_left(b);
+        }
+        if (op == 2) {
+            buf_delete_right(b);
+        }
+        if (op == 3) {
+            if (blen > 0) { buf_move(b, rng_int(blen + 1)); }
+        }
+        # Invariants
+        var c = buf_cursor(b);
+        var nl = buf_len(b);
+        if (c < 0)   { syscall(1, 2, "cursor < 0\n", 11); return 1; }
+        if (c > nl)  { syscall(1, 2, "cursor > buf_len\n", 17); return 1; }
+        if (nl < 0)  { syscall(1, 2, "buf_len < 0\n", 12); return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    var rc = fuzz_main("seed", 4);
+    if (rc == 0) { syscall(1, 1, "fuzz/buffer: ok (10000 random ops, all invariants held)\n", 56); }
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

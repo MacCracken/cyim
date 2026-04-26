@@ -386,6 +386,21 @@ fn main() {
     assert_eq(command_execute(s_set), 0, ":set tabstop=8 returns 0");
     assert_eq(editor_cfg_tabstop(s_set), 8, "tabstop now 8");
 
+    test_group("F-3 — command_append caps cmdbuf at COMMAND_MAX_LEN");
+    var s_cap = editor_new(buf_new());
+    bl_init(s_cap, editor_buf(s_cap));
+    var cb_cap = editor_cmdbuf(s_cap);
+    var ic = 0;
+    while (ic < COMMAND_MAX_LEN) {
+        command_append(s_cap, 65);  # 'A'
+        ic = ic + 1;
+    }
+    assert_eq(buf_len(cb_cap), COMMAND_MAX_LEN, "cmdbuf at exactly the cap");
+    # One more byte should be dropped + status set.
+    command_append(s_cap, 66);
+    assert_eq(buf_len(cb_cap), COMMAND_MAX_LEN, "byte past cap dropped");
+    assert_nonnull(editor_status(s_cap), "overflow status message set");
+
     test_group(":set unknown -> ERR_UNKNOWN_CMD");
     command_reset(s_set);
     command_append(s_set, 115); command_append(s_set, 101); command_append(s_set, 116);
