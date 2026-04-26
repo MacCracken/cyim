@@ -14,13 +14,13 @@
 
 ## Binary
 
-- `build/cyim` — DCE build size: **162,184 B** (M2 closer; M1 was 101,560 B; M0 stub was 57,728 B)
+- `build/cyim` — DCE build size: **226,064 B** (M3 closer; M2 was 162,184 B; M1 was 101,560 B; M0 stub was 57,728 B)
 
 ## Tests
 
-- Test suites: M0 + M1 (8 suites) + M2 (`tests/highlight.tcyr` + `tests/lang.tcyr` + `tests/render.tcyr` + `tests/cyimrc.tcyr`)
-- Assertion count: 467 (M1: 350; M2: +31 highlight + 37 lang + 27 render + 22 cyimrc = 117)
-- Integration smoke: `tests/integration_smoke.py` — 7 PTY-driven end-to-end checks (5 from M1 bite 8 + 2 M2 ANSI-output checks)
+- Test suites: M0 + M1 (8) + M2 (4) + M3 (`tests/buflist.tcyr` + `tests/window.tcyr`)
+- Assertion count: 659 (M1 350; M2 +117 = 467; M3 +192 = 659)
+- Integration smoke: `tests/integration_smoke.py` — 11 PTY-driven end-to-end checks (5 M1 + 2 M2 + 4 M3)
 - Fuzz harnesses: planned (gap-buffer + tokenizer integration)
 - Benchmarks: planned at M5 (closeout pass)
 
@@ -28,8 +28,9 @@
 
 - **M0** — scaffold. *Done.*
 - **M1** — gap-buffer + raw-mode TTY + modal dispatch. *Done.* All 8 bites landed.
-- **M2** — syntax highlighting via `vyakarana`. *Done.* All 6 bites landed: vyakarana dep + grammars, highlight module, lang detection, palette + ANSI render integration, main.cyr wiring + integration smoke, `.cyimrc` palette overrides.
-- **M3 (next)** — multi-buffer + splits + file I/O baseline. See [`roadmap.md`](roadmap.md).
+- **M2** — syntax highlighting via `vyakarana`. *Done.* All 6 bites landed.
+- **M3** — multi-buffer + splits + window navigation. *Done.* All 6 bites landed: buffer registry + `:bn/:bp/:b N`, `:ls` + status channel, window-tree skeleton, `:sp/:vsp`, Ctrl-w h/j/k/l, `:q` cascade + per-window status + integration smoke.
+- **M4 (next)** — search, undo, `.cyimrc` config, visual mode, `*`/`#`, `.` repeat. See [`roadmap.md`](roadmap.md).
 
 ## Consumers
 

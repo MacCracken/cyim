@@ -7,8 +7,11 @@
 include "lib/vyakarana.cyr"
 include "src/buffer.cyr"
 include "src/highlight.cyr"
+include "src/lang.cyr"
 include "src/cyimrc.cyr"
 include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
 include "src/tty.cyr"
 include "src/render.cyr"
 

@@ -23,6 +23,8 @@ include "src/highlight.cyr"
 include "src/lang.cyr"
 include "src/cyimrc.cyr"
 include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
 include "src/motion.cyr"
 include "src/insert.cyr"
 include "src/edit.cyr"
@@ -70,6 +72,8 @@ fn run_editor(file_path) {
         editor_set_file_path(s, file_path);
     }
     editor_set_modified(s, 0);
+    bl_init(s, b);
+    window_init(s);
 
     if (tty_raw(0) < 0) {
         syscall(1, 2, "cyim: stdin is not a TTY\n", 25);

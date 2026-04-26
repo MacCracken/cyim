@@ -9,6 +9,8 @@
 
 include "src/buffer.cyr"
 include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
 include "src/motion.cyr"
 include "src/insert.cyr"
 include "src/edit.cyr"
@@ -166,7 +168,7 @@ fn main() {
     assert_eq(editor_modified(s8), 0, "modified cleared");
     assert_eq(editor_quit(s8), 1, "quit flag set");
 
-    test_group(":e <path> loads file when not modified");
+    test_group(":e <path> registers + switches to a new buffer");
     # Pre-populate target file.
     file_write_all(TMP_E, "loaded content\n", 15);
     var b9 = buf_new();
@@ -182,23 +184,60 @@ fn main() {
         epi = epi + 1;
     }
     assert_eq(command_execute(s9), 0, "':e <path>' returns 0");
-    assert_eq(buf_len(b9), 15, "buffer loaded with file");
-    assert_eq(buf_eq(b9, "loaded content\n", 15), 1, "buffer matches file content");
-    assert_eq(buf_cursor(b9), 0, "cursor at 0 after :e");
+    # Original b9 (slot 0) is untouched; new buffer is at slot 1 and active.
+    assert_eq(bl_count(s9), 2, "registry has 2 entries");
+    assert_eq(bl_active_index(s9), 1, "new buffer is active (slot 1)");
+    var active_buf = editor_buf(s9);
+    assert_nonnull(active_buf, "editor.buf points to new buffer");
+    assert_eq(buf_len(active_buf), 15, "loaded buffer has 15 bytes");
+    assert_eq(buf_eq(active_buf, "loaded content\n", 15), 1, "loaded content matches");
+    assert_eq(buf_cursor(active_buf), 0, "cursor at 0 in loaded buffer");
     assert_eq(editor_modified(s9), 0, "fresh load is not modified");
-    assert_nonnull(editor_file_path(s9), "file_path set");
+    assert_nonnull(editor_file_path(s9), "file_path set on active");
+    # Original buffer still in registry, untouched.
+    assert_eq(buf_len(b9), 0, "original b9 untouched");
 
-    test_group(":e on dirty buffer is refused");
+    test_group(":e on dirty buffer preserves it (registry-aware semantics)");
     var b10 = buf_new();
     var s10 = editor_new(b10);
-    insert_literal(s10, 65);
+    insert_literal(s10, 65);          # dirties b10
+    assert_eq(editor_modified(s10), 1, "b10 is now dirty");
+    file_write_all(TMP_E, "another content\n", 16);
+    command_reset(s10);
+    command_append(s10, 101);          # 'e'
+    command_append(s10, 32);
+    var ep10 = TMP_E;
+    var ep10i = 0;
+    var ep10n = strlen(ep10);
+    while (ep10i < ep10n) {
+        command_append(s10, load8(ep10 + ep10i));
+        ep10i = ep10i + 1;
+    }
+    assert_eq(command_execute(s10), 0, "':e' on dirty returns 0 (no refusal)");
+    # New active is the loaded file; old b10's modified state is preserved
+    # in slot 0 of the registry.
+    assert_eq(bl_active_index(s10), 1, "new buffer active");
+    assert_eq(editor_modified(s10), 0, "active is fresh-loaded, not modified");
+    assert_eq(bl_modified(s10, 0), 1, "slot 0 (original) keeps its modified flag");
+    # Original buffer's contents preserved too.
+    assert_eq(buf_get(bl_buf(s10, 0), 0), 65, "slot 0 has the 'A' we typed");
+
+    test_group(":e on already-open path switches to existing slot (no reload)");
+    # bl_count(s10) is 2; active is slot 1 (TMP_E). :e TMP_E again should
+    # NOT add a third slot — it should be a no-op (or set active to that slot).
     command_reset(s10);
     command_append(s10, 101);
     command_append(s10, 32);
-    command_append(s10, 102); # 'f' (any path)
-    assert_eq(command_execute(s10), 0 - 1, "':e' returns -1");
-    assert_eq(editor_last_error(s10), ERR_DIRTY, "ERR_DIRTY on dirty :e");
-    assert_eq(buf_len(b10), 1, "buffer untouched");
+    var rp = TMP_E;
+    var rpi = 0;
+    var rpn = strlen(rp);
+    while (rpi < rpn) {
+        command_append(s10, load8(rp + rpi));
+        rpi = rpi + 1;
+    }
+    assert_eq(command_execute(s10), 0, "':e <existing>' returns 0");
+    assert_eq(bl_count(s10), 2, "no new slot added");
+    assert_eq(bl_active_index(s10), 1, "still on slot 1");
 
     test_group(":e missing file -> ERR_FILE_NOT_FOUND");
     var b11 = buf_new();

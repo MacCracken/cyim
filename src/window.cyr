@@ -1,0 +1,325 @@
+# window.cyr — window tree (leaf or split)
+#
+# A `Window` is either a LEAF (renders one buffer in its rect) or a
+# SPLIT (two child Windows + a ratio dividing the rect). The shape is a
+# binary tree; every interior node is either horizontal (top/bottom) or
+# vertical (left/right). Splits never overlap and always cover their
+# parent rect exactly — the layout pass computes each node's rect from
+# the root rect and the per-node ratio in one recursive descent.
+#
+# Layout (80 B per Window):
+#   off  0  type      i64  WIN_LEAF / WIN_SPLIT_H / WIN_SPLIT_V
+#   off  8  buf_idx   i64  registry slot (LEAF) or unused (SPLIT)
+#   off 16  child_a   i64  Window ptr — top (H-split) or left (V-split)
+#   off 24  child_b   i64  Window ptr — bottom or right
+#   off 32  ratio     i64  child_a's share, scaled out of 1000 (so 500 = 50/50)
+#   off 40  rect_row  i64  populated by window_layout
+#   off 48  rect_col  i64
+#   off 56  rect_h    i64
+#   off 64  rect_w    i64
+#   off 72  parent    i64  parent Window* or 0 if root
+#
+# Leaves have child_a / child_b == 0. Splits have buf_idx == -1 by
+# convention (callers never read it on a split). Parent ptr lets
+# `window_split_active` rewire a leaf into a split in O(1).
+
+var WIN_LEAF    = 0;
+var WIN_SPLIT_H = 1;
+var WIN_SPLIT_V = 2;
+
+var WIN_RATIO_FULL = 1000;     # denominator for split ratios
+
+# ── Allocation ───────────────────────────────────────────────────────
+
+fn window_new_leaf(buf_idx) {
+    var w = alloc(80);
+    store64(w + 0,  WIN_LEAF);
+    store64(w + 8,  buf_idx);
+    store64(w + 16, 0);
+    store64(w + 24, 0);
+    store64(w + 32, 0);
+    store64(w + 40, 0);
+    store64(w + 48, 0);
+    store64(w + 56, 0);
+    store64(w + 64, 0);
+    store64(w + 72, 0);
+    return w;
+}
+
+# Build a split holding `a` and `b` with `ratio_a` parts to the first
+# child (out of WIN_RATIO_FULL). `type` is WIN_SPLIT_H or WIN_SPLIT_V.
+# Sets the parent pointer on both children so subsequent rewires
+# (further splits, leaf removal) can climb without a full tree search.
+fn window_new_split(type, a, b, ratio_a) {
+    var w = alloc(80);
+    store64(w + 0,  type);
+    store64(w + 8,  0 - 1);
+    store64(w + 16, a);
+    store64(w + 24, b);
+    store64(w + 32, ratio_a);
+    store64(w + 40, 0);
+    store64(w + 48, 0);
+    store64(w + 56, 0);
+    store64(w + 64, 0);
+    store64(w + 72, 0);
+    if (a != 0) { store64(a + 72, w); }
+    if (b != 0) { store64(b + 72, w); }
+    return w;
+}
+
+# ── Accessors ────────────────────────────────────────────────────────
+
+fn window_type(w)     { return load64(w + 0); }
+fn window_buf_idx(w)  { return load64(w + 8); }
+fn window_child_a(w)  { return load64(w + 16); }
+fn window_child_b(w)  { return load64(w + 24); }
+fn window_ratio(w)    { return load64(w + 32); }
+fn window_rect_row(w) { return load64(w + 40); }
+fn window_rect_col(w) { return load64(w + 48); }
+fn window_rect_h(w)   { return load64(w + 56); }
+fn window_rect_w(w)   { return load64(w + 64); }
+
+fn window_is_leaf(w)  {
+    if (window_type(w) == WIN_LEAF) { return 1; }
+    return 0;
+}
+
+fn window_set_buf_idx(w, idx) { store64(w + 8, idx); return 0; }
+fn window_parent(w)           { return load64(w + 72); }
+fn window_set_parent(w, p)    { store64(w + 72, p); return 0; }
+
+# Rewire `parent`'s old child pointer (must be `old`) to `new`. Used
+# when growing the tree by splitting a leaf in place.
+fn window_replace_child(parent, old, new) {
+    if (parent == 0) { return 0; }
+    if (window_child_a(parent) == old) {
+        store64(parent + 16, new);
+        if (new != 0) { window_set_parent(new, parent); }
+        return 0;
+    }
+    if (window_child_b(parent) == old) {
+        store64(parent + 24, new);
+        if (new != 0) { window_set_parent(new, parent); }
+        return 0;
+    }
+    return 0 - 1;
+}
+
+# ── Layout pass ──────────────────────────────────────────────────────
+
+fn _window_set_rect(w, row, col, h, wd) {
+    store64(w + 40, row);
+    store64(w + 48, col);
+    store64(w + 56, h);
+    store64(w + 64, wd);
+    return 0;
+}
+
+# Assign rects to every node in the subtree rooted at `w`. The supplied
+# (row, col, h, wd) is the parent's allocation; for a leaf this is the
+# whole rect, for a split it gets divided by `ratio` along the split axis.
+#
+# Splits clamp to a minimum of 1 row/col per side so a degenerate ratio
+# never produces a zero-sized child — a child needing more space ends
+# up with at least one row/col of display, which the render path can
+# truncate gracefully.
+fn window_layout(w, row, col, h, wd) {
+    _window_set_rect(w, row, col, h, wd);
+    var t = window_type(w);
+    if (t == WIN_LEAF) { return 0; }
+
+    var a = window_child_a(w);
+    var b = window_child_b(w);
+    var r = window_ratio(w);
+
+    if (t == WIN_SPLIT_H) {
+        var a_h = h * r / WIN_RATIO_FULL;
+        if (a_h < 1)        { a_h = 1; }
+        if (a_h > h - 1)    { a_h = h - 1; }
+        window_layout(a, row,         col, a_h,     wd);
+        window_layout(b, row + a_h,   col, h - a_h, wd);
+        return 0;
+    }
+    if (t == WIN_SPLIT_V) {
+        var a_w = wd * r / WIN_RATIO_FULL;
+        if (a_w < 1)         { a_w = 1; }
+        if (a_w > wd - 1)    { a_w = wd - 1; }
+        window_layout(a, row, col,         h, a_w);
+        window_layout(b, row, col + a_w,   h, wd - a_w);
+        return 0;
+    }
+    return 0;
+}
+
+# ── Leaf iteration ───────────────────────────────────────────────────
+# `out_leaves` is a vec to push leaf pointers into in left-to-right /
+# top-to-bottom order (the natural depth-first traversal). Callers walk
+# the result with vec_get / vec_len.
+
+fn window_collect_leaves(w, out_leaves) {
+    if (window_is_leaf(w) == 1) {
+        vec_push(out_leaves, w);
+        return 1;
+    }
+    window_collect_leaves(window_child_a(w), out_leaves);
+    window_collect_leaves(window_child_b(w), out_leaves);
+    return vec_len(out_leaves);
+}
+
+fn window_count_leaves(w) {
+    if (window_is_leaf(w) == 1) { return 1; }
+    return window_count_leaves(window_child_a(w))
+         + window_count_leaves(window_child_b(w));
+}
+
+# Find the leaf containing the given (row, col). Returns 0 when the
+# point falls outside `w`'s rect — useful when navigating with Ctrl-w
+# h/j/k/l, which uses the active leaf's rect to compute a probe point.
+fn window_leaf_at(w, row, col) {
+    var rr = window_rect_row(w);
+    var rc = window_rect_col(w);
+    var rh = window_rect_h(w);
+    var rw = window_rect_w(w);
+    if (row < rr)         { return 0; }
+    if (row >= rr + rh)   { return 0; }
+    if (col < rc)         { return 0; }
+    if (col >= rc + rw)   { return 0; }
+    if (window_is_leaf(w) == 1) { return w; }
+    var a = window_leaf_at(window_child_a(w), row, col);
+    if (a != 0) { return a; }
+    return window_leaf_at(window_child_b(w), row, col);
+}
+
+# ── Editor-state integration ────────────────────────────────────────
+# window_root and active_leaf live at editor offsets 88 / 96. These
+# helpers keep the surface tidy and let buflist / command / render
+# treat the tree as opaque.
+
+fn editor_window_root(s)        { return load64(s + 88); }
+fn editor_active_leaf(s)        { return load64(s + 96); }
+fn editor_set_window_root(s, w) { store64(s + 88, w); return 0; }
+fn editor_set_active_leaf(s, w) { store64(s + 96, w); return 0; }
+
+# Lazy-init: create a single LEAF root showing whatever buffer the
+# editor's bl_active_index points at. Idempotent.
+fn window_init(s) {
+    if (editor_window_root(s) != 0) { return 0; }
+    bl_init(s, editor_buf(s));
+    var leaf = window_new_leaf(bl_active_index(s));
+    editor_set_window_root(s, leaf);
+    editor_set_active_leaf(s, leaf);
+    return 0;
+}
+
+# Split the active leaf in place. Both halves show the same buf_idx;
+# focus stays on the original leaf (now `child_a` of the new split).
+# `type` is WIN_SPLIT_H or WIN_SPLIT_V; ratio defaults to a 50/50.
+fn window_split_active(s, type) {
+    window_init(s);
+    var leaf = editor_active_leaf(s);
+    if (leaf == 0)                       { return 0 - 1; }
+    if (window_is_leaf(leaf) == 0)       { return 0 - 1; }
+    var bidx = window_buf_idx(leaf);
+    var sibling = window_new_leaf(bidx);
+    var parent = window_parent(leaf);
+    var split = window_new_split(type, leaf, sibling, 500);
+    if (parent == 0) {
+        editor_set_window_root(s, split);
+    } else {
+        window_replace_child(parent, leaf, split);
+    }
+    return 0;
+}
+
+# Default rect used by window_apply when navigating before a render
+# fires. Re-running layout on every navigation step is cheap (recursive
+# pointer walk over a tree of <= a few dozen nodes) and keeps rects
+# fresh after a fresh `:sp` / `:vsp` even if the user navigates before
+# the next render.
+var WIN_NAV_DEFAULT_ROWS = 23;   # term_rows - status row
+var WIN_NAV_DEFAULT_COLS = 80;
+
+# Move active focus to the leaf adjacent to the current one in the
+# direction (dx, dy). Probe point = midpoint of the active leaf's
+# rect side touching that direction. No-op if the probe falls outside
+# the tree's rect (= we're at the edge with no neighbor).
+fn window_navigate(s, dx, dy) {
+    var root = editor_window_root(s);
+    if (root == 0) { return 0; }
+    window_layout(root, 0, 0, WIN_NAV_DEFAULT_ROWS, WIN_NAV_DEFAULT_COLS);
+    var leaf = editor_active_leaf(s);
+    if (leaf == 0) { return 0; }
+    var rr = window_rect_row(leaf);
+    var rc = window_rect_col(leaf);
+    var rh = window_rect_h(leaf);
+    var rw = window_rect_w(leaf);
+    var probe_row = rr + rh / 2;
+    var probe_col = rc + rw / 2;
+    if (dx < 0) { probe_col = rc - 1; }
+    if (dx > 0) { probe_col = rc + rw; }
+    if (dy < 0) { probe_row = rr - 1; }
+    if (dy > 0) { probe_row = rr + rh; }
+    var target = window_leaf_at(root, probe_row, probe_col);
+    if (target == 0)    { return 0; }
+    if (target == leaf) { return 0; }
+    bl_set_active(s, window_buf_idx(target));
+    editor_set_active_leaf(s, target);
+    return 0;
+}
+
+# Top-level window-action handler. Returns 1 if the action was a
+# window navigation (so callers know it was consumed), 0 otherwise.
+fn window_apply(s, action) {
+    if (action == ACT_WIN_LEFT)  { window_navigate(s, 0 - 1, 0);     return 1; }
+    if (action == ACT_WIN_RIGHT) { window_navigate(s,     1, 0);     return 1; }
+    if (action == ACT_WIN_UP)    { window_navigate(s, 0, 0 - 1);     return 1; }
+    if (action == ACT_WIN_DOWN)  { window_navigate(s, 0,     1);     return 1; }
+    return 0;
+}
+
+# Descend a subtree to its first leaf via the child_a chain. Used to
+# pick a focus target when a non-leaf becomes the new content of a
+# slot — the user lands on the topmost / leftmost leaf of the subtree.
+fn _window_first_leaf(w) {
+    var cur = w;
+    var done = 0;
+    while (done == 0) {
+        if (window_is_leaf(cur) == 1) { done = 1; }
+        if (done == 0) { cur = window_child_a(cur); }
+    }
+    return cur;
+}
+
+# Close the active leaf. If it is the only leaf in the tree, set
+# editor_quit so the main loop exits. Otherwise the leaf's parent
+# split is replaced by the leaf's sibling, and active focus moves to
+# the first leaf of that sibling subtree. The buffer registry is not
+# touched — closed buffers remain accessible via :ls and :b N.
+fn window_close_active(s) {
+    var leaf = editor_active_leaf(s);
+    if (leaf == 0) {
+        editor_set_quit(s, 1);
+        return 0;
+    }
+    var root = editor_window_root(s);
+    if (leaf == root) {
+        editor_set_quit(s, 1);
+        return 0;
+    }
+    var parent = window_parent(leaf);
+    var sibling = window_child_a(parent);
+    if (sibling == leaf) { sibling = window_child_b(parent); }
+
+    var grandparent = window_parent(parent);
+    if (grandparent == 0) {
+        editor_set_window_root(s, sibling);
+        window_set_parent(sibling, 0);
+    } else {
+        window_replace_child(grandparent, parent, sibling);
+    }
+
+    var new_active = _window_first_leaf(sibling);
+    bl_set_active(s, window_buf_idx(new_active));
+    editor_set_active_leaf(s, new_active);
+    return 0;
+}

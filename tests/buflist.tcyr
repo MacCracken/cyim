@@ -1,0 +1,200 @@
+# tests/buflist.tcyr — buffer registry + :bn / :bp / :b N
+#
+# The registry mirrors per-buffer fields (buf, file_path, modified) into
+# the editor's fast-path slots. Switching active snapshots the current
+# editor state into the previous slot, then loads the new slot. These
+# tests prove the snapshot/load invariants and the round-trip behaviour
+# of the new commands.
+
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/driver.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("bl_count is 0 before init; bl_init seeds 1 entry");
+    var b1 = buf_new();
+    var s = editor_new(b1);
+    assert_eq(bl_count(s), 0, "uninitialized list -> count 0");
+    bl_init(s, b1);
+    assert_eq(bl_count(s), 1, "after init -> count 1");
+    assert_eq(bl_active_index(s), 0, "active idx 0");
+    assert_eq(bl_buf(s, 0), b1, "slot 0 buf == b1");
+    assert_eq(bl_path(s, 0), 0, "slot 0 path == 0");
+    assert_eq(bl_modified(s, 0), 0, "slot 0 modified == 0");
+
+    test_group("bl_init is idempotent");
+    bl_init(s, b1);
+    assert_eq(bl_count(s), 1, "still 1 entry");
+
+    test_group("bl_add appends without switching active");
+    var b2 = buf_new();
+    var idx = bl_add(s, b2, "foo.cyr");
+    assert_eq(idx, 1, "new index = 1");
+    assert_eq(bl_count(s), 2, "count = 2");
+    assert_eq(bl_active_index(s), 0, "active still 0");
+    assert_eq(bl_buf(s, 1), b2, "slot 1 buf == b2");
+    assert_streq(bl_path(s, 1), "foo.cyr", "slot 1 path");
+
+    test_group("bl_set_active snapshots + loads");
+    # Mark active (slot 0) as modified, then switch.
+    editor_set_modified(s, 1);
+    editor_set_file_path(s, "first.cyr");
+    var rc = bl_set_active(s, 1);
+    assert_eq(rc, 0, "switch to slot 1 ok");
+    assert_eq(bl_active_index(s), 1, "active now 1");
+    # Editor mirror reflects slot 1's state.
+    assert_eq(editor_buf(s), b2, "editor.buf == b2");
+    assert_eq(editor_modified(s), 0, "editor.modified == 0 (slot 1 was clean)");
+    assert_streq(editor_file_path(s), "foo.cyr", "editor.file_path == 'foo.cyr'");
+    # Slot 0 captured the modified state we set before switching.
+    assert_eq(bl_modified(s, 0), 1, "slot 0 modified preserved");
+    assert_streq(bl_path(s, 0), "first.cyr", "slot 0 path preserved");
+
+    test_group("bl_set_active back restores per-buffer state");
+    bl_set_active(s, 0);
+    assert_eq(editor_buf(s), b1, "editor.buf == b1");
+    assert_eq(editor_modified(s), 1, "modified restored to 1");
+    assert_streq(editor_file_path(s), "first.cyr", "path restored");
+
+    test_group("bl_set_active out-of-range returns -1");
+    assert_eq(bl_set_active(s, 0 - 1), 0 - 1, "-1 out of range");
+    assert_eq(bl_set_active(s, 99), 0 - 1, "99 out of range");
+    assert_eq(bl_active_index(s), 0, "active unchanged on bad index");
+
+    test_group("bl_set_active to current is a no-op");
+    var rc_noop = bl_set_active(s, 0);
+    assert_eq(rc_noop, 0, "noop returns 0");
+    assert_eq(bl_active_index(s), 0, "active still 0");
+    # Mutate state, ensure noop didn't snapshot/restore (would be lossless either way).
+    editor_set_modified(s, 0);
+    bl_set_active(s, 0);
+    assert_eq(editor_modified(s), 0, "noop preserved current modified");
+
+    test_group("bl_next / bl_prev wrap around");
+    # Currently 2 buffers, active=0. bl_next -> 1, bl_next -> 0 (wrap).
+    bl_next(s);
+    assert_eq(bl_active_index(s), 1, "next -> 1");
+    bl_next(s);
+    assert_eq(bl_active_index(s), 0, "next wraps to 0");
+    bl_prev(s);
+    assert_eq(bl_active_index(s), 1, "prev wraps to last");
+    bl_prev(s);
+    assert_eq(bl_active_index(s), 0, "prev -> 0");
+
+    test_group("bl_next / bl_prev are no-ops on a single-buffer registry");
+    var b_solo = buf_new();
+    var s_solo = editor_new(b_solo);
+    bl_init(s_solo, b_solo);
+    bl_next(s_solo);
+    assert_eq(bl_active_index(s_solo), 0, "next: single buffer stays at 0");
+    bl_prev(s_solo);
+    assert_eq(bl_active_index(s_solo), 0, "prev: single buffer stays at 0");
+
+    test_group(":bn / :bp via command_execute");
+    # Reset state with two buffers
+    var b_a = buf_new();
+    var s2 = editor_new(b_a);
+    bl_init(s2, b_a);
+    var b_b = buf_new();
+    bl_add(s2, b_b, "b.cyr");
+
+    # Drive :bn through the dispatcher
+    editor_set_mode(s2, MODE_COMMAND);
+    command_reset(s2);
+    command_append(s2, 98);  # 'b'
+    command_append(s2, 110); # 'n'
+    assert_eq(command_execute(s2), 0, ":bn returns 0");
+    assert_eq(bl_active_index(s2), 1, ":bn moved to slot 1");
+
+    command_reset(s2);
+    command_append(s2, 98);  # 'b'
+    command_append(s2, 112); # 'p'
+    assert_eq(command_execute(s2), 0, ":bp returns 0");
+    assert_eq(bl_active_index(s2), 0, ":bp moved back to slot 0");
+
+    test_group(":b N goes to specific buffer");
+    command_reset(s2);
+    command_append(s2, 98);  # 'b'
+    command_append(s2, 32);  # ' '
+    command_append(s2, 49);  # '1'
+    assert_eq(command_execute(s2), 0, ":b 1 returns 0");
+    assert_eq(bl_active_index(s2), 1, "active is now 1");
+
+    test_group(":b N out-of-range -> ERR_UNKNOWN_CMD");
+    command_reset(s2);
+    command_append(s2, 98);
+    command_append(s2, 32);
+    command_append(s2, 57);  # '9'
+    assert_eq(command_execute(s2), 0 - 1, ":b 9 returns -1");
+    assert_eq(editor_last_error(s2), ERR_UNKNOWN_CMD, "ERR_UNKNOWN_CMD set");
+    assert_eq(bl_active_index(s2), 1, "active unchanged on bad index");
+
+    test_group(":b with non-numeric arg -> ERR_UNKNOWN_CMD");
+    command_reset(s2);
+    command_append(s2, 98);
+    command_append(s2, 32);
+    command_append(s2, 120); # 'x'
+    assert_eq(command_execute(s2), 0 - 1, ":b x returns -1");
+    assert_eq(editor_last_error(s2), ERR_UNKNOWN_CMD, "ERR_UNKNOWN_CMD set");
+
+    test_group(":ls populates the status message");
+    # Reset to a clean two-buffer state with known paths.
+    var b_l1 = buf_new();
+    var s_l = editor_new(b_l1);
+    bl_init(s_l, b_l1);
+    var b_l2 = buf_new();
+    bl_add(s_l, b_l2, "foo.cyr");
+
+    # Active is slot 0 ([scratch]), unmodified.
+    command_reset(s_l);
+    command_append(s_l, 108); # 'l'
+    command_append(s_l, 115); # 's'
+    assert_eq(command_execute(s_l), 0, ":ls returns 0");
+    assert_nonnull(editor_status(s_l), "status message set");
+    # Expected: "0*: [scratch] | 1: foo.cyr"
+    assert_streq(editor_status(s_l), "0*: [scratch] | 1: foo.cyr", "ls format with active marker");
+
+    test_group(":ls reflects modified flag from live editor state");
+    editor_set_modified(s_l, 1);
+    command_reset(s_l);
+    command_append(s_l, 108);
+    command_append(s_l, 115);
+    command_execute(s_l);
+    assert_streq(editor_status(s_l), "0*: [scratch] [+] | 1: foo.cyr", "live modified flag visible");
+
+    test_group(":ls reflects file path from live editor state for active slot");
+    editor_set_file_path(s_l, "live.cyr");
+    command_reset(s_l);
+    command_append(s_l, 108);
+    command_append(s_l, 115);
+    command_execute(s_l);
+    assert_streq(editor_status(s_l), "0*: live.cyr [+] | 1: foo.cyr", "live path visible");
+
+    test_group(":ls after switching shows the new active marker");
+    bl_set_active(s_l, 1);
+    command_reset(s_l);
+    command_append(s_l, 108);
+    command_append(s_l, 115);
+    command_execute(s_l);
+    # Now slot 1 is active; slot 0 has the previously-snapshotted path + modified.
+    assert_streq(editor_status(s_l), "0: live.cyr [+] | 1*: foo.cyr", "active marker moved to slot 1");
+
+    test_group("editor_step clears status_message at start of step");
+    # Set a status, then any keystroke should clear it before render.
+    editor_set_status(s_l, "stale");
+    editor_step(s_l, 27);  # Esc — meaningless in NORMAL but triggers dispatch
+    assert_eq(editor_status(s_l), 0, "status cleared by next keystroke");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -13,11 +13,16 @@
 # src/edit.cyr, src/command.cyr (consumer includes them in that order).
 
 fn editor_step(s, key) {
+    # Clear the previous status line at the top of every step so a
+    # message set by the previous command stays visible for exactly
+    # one render frame.
+    editor_set_status(s, 0);
     var action = editor_dispatch(s, key);
     insert_apply(s, action, key);
     motion_apply(s, action);
     edit_apply(s, action);
     command_apply(s, action, key);
+    window_apply(s, action);
     return action;
 }
 

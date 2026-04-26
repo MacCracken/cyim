@@ -135,6 +135,55 @@ def main():
         print("  FAIL: reset escape not found in PTY output")
         ok = False
 
+    print("=== M3 multi-window: 3 files in 2 splits, navigate, :q cascades ===")
+    file_a = "/tmp/cyim-smoke-a.cyr"
+    file_b = "/tmp/cyim-smoke-b.cyr"
+    file_c = "/tmp/cyim-smoke-c.cyr"
+    with open(file_a, "wb") as f:
+        f.write(b"# file A\nvar a = 1\n")
+    with open(file_b, "wb") as f:
+        f.write(b"# file B\nvar b = 2\n")
+    with open(file_c, "wb") as f:
+        f.write(b"# file C\nvar c = 3\n")
+    # Open A, vsplit, :e B (loads B in active leaf), Ctrl-w l (right),
+    # :sp (horizontal split), :e C in new leaf, then :q :q :q :q to
+    # close all four leaves and exit.
+    seq = b""
+    seq += b":vsp\r"
+    seq += b":e " + file_b.encode() + b"\r"
+    seq += b"\x17l"                     # Ctrl-w l (move right)
+    seq += b":sp\r"
+    seq += b":e " + file_c.encode() + b"\r"
+    seq += b":q\r"                       # close current leaf
+    seq += b":q\r"
+    seq += b":q\r"
+    seq += b":q\r"
+    drive(seq, b"# file A\nvar a = 1\n", fixture_path=file_a)
+    pty_out = drive.last_pty_output
+    # Each filename should have appeared in the per-leaf status line at
+    # some point during the multi-window phase.
+    if file_a.encode() in pty_out:
+        print(f"  PASS: '{file_a}' appears in render stream")
+    else:
+        print(f"  FAIL: '{file_a}' not found in PTY output")
+        ok = False
+    if file_b.encode() in pty_out:
+        print(f"  PASS: '{file_b}' appears in render stream")
+    else:
+        print(f"  FAIL: '{file_b}' not found in PTY output")
+        ok = False
+    if file_c.encode() in pty_out:
+        print(f"  PASS: '{file_c}' appears in render stream")
+    else:
+        print(f"  FAIL: '{file_c}' not found in PTY output")
+        ok = False
+    # Active-leaf reverse-video escape should fire at some point.
+    if b"\x1b[7m" in pty_out:
+        print("  PASS: ESC[7m (active-leaf reverse video) present")
+    else:
+        print("  FAIL: active-leaf reverse video missing")
+        ok = False
+
     print()
     if ok:
         print("integration smoke: all checks passed")

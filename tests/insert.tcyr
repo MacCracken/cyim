@@ -6,6 +6,8 @@
 
 include "src/buffer.cyr"
 include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
 include "src/motion.cyr"
 include "src/insert.cyr"
 include "src/edit.cyr"

@@ -76,6 +76,146 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lines don't poison earlier good values, ident + punctuation
   overrides work too.
 
+### Added (M3)
+- `src/buflist.cyr` — buffer registry. `Buffer` record (24 B:
+  `buf` / `file_path` / `modified`); editor state grew 64 → 80
+  bytes for `buffer_list` (vec) + `active_buf_idx`. `bl_init`
+  seeds the registry from the editor's current buf (idempotent;
+  safe to call multiple times). `bl_add(buf, path)` appends
+  without switching. `bl_set_active(i)` snapshots the editor's
+  per-buffer fields into the previous slot, then loads the new
+  slot — `editor_buf` / `editor_modified` / `editor_file_path`
+  remain the fast-path read mirror so existing code is unaffected.
+  `bl_next` / `bl_prev` wrap; no-op on a one-buffer registry.
+- `src/command.cyr` — three new commands: `:bn` / `:bp` / `:b N`.
+  `:b N` returns ERR_UNKNOWN_CMD on out-of-range or non-numeric
+  argument.
+- `tests/buflist.tcyr` — 52 assertions over 14 groups: lazy-init
+  + idempotence, append-without-switch, snapshot/load round-trip
+  preserves modified + file_path per buffer, out-of-range bad
+  inputs leave state untouched, no-op switches, wrap-around for
+  next/prev, single-buffer next/prev are safe no-ops, full
+  end-to-end via `command_execute` for `:bn` / `:bp` / `:b N`,
+  and `:ls` formatting (active marker, modified flag from live
+  editor state, status cleared by next keystroke).
+- `src/mode.cyr` — editor state grew 80 → 88 bytes for
+  `status_message` (cstr or 0). `editor_status` /
+  `editor_set_status` accessors. `editor_step` clears it at the
+  top of every step so commands set it for exactly one render
+  frame.
+- `src/render.cyr` — `render_status` displays the message in
+  place of the mode tag when present (truncated to `cols`).
+- `src/command.cyr` — `:ls` writes the buffer registry into a
+  static 4 KB scratch (`_cmd_ls_buf`) and pins it as the status
+  message: `N[*]: path-or-[scratch] [+]?` per entry, ` | `
+  separator, active marked with `*`, modified flag pulled from
+  live editor state for the active slot.
+- `src/window.cyr` — window tree skeleton. `Window` record
+  (72 B): `type` (LEAF / SPLIT_H / SPLIT_V), `buf_idx`,
+  `child_a` / `child_b`, `ratio` (out of `WIN_RATIO_FULL` =
+  1000), and a four-i64 inline rect populated by `window_layout`.
+  `window_new_leaf` / `window_new_split` allocate, accessors
+  read each field, `window_layout` recursively assigns rects
+  with a 1-cell minimum clamp on degenerate ratios,
+  `window_count_leaves` / `window_collect_leaves` traverse
+  depth-first, `window_leaf_at(row, col)` does point-in-rect
+  lookup.
+- `tests/window.tcyr` — 85 assertions over 14 groups: leaf
+  construction, single-leaf full rect, h-split divides height,
+  v-split divides width, nested splits compose, degenerate
+  ratios clamp to 1 cell on both axes, leaf counting,
+  depth-first leaf collection order, point-in-rect lookup,
+  `window_init` lazy + idempotent, `window_split_active` for
+  H and V (with parent links wired and a 3-leaf composite
+  rect-fits assertion against an 80×24 frame), and
+  `window_replace_child` rewire semantics.
+- `src/window.cyr` extended with `parent` ptr (72 → 80 B per
+  Window) + `window_replace_child(parent, old, new)` rewire
+  helper. New editor-state integration:
+  `editor_window_root` / `editor_active_leaf` accessors,
+  `window_init(s)` (lazy + idempotent: builds a single LEAF
+  root from `bl_active_index`), `window_split_active(s, type)`
+  (replaces active leaf with a SPLIT containing two leaves of
+  the same buf_idx; focus stays on the original leaf, now
+  child_a).
+- `src/mode.cyr` — editor state grew 88 → 104 bytes for the
+  window-tree pair (`window_root` @ 88, `active_leaf` @ 96).
+- `src/command.cyr` — new commands `:sp` and `:vsp` thin
+  wrappers around `window_split_active`.
+- `src/main.cyr` — `run_editor` now calls `window_init(s)`
+  after `bl_init`, so the binary always lands on the
+  multi-window render path.
+- `src/render.cyr` — `render_build_line_naked` (CRLF-less
+  line builder so each leaf places its lines via `tty_move`),
+  `_render_leaf` (per-leaf retokenize + write, vim's `~` past
+  EOF), `_render_frame_multi` (layout → walk leaves → status
+  → cursor in active leaf). `render_frame` dispatches by
+  `editor_window_root != 0`; legacy single-buffer path stays
+  for the test suite.
+- `src/mode.cyr` — multi-byte prefix state (`prefix_pending`
+  at offset 104; editor state grew 104 → 112 B). New constants
+  `KEY_CTRL_W = 23` and `ACT_WIN_LEFT/DOWN/UP/RIGHT` (400-403).
+  `editor_dispatch` consumes Ctrl-w in NORMAL by setting the
+  prefix and returning ACT_NONE; the next byte is interpreted
+  with the prefix (mapped to ACT_WIN_* on h/j/k/l, otherwise
+  swallowed as ACT_NONE).
+- `src/window.cyr` — `window_navigate(s, dx, dy)` re-runs
+  layout against an 80×23 default frame (cheap, idempotent),
+  probes the cell adjacent to the active leaf's edge, and
+  switches focus + buffer mirror via `bl_set_active` +
+  `editor_set_active_leaf` if a different leaf covers that
+  point. `window_apply` routes the four ACT_WIN_* ids;
+  non-window actions return 0.
+- `src/driver.cyr` — `editor_step` chain extended with
+  `window_apply` after `command_apply`.
+- `tests/window.tcyr` — 130 assertions total (20 new for
+  close-active): last-leaf close sets `editor_quit`,
+  split close moves focus to surviving sibling, nested split
+  close replaces parent with sibling subtree, `:q` on dirty
+  still refused, `:q` on clean leaf in a split closes that
+  leaf without exiting, second `:q` exits when only one leaf
+  remains.
+- `src/window.cyr` — `window_close_active(s)`: collapses the
+  active leaf out of its parent split (sibling becomes the
+  surviving subtree); when the leaf IS the root,
+  `editor_quit` is set so the main loop exits. Buffer
+  registry is untouched — closed buffers stay accessible via
+  `:ls` / `:b N`.
+- `src/command.cyr` — `:q` / `:q!` / `:wq` route through
+  `window_close_active` instead of setting `editor_quit`
+  directly. Behaviour: `:q` closes the active leaf (dirty
+  refusal preserved); `:q!` always closes; `:wq` saves then
+  closes. `:e <path>` rewritten as registry-aware: previously
+  refused on dirty current buffer; now adds the new file as
+  a fresh registry slot, switches active to it, and preserves
+  the previous buffer's modified state in its slot.
+  `:e <already-open-path>` switches to the existing slot
+  without re-reading.
+- `src/render.cyr` — per-leaf status row at the bottom of
+  every leaf rect (≥2 rows). Format: `[*N: path-or-[scratch] [+]?]`
+  padded to rect_w; reverse-video (ESC[7m...ESC[0m) for the
+  active leaf so the user can see at a glance which window
+  has focus. Cursor positioning updated to clip at the
+  content row (one above status), not the leaf's bottom edge.
+- `tests/integration_smoke.py` — extended with the M3
+  multi-window check: opens file A, vsplits, `:e B`,
+  Ctrl-w l, `:sp`, `:e C`, then `:q :q :q :q` to cascade-close
+  all four leaves. Asserts every filename appears in the
+  rendered PTY stream and that the active-leaf reverse-video
+  escape (`ESC[7m`) fires.
+
+### Status (M3)
+- All 6 M3 bites landed: buffer registry + `:bn/:bp/:b N`,
+  `:ls` + status channel, window-tree skeleton, `:sp/:vsp`
+  splits, Ctrl-w h/j/k/l navigation, `:q` cascade + per-window
+  status + integration smoke.
+- 659 .tcyr assertions across 14 suites + 11 PTY-driven
+  end-to-end checks (5 from M1, 2 from M2, 4 from M3); all green.
+- DCE binary: 226,064 B (M2 was 162,184 B; +63,880 B for
+  registry, window tree, multi-window render, per-leaf status).
+- M3 success criterion verified: three files open in two splits,
+  navigate without losing state, `:q` cascades cleanly to exit.
+
 ### Status (M2)
 - All 6 M2 bites landed: vyakarana dep + grammars, highlight
   module, lang detection, palette + ANSI render, main.cyr wiring

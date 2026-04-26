@@ -70,12 +70,12 @@ fn _cmd_q(s) {
         editor_set_last_error(s, ERR_DIRTY);
         return 0 - 1;
     }
-    editor_set_quit(s, 1);
+    window_close_active(s);
     return 0;
 }
 
 fn _cmd_q_force(s) {
-    editor_set_quit(s, 1);
+    window_close_active(s);
     return 0;
 }
 
@@ -103,30 +103,179 @@ fn _cmd_w(s, cb, arg_start, arg_len) {
 fn _cmd_wq(s, cb, arg_start, arg_len) {
     var rc = _cmd_w(s, cb, arg_start, arg_len);
     if (rc < 0) { return rc; }
-    editor_set_quit(s, 1);
+    window_close_active(s);
     return 0;
 }
 
+# Parse a non-negative decimal from cmdbuf[start..start+len). Returns
+# the value, or -1 on empty / non-digit. Used by `:b N`.
+fn _cmd_parse_uint(cb, start, len) {
+    if (len <= 0) { return 0 - 1; }
+    var v = 0;
+    var i = 0;
+    while (i < len) {
+        var c = buf_get(cb, start + i);
+        if (c < 48) { return 0 - 1; }
+        if (c > 57) { return 0 - 1; }
+        v = v * 10 + (c - 48);
+        i = i + 1;
+    }
+    return v;
+}
+
+fn _cmd_bn(s) { bl_next(s); return 0; }
+fn _cmd_bp(s) { bl_prev(s); return 0; }
+
+fn _cmd_sp(s)  { window_split_active(s, WIN_SPLIT_H); return 0; }
+fn _cmd_vsp(s) { window_split_active(s, WIN_SPLIT_V); return 0; }
+
+# Static scratch for the :ls status string. Reused across calls so we
+# don't leak a 4KB buffer per invocation. NUL-terminated.
+var _CMD_LS_BUF_SIZE = 4096;
+var _cmd_ls_buf[4096];
+
+# Append a NUL-terminated cstr to _cmd_ls_buf at `pos`. Returns new pos.
+fn _cmd_ls_put_cstr(pos, s) {
+    var n = strlen(s);
+    var i = 0;
+    while (i < n) {
+        if (pos + i + 1 < _CMD_LS_BUF_SIZE) {
+            store8(&_cmd_ls_buf + pos + i, load8(s + i));
+        }
+        i = i + 1;
+    }
+    return pos + n;
+}
+
+fn _cmd_ls_put_byte(pos, c) {
+    if (pos + 1 < _CMD_LS_BUF_SIZE) {
+        store8(&_cmd_ls_buf + pos, c);
+    }
+    return pos + 1;
+}
+
+# Append decimal `val` (0..999, plenty for buffer indexes).
+fn _cmd_ls_put_int(pos, val) {
+    if (val <= 0) { return _cmd_ls_put_byte(pos, 48); }
+    var tmp[16];
+    var d = 0;
+    while (val > 0) {
+        store8(&tmp + d, 48 + val % 10);
+        val = val / 10;
+        d = d + 1;
+    }
+    var i = 0;
+    while (i < d) {
+        pos = _cmd_ls_put_byte(pos, load8(&tmp + d - 1 - i));
+        i = i + 1;
+    }
+    return pos;
+}
+
+# `:ls` — render the buffer registry into _cmd_ls_buf and pin it as the
+# editor's status message. Format per entry:
+#     N[*]: path-or-[scratch] [+]?
+# Active buffer marked with `*`; modified flag rendered as ` [+]`.
+# Entries separated by ` | `. The active slot is consulted via the
+# editor's live fields so the modified flag is fresh.
+fn _cmd_ls(s) {
+    bl_init(s, editor_buf(s));
+    var n = bl_count(s);
+    var active = bl_active_index(s);
+    var pos = 0;
+    var i = 0;
+    while (i < n) {
+        if (i > 0) {
+            pos = _cmd_ls_put_cstr(pos, " | ");
+        }
+        pos = _cmd_ls_put_int(pos, i);
+        if (i == active) {
+            pos = _cmd_ls_put_byte(pos, 42);   # '*'
+        }
+        pos = _cmd_ls_put_cstr(pos, ": ");
+        # Path (use live editor field for the active slot).
+        var path = bl_path(s, i);
+        if (i == active) { path = editor_file_path(s); }
+        if (path == 0) {
+            pos = _cmd_ls_put_cstr(pos, "[scratch]");
+        } else {
+            pos = _cmd_ls_put_cstr(pos, path);
+        }
+        # Modified flag (live for active slot).
+        var modified = bl_modified(s, i);
+        if (i == active) { modified = editor_modified(s); }
+        if (modified == 1) {
+            pos = _cmd_ls_put_cstr(pos, " [+]");
+        }
+        i = i + 1;
+    }
+    if (pos >= _CMD_LS_BUF_SIZE) { pos = _CMD_LS_BUF_SIZE - 1; }
+    store8(&_cmd_ls_buf + pos, 0);
+    editor_set_status(s, &_cmd_ls_buf);
+    return 0;
+}
+
+fn _cmd_b(s, cb, arg_start, arg_len) {
+    var n = _cmd_parse_uint(cb, arg_start, arg_len);
+    if (n < 0) {
+        editor_set_last_error(s, ERR_UNKNOWN_CMD);
+        return 0 - 1;
+    }
+    var rc = bl_set_active(s, n);
+    if (rc < 0) {
+        editor_set_last_error(s, ERR_UNKNOWN_CMD);
+        return 0 - 1;
+    }
+    return 0;
+}
+
+# Find an existing registry slot whose file_path matches `path`. Returns
+# the slot index, or -1 if none. Used by `:e` to switch to an already-
+# open file rather than re-loading.
+fn _cmd_find_path(s, path) {
+    var n = bl_count(s);
+    var i = 0;
+    while (i < n) {
+        var p = bl_path(s, i);
+        if (p != 0) {
+            if (streq(p, path) == 1) { return i; }
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+# `:e <path>` — load `<path>` as a new buffer entry and switch the
+# active window to it. Previous buffers stay in the registry; their
+# modified state is preserved in their slot. If `<path>` is already
+# open, switches to that slot without re-reading.
 fn _cmd_e(s, cb, arg_start, arg_len) {
     if (arg_len <= 0) {
         editor_set_last_error(s, ERR_NO_FILE_NAME);
         return 0 - 1;
     }
-    if (editor_modified(s) == 1) {
-        editor_set_last_error(s, ERR_DIRTY);
-        return 0 - 1;
-    }
     var path = _cmd_arg_dup(cb, arg_start, arg_len);
-    var b = editor_buf(s);
-    buf_clear(b);
-    var n = buf_load_file(b, path);
+
+    bl_init(s, editor_buf(s));
+    var existing = _cmd_find_path(s, path);
+    if (existing >= 0) {
+        bl_set_active(s, existing);
+        var leaf_a = editor_active_leaf(s);
+        if (leaf_a != 0) { window_set_buf_idx(leaf_a, existing); }
+        return 0;
+    }
+
+    var nb = buf_new();
+    var n = buf_load_file(nb, path);
     if (n < 0) {
         editor_set_last_error(s, ERR_FILE_NOT_FOUND);
         return 0 - 1;
     }
-    buf_move(b, 0);
-    editor_set_file_path(s, path);
-    editor_set_modified(s, 0);
+    buf_move(nb, 0);
+    var idx = bl_add(s, nb, path);
+    bl_set_active(s, idx);
+    var leaf_b = editor_active_leaf(s);
+    if (leaf_b != 0) { window_set_buf_idx(leaf_b, idx); }
     return 0;
 }
 
@@ -160,6 +309,12 @@ fn command_execute(s) {
     if (_cmd_eq(cb, 0, name_end, "w")  == 1) { return _cmd_w(s, cb, arg_start, arg_len); }
     if (_cmd_eq(cb, 0, name_end, "wq") == 1) { return _cmd_wq(s, cb, arg_start, arg_len); }
     if (_cmd_eq(cb, 0, name_end, "e")  == 1) { return _cmd_e(s, cb, arg_start, arg_len); }
+    if (_cmd_eq(cb, 0, name_end, "bn")  == 1) { return _cmd_bn(s); }
+    if (_cmd_eq(cb, 0, name_end, "bp")  == 1) { return _cmd_bp(s); }
+    if (_cmd_eq(cb, 0, name_end, "b")   == 1) { return _cmd_b(s, cb, arg_start, arg_len); }
+    if (_cmd_eq(cb, 0, name_end, "ls")  == 1) { return _cmd_ls(s); }
+    if (_cmd_eq(cb, 0, name_end, "sp")  == 1) { return _cmd_sp(s); }
+    if (_cmd_eq(cb, 0, name_end, "vsp") == 1) { return _cmd_vsp(s); }
 
     editor_set_last_error(s, ERR_UNKNOWN_CMD);
     return 0 - 1;

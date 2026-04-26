@@ -181,6 +181,67 @@ fn render_build_line(b, line, cols, tb, out, out_max) {
     return pos;
 }
 
+# Same as render_build_line but WITHOUT the trailing CRLF. Multi-window
+# rendering uses this so each leaf places its lines via tty_move rather
+# than relying on terminal autowrap.
+fn render_build_line_naked(b, line, cols, tb, out, out_max) {
+    var ls = buf_pos_of_line(b, line);
+    var le = buf_line_end(b, ls);
+    var blen = buf_len(b);
+    var pos = 0;
+    var current_kind = 0 - 1;
+    var has_active_color = 0;
+    var byte_cap = out_max - 4;
+    if (byte_cap < 0) { byte_cap = 0; }
+    if (blen > 0) {
+        var skip_line = 0;
+        if (le == ls) {
+            var c0 = buf_get(b, ls);
+            if (c0 == 10) { skip_line = 1; }
+        }
+        if (skip_line == 0) {
+            var i = ls;
+            var col = 0;
+            while (i <= le) {
+                if (col < cols) {
+                    var c = buf_get(b, i);
+                    var kind = 7;
+                    if (tb != 0) { kind = highlight_kind_at(tb, i); }
+                    if (tb != 0) {
+                        if (kind != current_kind) {
+                            var color = theme_token_color(kind);
+                            if (color >= 0) {
+                                if (pos + 12 <= byte_cap) {
+                                    pos = pos + _render_emit_fg(out, pos, color);
+                                    has_active_color = 1;
+                                }
+                            } else {
+                                if (has_active_color == 1) {
+                                    if (pos + 4 <= byte_cap) {
+                                        pos = pos + _render_emit_reset(out, pos);
+                                        has_active_color = 0;
+                                    }
+                                }
+                            }
+                            current_kind = kind;
+                        }
+                    }
+                    if (pos < byte_cap) {
+                        store8(out + pos, c);
+                        pos = pos + 1;
+                    }
+                    col = col + 1;
+                }
+                i = i + 1;
+            }
+        }
+    }
+    if (has_active_color == 1) {
+        pos = pos + _render_emit_reset(out, pos);
+    }
+    return pos;
+}
+
 # Draw line `line` (0-indexed) into stdout. Plain when `tb == 0`,
 # highlighted when `tb` is a vyakarana tokenbuf. Truncates visual width
 # at `cols`.
@@ -215,6 +276,16 @@ fn render_status(s, rows, cols) {
         return 0;
     }
 
+    # If a command set a status message in this step, show it (truncated
+    # to cols) instead of the mode tag. The next keystroke clears it.
+    var msg = editor_status(s);
+    if (msg != 0) {
+        var msg_len = strlen(msg);
+        if (msg_len > cols) { msg_len = cols; }
+        syscall(1, 1, msg, msg_len);
+        return 0;
+    }
+
     var tag = "-- NORMAL --";
     if (editor_mode(s) == MODE_INSERT) { tag = "-- INSERT --"; }
     syscall(1, 1, tag, strlen(tag));
@@ -231,17 +302,191 @@ fn render_status(s, rows, cols) {
     return 0;
 }
 
-# Full-screen redraw. Called at the top of every main-loop iteration.
-# `tb` is a vyakarana tokenbuf for syntax-highlighted rendering, or 0
-# for plain. Caller (main.cyr) is responsible for retokenizing per
-# frame; see M2 cost notes.
+# Per-leaf status row: " N: path [+]" left-aligned, padded to rect_w,
+# rendered in reverse video (ESC[7m...ESC[0m) for the active leaf.
+# Tells the user which file is in which window and where the focus is.
+fn _render_leaf_status(s, leaf) {
+    var rr = window_rect_row(leaf);
+    var rc = window_rect_col(leaf);
+    var rh = window_rect_h(leaf);
+    var rw = window_rect_w(leaf);
+    var status_row = rr + rh - 1;
+
+    var bidx = window_buf_idx(leaf);
+    var path = bl_path(s, bidx);
+    var modified = bl_modified(s, bidx);
+    var is_active = 0;
+    if (leaf == editor_active_leaf(s)) {
+        is_active = 1;
+        # Use live editor mirror for active leaf so modified flag is fresh.
+        path = editor_file_path(s);
+        modified = editor_modified(s);
+    }
+
+    tty_move(status_row + 1, rc + 1);
+
+    var sbuf[1024];
+    var pos = 0;
+    var visible = 0;
+
+    if (is_active == 1) {
+        store8(&sbuf + pos + 0, 0x1B);
+        store8(&sbuf + pos + 1, 91);
+        store8(&sbuf + pos + 2, 55);
+        store8(&sbuf + pos + 3, 109);
+        pos = pos + 4;
+    }
+
+    # Marker: '*' active, ' ' otherwise.
+    if (is_active == 1) { store8(&sbuf + pos, 42); } else { store8(&sbuf + pos, 32); }
+    pos = pos + 1; visible = visible + 1;
+
+    # Buffer idx (decimal).
+    var nd = tty_itoa(&sbuf, pos, bidx);
+    pos = pos + nd; visible = visible + nd;
+
+    store8(&sbuf + pos, 58); pos = pos + 1; visible = visible + 1;
+    store8(&sbuf + pos, 32); pos = pos + 1; visible = visible + 1;
+
+    var name = "[scratch]";
+    if (path != 0) { name = path; }
+    var nlen = strlen(name);
+    if (visible + nlen > rw) { nlen = rw - visible; }
+    if (nlen < 0) { nlen = 0; }
+    var k = 0;
+    while (k < nlen) {
+        store8(&sbuf + pos + k, load8(name + k));
+        k = k + 1;
+    }
+    pos = pos + nlen; visible = visible + nlen;
+
+    if (modified == 1) {
+        if (visible + 4 <= rw) {
+            store8(&sbuf + pos + 0, 32);
+            store8(&sbuf + pos + 1, 91);
+            store8(&sbuf + pos + 2, 43);
+            store8(&sbuf + pos + 3, 93);
+            pos = pos + 4; visible = visible + 4;
+        }
+    }
+
+    while (visible < rw) {
+        store8(&sbuf + pos, 32);
+        pos = pos + 1; visible = visible + 1;
+    }
+
+    if (is_active == 1) {
+        store8(&sbuf + pos + 0, 0x1B);
+        store8(&sbuf + pos + 1, 91);
+        store8(&sbuf + pos + 2, 48);
+        store8(&sbuf + pos + 3, 109);
+        pos = pos + 4;
+    }
+
+    syscall(1, 1, &sbuf, pos);
+    return 0;
+}
+
+# Render the contents of one leaf into its rect. Per-leaf retokenize
+# (M3 cost note: O(buf_len) per leaf per frame; M5 perf can cache
+# tokenbufs keyed by buffer + version). The bottom row is reserved
+# for the per-leaf status line — rect_h must be >= 2 for that to
+# fire; on a 1-row rect the content takes the whole leaf.
+fn _render_leaf(s, leaf) {
+    var bidx = window_buf_idx(leaf);
+    var buf = bl_buf(s, bidx);
+    if (buf == 0) { return 0; }
+    var path = bl_path(s, bidx);
+    var lang = "plain";
+    if (path != 0) { lang = detect_language_from_path(path); }
+    var tb = highlight_buf(buf, lang);
+
+    var rr = window_rect_row(leaf);
+    var rc = window_rect_col(leaf);
+    var rh = window_rect_h(leaf);
+    var rw = window_rect_w(leaf);
+
+    var content_h = rh - 1;
+    if (content_h < 1) { content_h = rh; }
+
+    var n_lines = buf_line_count(buf);
+
+    var out[8192];
+    var line = 0;
+    while (line < content_h) {
+        tty_move(rr + line + 1, rc + 1);
+        if (line < n_lines) {
+            var n = render_build_line_naked(buf, line, rw, tb, &out, 8192);
+            syscall(1, 1, &out, n);
+        } else {
+            syscall(1, 1, "~", 1);
+        }
+        line = line + 1;
+    }
+
+    if (content_h < rh) {
+        _render_leaf_status(s, leaf);
+    }
+    return 0;
+}
+
+# Multi-window render path. Called when editor_window_root is non-null.
+fn _render_frame_multi(s, rows, cols) {
+    var root = editor_window_root(s);
+    var content_h = rows - 1;
+    window_layout(root, 0, 0, content_h, cols);
+
+    tty_clear();
+    var leaves = vec_new();
+    window_collect_leaves(root, leaves);
+    var i = 0;
+    while (i < vec_len(leaves)) {
+        _render_leaf(s, vec_get(leaves, i));
+        i = i + 1;
+    }
+
+    render_status(s, rows, cols);
+
+    if (editor_mode(s) == MODE_COMMAND) {
+        var clen = buf_len(editor_cmdbuf(s));
+        tty_move(rows, clen + 2);
+        return 0;
+    }
+
+    var leaf = editor_active_leaf(s);
+    if (leaf == 0) { return 0; }
+    var b = bl_buf(s, window_buf_idx(leaf));
+    if (b == 0) { return 0; }
+    var cpos = buf_cursor(b);
+    var crow = window_rect_row(leaf) + buf_line_of(b, cpos) + 1;
+    var ccol = window_rect_col(leaf) + buf_col_of(b, cpos) + 1;
+    # Clip to the leaf's content area (the last row is the per-leaf status).
+    var leaf_content_h = window_rect_h(leaf) - 1;
+    if (leaf_content_h < 1) { leaf_content_h = window_rect_h(leaf); }
+    var max_row = window_rect_row(leaf) + leaf_content_h;
+    if (crow > max_row) { crow = max_row; }
+    tty_move(crow, ccol);
+    return 0;
+}
+
+# Full-screen redraw. Dispatches by window tree state:
+#   - window_root set → multi-window path (tb arg ignored; per-leaf
+#     retokenize internally)
+#   - window_root unset → legacy single-buffer path with passed `tb`
+# Tests still call the single-buffer path with explicit `tb`; main.cyr
+# initializes the window tree on startup so the binary always lands
+# on the multi-window path.
 fn render_frame(s, rows, cols, tb) {
+    if (editor_window_root(s) != 0) {
+        return _render_frame_multi(s, rows, cols);
+    }
+
     var b = editor_buf(s);
     tty_clear();
     tty_cursor_home();
 
     var n_lines = buf_line_count(b);
-    var max_lines = rows - 1;  # last row is the status line
+    var max_lines = rows - 1;
     if (n_lines > max_lines) { n_lines = max_lines; }
 
     var line = 0;
@@ -249,7 +494,6 @@ fn render_frame(s, rows, cols, tb) {
         render_line(b, line, cols, tb);
         line = line + 1;
     }
-    # Vim convention: tildes mark rows past end-of-file.
     while (line < max_lines) {
         syscall(1, 1, "~\r\n", 3);
         line = line + 1;
@@ -259,7 +503,7 @@ fn render_frame(s, rows, cols, tb) {
 
     if (editor_mode(s) == MODE_COMMAND) {
         var clen = buf_len(editor_cmdbuf(s));
-        tty_move(rows, clen + 2);  # +1 for the ":", +1 for 1-indexed
+        tty_move(rows, clen + 2);
     } else {
         var cpos = buf_cursor(b);
         var crow = buf_line_of(b, cpos) + 1;

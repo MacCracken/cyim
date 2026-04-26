@@ -1,0 +1,152 @@
+# buflist.cyr — buffer registry (per-editor list of open buffers)
+#
+# A "buffer entry" bundles the gap-buffer plus its file path and modified
+# state. The editor holds a vec of these and an active index. Switching
+# buffers snapshots the editor's per-buffer fields into the previous
+# active slot and loads the new slot's fields back into the editor.
+#
+# Editor-global fields (mode, keymap, cmdbuf, quit, last_error) stay on
+# the editor; they don't follow buffers. Per-buffer fields (buf,
+# file_path, modified) live in slot records and the editor's matching
+# offsets are kept in sync as a fast-path mirror — most code keeps
+# calling `editor_buf(s)` etc. and never has to know there's a
+# registry behind it.
+#
+# Required include order: alloc / vec stdlib → src/mode.cyr → this file
+# (this file uses editor_buf / editor_modified / editor_file_path).
+
+# ── Buffer record (24 B) ─────────────────────────────────────────────
+#   off 0   buf        gap-buffer ptr (or 0)
+#   off 8   file_path  cstr or 0
+#   off 16  modified   i64
+
+var BUFFER_REC_SIZE = 24;
+
+fn _bl_record_new(buf, path) {
+    var r = alloc(24);
+    store64(r, buf);
+    store64(r + 8, path);
+    store64(r + 16, 0);
+    return r;
+}
+
+fn _bl_rec_buf(r)           { return load64(r); }
+fn _bl_rec_path(r)          { return load64(r + 8); }
+fn _bl_rec_modified(r)      { return load64(r + 16); }
+fn _bl_rec_set_buf(r, b)        { store64(r, b);      return 0; }
+fn _bl_rec_set_path(r, p)       { store64(r + 8, p);  return 0; }
+fn _bl_rec_set_modified(r, m)   { store64(r + 16, m); return 0; }
+
+# Editor-state offsets for the buffer-list pair. Editor state grew from
+# 64 → 80 bytes when the registry landed; the new tail is:
+#   off 64  buffer_list      vec of Buffer records (or 0 = uninitialized)
+#   off 72  active_buf_idx   i64 (0 .. bl_count - 1)
+fn _bl_list(s)              { return load64(s + 64); }
+fn _bl_set_list(s, v)       { store64(s + 64, v); return 0; }
+fn _bl_active_offset(s)     { return load64(s + 72); }
+fn _bl_set_active_offset(s, i) { store64(s + 72, i); return 0; }
+
+# Initialize the registry with a single entry from the editor's current
+# `buf` / `file_path` / `modified` fields. Idempotent: a second call is
+# a no-op so it's safe to invoke from multiple entry points.
+fn bl_init(s, buf) {
+    if (_bl_list(s) != 0) { return 0; }
+    var v = vec_new();
+    var r = _bl_record_new(buf, editor_file_path(s));
+    _bl_rec_set_modified(r, editor_modified(s));
+    vec_push(v, r);
+    _bl_set_list(s, v);
+    _bl_set_active_offset(s, 0);
+    return 0;
+}
+
+fn bl_count(s) {
+    var v = _bl_list(s);
+    if (v == 0) { return 0; }
+    return vec_len(v);
+}
+
+fn bl_active_index(s) {
+    if (_bl_list(s) == 0) { return 0; }
+    return _bl_active_offset(s);
+}
+
+fn bl_get(s, i) {
+    var v = _bl_list(s);
+    if (v == 0)            { return 0; }
+    if (i < 0)             { return 0; }
+    if (i >= vec_len(v))   { return 0; }
+    return vec_get(v, i);
+}
+
+fn bl_active(s) {
+    return bl_get(s, bl_active_index(s));
+}
+
+# Buffer/path/modified pass-throughs for the active slot. Useful for
+# UI code that wants to peek at any slot, not just the active one.
+fn bl_buf(s, i)       { var r = bl_get(s, i); if (r == 0) { return 0; } return _bl_rec_buf(r); }
+fn bl_path(s, i)      { var r = bl_get(s, i); if (r == 0) { return 0; } return _bl_rec_path(r); }
+fn bl_modified(s, i)  { var r = bl_get(s, i); if (r == 0) { return 0; } return _bl_rec_modified(r); }
+
+# Append a new entry. Returns the new index. Does NOT switch active.
+fn bl_add(s, buf, path) {
+    bl_init(s, editor_buf(s));   # late-init guard for callers who skip the explicit init
+    var v = _bl_list(s);
+    var idx = vec_len(v);
+    var r = _bl_record_new(buf, path);
+    vec_push(v, r);
+    return idx;
+}
+
+# Snapshot the editor's current per-buffer fields into the active slot.
+fn _bl_snapshot_active(s) {
+    var r = bl_active(s);
+    if (r == 0) { return 0; }
+    _bl_rec_set_buf(r, editor_buf(s));
+    _bl_rec_set_path(r, editor_file_path(s));
+    _bl_rec_set_modified(r, editor_modified(s));
+    return 0;
+}
+
+# Load slot `idx` into the editor's per-buffer fields (the fast-path
+# mirror). The mode.cyr offsets are: buf @ 8, modified @ 32, file_path @ 56.
+fn _bl_load_into_editor(s, idx) {
+    var r = bl_get(s, idx);
+    if (r == 0) { return 0; }
+    store64(s + 8,  _bl_rec_buf(r));
+    store64(s + 32, _bl_rec_modified(r));
+    store64(s + 56, _bl_rec_path(r));
+    return 0;
+}
+
+# Switch active buffer. Snapshot the current state into the old slot,
+# then load the new slot. Returns 0 on success, -1 on out-of-range.
+# A noop-switch (i == active) is a fast 0 return.
+fn bl_set_active(s, i) {
+    if (i < 0)             { return 0 - 1; }
+    if (i >= bl_count(s))  { return 0 - 1; }
+    if (i == bl_active_index(s)) { return 0; }
+    _bl_snapshot_active(s);
+    _bl_set_active_offset(s, i);
+    _bl_load_into_editor(s, i);
+    return 0;
+}
+
+# Switch to next / previous buffer (vim's :bn / :bp). Wraps around the
+# end of the list. No-op when there's only one buffer.
+fn bl_next(s) {
+    var n = bl_count(s);
+    if (n <= 1) { return 0; }
+    var i = bl_active_index(s) + 1;
+    if (i >= n) { i = 0; }
+    return bl_set_active(s, i);
+}
+
+fn bl_prev(s) {
+    var n = bl_count(s);
+    if (n <= 1) { return 0; }
+    var i = bl_active_index(s) - 1;
+    if (i < 0) { i = n - 1; }
+    return bl_set_active(s, i);
+}

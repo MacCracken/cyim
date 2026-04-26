@@ -61,12 +61,19 @@ var ACT_MOVE_FILE_END     = 108;
 # NORMAL-mode edits.
 var ACT_DELETE_RIGHT      = 200;
 
+# Window navigation (Ctrl-w h/j/k/l).
+var ACT_WIN_LEFT          = 400;
+var ACT_WIN_DOWN          = 401;
+var ACT_WIN_UP            = 402;
+var ACT_WIN_RIGHT         = 403;
+
 # ──── Key codes (ASCII / control) ─────────────────────────────────────
 var KEY_ESC       = 27;
 var KEY_ENTER     = 13;
 var KEY_LF        = 10;
 var KEY_BACKSPACE = 8;
 var KEY_DEL       = 127;
+var KEY_CTRL_W    = 23;
 
 # ──── Error codes (set into state.last_error) ────────────────────────
 var ERR_NONE           = 0;
@@ -76,18 +83,27 @@ var ERR_FILE_NOT_FOUND = 3;
 var ERR_SAVE_FAILED    = 4;
 var ERR_UNKNOWN_CMD    = 5;
 
-# ──── EditorState layout (64 bytes) ───────────────────────────────────
-#   off  0  mode        i64  current mode (MODE_*)
-#   off  8  buf         i64  main gap-buffer (may be 0 in tests)
-#   off 16  nmap        i64  NORMAL-mode keymap (map_u64)
-#   off 24  cmdbuf      i64  gap-buffer for the `:cmd` line (always allocated)
-#   off 32  modified    i64  1 if main buffer has unsaved changes
-#   off 40  quit        i64  1 if the main loop should exit
-#   off 48  last_error  i64  most recent ERR_* code; cleared per command
-#   off 56  file_path   i64  cstr (NUL-terminated) of current file, or 0
+# ──── EditorState layout (112 bytes) ──────────────────────────────────
+#   off   0  mode             i64  current mode (MODE_*)
+#   off   8  buf              i64  ACTIVE buffer's gap-buffer (mirror of
+#                                   buf-list slot; updated by bl_set_active)
+#   off  16  nmap             i64  NORMAL-mode keymap (map_u64)
+#   off  24  cmdbuf           i64  gap-buffer for the `:cmd` line
+#   off  32  modified         i64  1 if active buffer has unsaved changes
+#   off  40  quit             i64  1 if the main loop should exit
+#   off  48  last_error       i64  most recent ERR_* code
+#   off  56  file_path        i64  cstr of current file, or 0
+#   off  64  buffer_list      i64  vec of Buffer records (or 0 = not init'd)
+#   off  72  active_buf_idx   i64  index into buffer_list
+#   off  80  status_message   i64  cstr to display in the status row, or 0
+#   off  88  window_root      i64  Window* tree root (or 0 = not init'd)
+#   off  96  active_leaf      i64  Window* — the LEAF currently focused
+#   off 104  prefix_pending   i64  pending key prefix (KEY_CTRL_W after a
+#                                   Ctrl-w byte; cleared after the next
+#                                   dispatched byte). 0 = no pending prefix.
 
 fn editor_new(buf) {
-    var s = alloc(64);
+    var s = alloc(112);
     store64(s, MODE_NORMAL);
     store64(s + 8, buf);
     var nmap = map_u64_new();
@@ -98,6 +114,12 @@ fn editor_new(buf) {
     store64(s + 40, 0);
     store64(s + 48, 0);
     store64(s + 56, 0);
+    store64(s + 64, 0);    # buffer_list — lazy-inited by buflist.cyr
+    store64(s + 72, 0);
+    store64(s + 80, 0);
+    store64(s + 88, 0);    # window_root — lazy-inited by window.cyr
+    store64(s + 96, 0);
+    store64(s + 104, 0);
     return s;
 }
 
@@ -114,6 +136,10 @@ fn editor_set_modified(s, v)    { store64(s + 32, v);  return 0; }
 fn editor_set_quit(s, v)        { store64(s + 40, v);  return 0; }
 fn editor_set_last_error(s, v)  { store64(s + 48, v);  return 0; }
 fn editor_set_file_path(s, p)   { store64(s + 56, p);  return 0; }
+fn editor_status(s)             { return load64(s + 80); }
+fn editor_set_status(s, msg)    { store64(s + 80, msg); return 0; }
+fn editor_prefix(s)             { return load64(s + 104); }
+fn editor_set_prefix(s, p)      { store64(s + 104, p); return 0; }
 
 # Seed NORMAL-mode keymap with the canonical single-byte vi mappings.
 fn _seed_normal_keymap(m) {
@@ -141,7 +167,24 @@ fn _seed_normal_keymap(m) {
 fn editor_dispatch(s, key) {
     var mode = load64(s);
 
+    # Multi-byte sequence: a previous keystroke set a prefix that the
+    # current byte resolves. Today only Ctrl-w (window navigation) uses
+    # this; clearing the prefix is unconditional so an unmapped follow-up
+    # is silently swallowed (prefix consumed → ACT_NONE).
+    if (editor_prefix(s) == KEY_CTRL_W) {
+        editor_set_prefix(s, 0);
+        if (key == 104) { return ACT_WIN_LEFT; }
+        if (key == 106) { return ACT_WIN_DOWN; }
+        if (key == 107) { return ACT_WIN_UP; }
+        if (key == 108) { return ACT_WIN_RIGHT; }
+        return ACT_NONE;
+    }
+
     if (mode == MODE_NORMAL) {
+        if (key == KEY_CTRL_W) {
+            editor_set_prefix(s, KEY_CTRL_W);
+            return ACT_NONE;
+        }
         var act = map_u64_get(load64(s + 16), key);
         if (act == ACT_TO_INSERT)         { store64(s, MODE_INSERT);  return act; }
         if (act == ACT_TO_INSERT_AFTER)   { store64(s, MODE_INSERT);  return act; }

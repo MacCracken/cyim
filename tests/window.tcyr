@@ -1,0 +1,363 @@
+# tests/window.tcyr — window tree + layout pass
+#
+# Bite 3's deliverable is the data structure; render integration lands
+# in bite 4. The tests prove the layout invariants that the renderer
+# will rely on:
+#   - leaves cover their rect exactly
+#   - splits divide along the right axis
+#   - rects nest (child rects fit inside parent rect)
+#   - nested splits compose
+#   - leaves can be enumerated in left-to-right / top-to-bottom order
+#   - point-in-rect lookup returns the right leaf
+
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/driver.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("window_new_leaf");
+    var l = window_new_leaf(0);
+    assert_nonnull(l, "leaf alloc");
+    assert_eq(window_type(l), WIN_LEAF, "type LEAF");
+    assert_eq(window_buf_idx(l), 0, "buf idx 0");
+    assert_eq(window_is_leaf(l), 1, "is_leaf");
+    assert_eq(window_child_a(l), 0, "no children");
+    assert_eq(window_child_b(l), 0, "no children");
+
+    test_group("layout: single leaf gets the whole rect");
+    var single = window_new_leaf(7);
+    window_layout(single, 0, 0, 24, 80);
+    assert_eq(window_rect_row(single), 0, "row 0");
+    assert_eq(window_rect_col(single), 0, "col 0");
+    assert_eq(window_rect_h(single),  24, "height 24");
+    assert_eq(window_rect_w(single),  80, "width 80");
+
+    test_group("horizontal split divides height by ratio");
+    # ratio 500 = 50/50 split, on a 24-row pane. child_a (top) gets 12.
+    var lh_a = window_new_leaf(0);
+    var lh_b = window_new_leaf(1);
+    var split_h = window_new_split(WIN_SPLIT_H, lh_a, lh_b, 500);
+    window_layout(split_h, 0, 0, 24, 80);
+    assert_eq(window_rect_h(split_h), 24, "split rect height preserved");
+    assert_eq(window_rect_h(lh_a),    12, "top child height = 12");
+    assert_eq(window_rect_row(lh_a),   0, "top child row 0");
+    assert_eq(window_rect_h(lh_b),    12, "bottom child height = 12");
+    assert_eq(window_rect_row(lh_b),  12, "bottom child row 12");
+    # Both children get full width.
+    assert_eq(window_rect_w(lh_a),    80, "top child width 80");
+    assert_eq(window_rect_w(lh_b),    80, "bottom child width 80");
+    # Coverage: top + bottom heights == parent height.
+    assert_eq(window_rect_h(lh_a) + window_rect_h(lh_b), 24, "h-split covers parent");
+
+    test_group("vertical split divides width by ratio");
+    var lv_a = window_new_leaf(0);
+    var lv_b = window_new_leaf(1);
+    var split_v = window_new_split(WIN_SPLIT_V, lv_a, lv_b, 600);
+    window_layout(split_v, 5, 10, 20, 100);
+    # ratio 600 of 100 = 60 for left child.
+    assert_eq(window_rect_w(lv_a), 60, "left child width 60");
+    assert_eq(window_rect_w(lv_b), 40, "right child width 40");
+    assert_eq(window_rect_col(lv_a), 10, "left child col 10");
+    assert_eq(window_rect_col(lv_b), 70, "right child col 10+60");
+    # Both share the full height.
+    assert_eq(window_rect_h(lv_a), 20, "left child height 20");
+    assert_eq(window_rect_h(lv_b), 20, "right child height 20");
+    # Origin row preserved on both.
+    assert_eq(window_rect_row(lv_a), 5, "row preserved (a)");
+    assert_eq(window_rect_row(lv_b), 5, "row preserved (b)");
+
+    test_group("nested splits compose");
+    # Top-level vertical split (left/right). The right child is itself
+    # a horizontal split (top/bottom). 80 cols / 24 rows.
+    var n_left  = window_new_leaf(0);
+    var n_rt    = window_new_leaf(1);
+    var n_rb    = window_new_leaf(2);
+    var n_right = window_new_split(WIN_SPLIT_H, n_rt, n_rb, 500);
+    var n_root  = window_new_split(WIN_SPLIT_V, n_left, n_right, 500);
+    window_layout(n_root, 0, 0, 24, 80);
+
+    assert_eq(window_rect_w(n_left),  40, "left half width 40");
+    assert_eq(window_rect_w(n_right), 40, "right half width 40");
+    assert_eq(window_rect_h(n_left),  24, "left full height");
+    assert_eq(window_rect_h(n_right), 24, "right full height");
+    # Right child further split top/bottom 50/50:
+    assert_eq(window_rect_h(n_rt),    12, "right-top h 12");
+    assert_eq(window_rect_h(n_rb),    12, "right-bottom h 12");
+    assert_eq(window_rect_row(n_rt),   0, "right-top starts row 0");
+    assert_eq(window_rect_row(n_rb),  12, "right-bottom starts row 12");
+    assert_eq(window_rect_col(n_rt), 40, "right-top col 40");
+    assert_eq(window_rect_col(n_rb), 40, "right-bottom col 40");
+
+    test_group("layout clamps degenerate ratios to a min of 1 cell");
+    var c_a = window_new_leaf(0);
+    var c_b = window_new_leaf(1);
+    var c_split = window_new_split(WIN_SPLIT_H, c_a, c_b, 0);
+    # ratio 0 would give child_a 0 rows; clamp to 1.
+    window_layout(c_split, 0, 0, 10, 80);
+    assert_eq(window_rect_h(c_a), 1, "child_a min 1 row");
+    assert_eq(window_rect_h(c_b), 9, "child_b takes the rest");
+
+    var c_a2 = window_new_leaf(0);
+    var c_b2 = window_new_leaf(1);
+    var c_split2 = window_new_split(WIN_SPLIT_V, c_a2, c_b2, WIN_RATIO_FULL);
+    # ratio 1000 would give child_a all width; clamp so child_b gets at least 1 col.
+    window_layout(c_split2, 0, 0, 10, 80);
+    assert_eq(window_rect_w(c_a2), 79, "child_a clamped to wd-1");
+    assert_eq(window_rect_w(c_b2),  1, "child_b min 1 col");
+
+    test_group("window_count_leaves");
+    assert_eq(window_count_leaves(single), 1,  "single leaf -> 1");
+    assert_eq(window_count_leaves(split_h), 2, "h-split -> 2");
+    assert_eq(window_count_leaves(n_root),  3, "nested -> 3");
+
+    test_group("window_collect_leaves order is depth-first child_a-first");
+    var v = vec_new();
+    window_collect_leaves(n_root, v);
+    assert_eq(vec_len(v), 3, "collected 3 leaves");
+    assert_eq(vec_get(v, 0), n_left, "[0] = left (child_a of root)");
+    assert_eq(vec_get(v, 1), n_rt,   "[1] = right-top (child_a of right)");
+    assert_eq(vec_get(v, 2), n_rb,   "[2] = right-bottom");
+
+    test_group("window_init creates a single LEAF root pointing at active buffer");
+    var b_w = buf_new();
+    var s_w = editor_new(b_w);
+    bl_init(s_w, b_w);
+    assert_eq(editor_window_root(s_w), 0, "root not yet initialized");
+    window_init(s_w);
+    var root_w = editor_window_root(s_w);
+    assert_nonnull(root_w, "root allocated");
+    assert_eq(window_is_leaf(root_w), 1, "root is LEAF");
+    assert_eq(window_buf_idx(root_w), 0, "leaf shows buffer 0");
+    assert_eq(editor_active_leaf(s_w), root_w, "active leaf == root");
+    # Idempotent
+    window_init(s_w);
+    assert_eq(editor_window_root(s_w), root_w, "second init is a no-op");
+
+    test_group("window_split_active (horizontal) replaces active leaf with split");
+    var rc_h = window_split_active(s_w, WIN_SPLIT_H);
+    assert_eq(rc_h, 0, "split returns 0");
+    var new_root = editor_window_root(s_w);
+    assert_eq(window_type(new_root), WIN_SPLIT_H, "root is now H-split");
+    assert_eq(window_count_leaves(new_root), 2, "now 2 leaves");
+    # Active leaf is the original (now child_a) — focus stays put.
+    assert_eq(editor_active_leaf(s_w), window_child_a(new_root), "active = child_a (original leaf)");
+    # Both leaves show the same buf_idx.
+    assert_eq(window_buf_idx(window_child_a(new_root)), 0, "child_a shows buf 0");
+    assert_eq(window_buf_idx(window_child_b(new_root)), 0, "child_b shows buf 0");
+    # Parent links wired.
+    assert_eq(window_parent(window_child_a(new_root)), new_root, "child_a parent = root");
+    assert_eq(window_parent(window_child_b(new_root)), new_root, "child_b parent = root");
+
+    test_group("window_split_active (vertical) splits the active leaf again");
+    # Active leaf is window_child_a of new_root. Vertical-split it.
+    var saved_active = editor_active_leaf(s_w);
+    var rc_v = window_split_active(s_w, WIN_SPLIT_V);
+    assert_eq(rc_v, 0, "vsplit returns 0");
+    # The active leaf's parent slot should now hold a V-split.
+    var new_root2 = editor_window_root(s_w);
+    var top = window_child_a(new_root2);
+    assert_eq(window_type(top), WIN_SPLIT_V, "top half is now V-split");
+    assert_eq(window_count_leaves(new_root2), 3, "tree now has 3 leaves");
+    # Active leaf is child_a of the new V-split (the original leaf).
+    assert_eq(editor_active_leaf(s_w), window_child_a(top), "active stays on the just-split leaf");
+    assert_eq(saved_active, window_child_a(top), "active leaf identity preserved");
+
+    test_group("window_split_active layout fits 80x24 → 3 windows correctly");
+    window_layout(new_root2, 0, 0, 24, 80);
+    # Top half (V-split) has 12 rows, full 80 cols.
+    assert_eq(window_rect_h(top), 12, "top half height 12");
+    assert_eq(window_rect_w(top), 80, "top half width 80");
+    # Top V-split children: 50/50.
+    assert_eq(window_rect_w(window_child_a(top)), 40, "top-left width 40");
+    assert_eq(window_rect_w(window_child_b(top)), 40, "top-right width 40");
+    # Bottom half is the second leaf, 12 rows × 80 cols.
+    var bottom = window_child_b(new_root2);
+    assert_eq(window_rect_h(bottom), 12, "bottom half height 12");
+    assert_eq(window_rect_w(bottom), 80, "bottom half width 80");
+
+    test_group("Ctrl-w prefix dispatches to ACT_WIN_*");
+    var s_p = editor_new(buf_new());
+    bl_init(s_p, editor_buf(s_p));
+    window_init(s_p);
+    # Type Ctrl-w then 'h' — should produce ACT_WIN_LEFT.
+    var act_pre = editor_dispatch(s_p, 23);   # Ctrl-w
+    assert_eq(act_pre, ACT_NONE, "Ctrl-w alone is ACT_NONE (prefix set)");
+    assert_eq(editor_prefix(s_p), 23, "prefix set to KEY_CTRL_W");
+    assert_eq(editor_dispatch(s_p, 104), ACT_WIN_LEFT, "Ctrl-w + h -> WIN_LEFT");
+    assert_eq(editor_prefix(s_p), 0, "prefix cleared after consume");
+
+    assert_eq(editor_dispatch(s_p, 23),  ACT_NONE, "Ctrl-w again");
+    assert_eq(editor_dispatch(s_p, 106), ACT_WIN_DOWN, "Ctrl-w + j -> WIN_DOWN");
+    assert_eq(editor_dispatch(s_p, 23),  ACT_NONE, "Ctrl-w again");
+    assert_eq(editor_dispatch(s_p, 107), ACT_WIN_UP, "Ctrl-w + k -> WIN_UP");
+    assert_eq(editor_dispatch(s_p, 23),  ACT_NONE, "Ctrl-w again");
+    assert_eq(editor_dispatch(s_p, 108), ACT_WIN_RIGHT, "Ctrl-w + l -> WIN_RIGHT");
+
+    test_group("Ctrl-w followed by an unmapped byte clears prefix and returns NONE");
+    editor_dispatch(s_p, 23);  # set prefix
+    assert_eq(editor_prefix(s_p), 23, "prefix set");
+    assert_eq(editor_dispatch(s_p, 122), ACT_NONE, "Ctrl-w + 'z' -> NONE");
+    assert_eq(editor_prefix(s_p), 0, "prefix cleared");
+
+    test_group("window_navigate switches active leaf to neighbor");
+    # Build a vsplit (left | right) over an 80×24 frame.
+    var b_x = buf_new();
+    var s_x = editor_new(b_x);
+    bl_init(s_x, b_x);
+    window_init(s_x);
+    window_split_active(s_x, WIN_SPLIT_V);
+    var x_root = editor_window_root(s_x);
+    var x_left = window_child_a(x_root);
+    var x_right = window_child_b(x_root);
+    assert_eq(editor_active_leaf(s_x), x_left, "active starts on left (split kept focus)");
+    # Move right
+    window_navigate(s_x, 1, 0);
+    assert_eq(editor_active_leaf(s_x), x_right, "navigate right -> right leaf");
+    # Move right again — no further neighbor, stays put
+    window_navigate(s_x, 1, 0);
+    assert_eq(editor_active_leaf(s_x), x_right, "no further right neighbor -> stay");
+    # Move left
+    window_navigate(s_x, 0 - 1, 0);
+    assert_eq(editor_active_leaf(s_x), x_left, "navigate left -> left leaf");
+    # Up/down on a vsplit: no neighbor either way
+    window_navigate(s_x, 0, 0 - 1);
+    assert_eq(editor_active_leaf(s_x), x_left, "no upper neighbor -> stay");
+    window_navigate(s_x, 0, 1);
+    assert_eq(editor_active_leaf(s_x), x_left, "no lower neighbor -> stay");
+
+    test_group("window_navigate is safe when window tree absent");
+    var s_no = editor_new(buf_new());
+    # No window_init — window_root is 0.
+    var rc_no = window_navigate(s_no, 1, 0);
+    assert_eq(rc_no, 0, "safe noop when no tree");
+    assert_eq(editor_active_leaf(s_no), 0, "active leaf still 0");
+
+    test_group("window_apply routes by action");
+    # Use the 2-leaf tree from above.
+    editor_set_active_leaf(s_x, x_left);
+    bl_set_active(s_x, window_buf_idx(x_left));
+    var consumed = window_apply(s_x, ACT_WIN_RIGHT);
+    assert_eq(consumed, 1, "WIN_RIGHT consumed");
+    assert_eq(editor_active_leaf(s_x), x_right, "moved to right");
+    assert_eq(window_apply(s_x, ACT_NONE), 0, "NONE not consumed");
+    assert_eq(window_apply(s_x, ACT_MOVE_LEFT), 0, "MOVE_LEFT (motion) not consumed");
+
+    test_group("window_close_active on last leaf sets editor_quit");
+    var s_solo2 = editor_new(buf_new());
+    bl_init(s_solo2, editor_buf(s_solo2));
+    window_init(s_solo2);
+    assert_eq(window_count_leaves(editor_window_root(s_solo2)), 1, "1 leaf");
+    window_close_active(s_solo2);
+    assert_eq(editor_quit(s_solo2), 1, "quit set on last-leaf close");
+
+    test_group("window_close_active on a split removes leaf, focuses sibling");
+    var s_close = editor_new(buf_new());
+    bl_init(s_close, editor_buf(s_close));
+    window_init(s_close);
+    window_split_active(s_close, WIN_SPLIT_V);
+    var c_root = editor_window_root(s_close);
+    var c_left = window_child_a(c_root);
+    var c_right = window_child_b(c_root);
+    assert_eq(editor_active_leaf(s_close), c_left, "active = left");
+    # Close left
+    window_close_active(s_close);
+    assert_eq(editor_quit(s_close), 0, "quit NOT set (more leaves remain)");
+    assert_eq(editor_window_root(s_close), c_right, "root collapsed to surviving sibling");
+    assert_eq(editor_active_leaf(s_close), c_right, "active moved to surviving leaf");
+    assert_eq(window_parent(c_right), 0, "new root has no parent");
+
+    test_group("window_close_active on nested split: replaces parent with sibling subtree");
+    var s_nest = editor_new(buf_new());
+    bl_init(s_nest, editor_buf(s_nest));
+    window_init(s_nest);
+    # Build: root=H-split(A=top-leaf, B=V-split(left, right))
+    window_split_active(s_nest, WIN_SPLIT_H);
+    var nest_root = editor_window_root(s_nest);
+    var nest_top = window_child_a(nest_root);
+    var nest_bottom = window_child_b(nest_root);
+    # active is nest_top; switch to nest_bottom and split it vertically
+    editor_set_active_leaf(s_nest, nest_bottom);
+    window_split_active(s_nest, WIN_SPLIT_V);
+    var nest_root2 = editor_window_root(s_nest);
+    assert_eq(window_count_leaves(nest_root2), 3, "3 leaves total");
+    var nest_bot_split = window_child_b(nest_root2);
+    var nest_bot_left = window_child_a(nest_bot_split);
+    # Close bot-left — its sibling (bot-right) should replace bot-split.
+    editor_set_active_leaf(s_nest, nest_bot_left);
+    window_close_active(s_nest);
+    assert_eq(window_count_leaves(editor_window_root(s_nest)), 2, "2 leaves after close");
+    var nest_root3 = editor_window_root(s_nest);
+    assert_eq(window_type(nest_root3), WIN_SPLIT_H, "root still H-split");
+    var nest_new_bottom = window_child_b(nest_root3);
+    assert_eq(window_is_leaf(nest_new_bottom), 1, "bottom is now a leaf");
+    assert_eq(editor_active_leaf(s_nest), nest_new_bottom, "focus moved to surviving sibling");
+
+    test_group(":q on dirty buffer is still refused");
+    var s_dq = editor_new(buf_new());
+    bl_init(s_dq, editor_buf(s_dq));
+    window_init(s_dq);
+    insert_literal(s_dq, 65);  # dirty
+    command_reset(s_dq);
+    command_append(s_dq, 113); # q
+    assert_eq(command_execute(s_dq), 0 - 1, ":q on dirty -> -1");
+    assert_eq(editor_last_error(s_dq), ERR_DIRTY, "ERR_DIRTY set");
+    assert_eq(editor_quit(s_dq), 0, "quit NOT set");
+
+    test_group(":q on clean leaf with split closes that leaf");
+    var s_cq = editor_new(buf_new());
+    bl_init(s_cq, editor_buf(s_cq));
+    window_init(s_cq);
+    window_split_active(s_cq, WIN_SPLIT_V);
+    var cq_root = editor_window_root(s_cq);
+    var cq_left = window_child_a(cq_root);
+    var cq_right = window_child_b(cq_root);
+    # Active is left; :q should close left, focus right, NOT exit.
+    command_reset(s_cq);
+    command_append(s_cq, 113);
+    assert_eq(command_execute(s_cq), 0, ":q returns 0");
+    assert_eq(editor_quit(s_cq), 0, "quit NOT set (sibling remains)");
+    assert_eq(editor_window_root(s_cq), cq_right, "right is the new root");
+    # Now :q again — only one leaf, should exit.
+    command_reset(s_cq);
+    command_append(s_cq, 113);
+    assert_eq(command_execute(s_cq), 0, ":q on last leaf returns 0");
+    assert_eq(editor_quit(s_cq), 1, "quit set after closing last leaf");
+
+    test_group("window_replace_child rewires parent's pointer");
+    var p_a = window_new_leaf(0);
+    var p_b = window_new_leaf(1);
+    var p_par = window_new_split(WIN_SPLIT_H, p_a, p_b, 500);
+    var p_new_b = window_new_leaf(7);
+    assert_eq(window_replace_child(p_par, p_b, p_new_b), 0, "replace returns 0");
+    assert_eq(window_child_b(p_par), p_new_b, "parent now points at new child");
+    assert_eq(window_parent(p_new_b), p_par, "new child's parent set");
+    # Replacing a non-child returns -1.
+    var stranger = window_new_leaf(99);
+    assert_eq(window_replace_child(p_par, stranger, p_new_b), 0 - 1, "non-child replace returns -1");
+
+    test_group("window_leaf_at point lookup");
+    # n_root: 24×80 split V at col 40, then right H-split at row 12.
+    assert_eq(window_leaf_at(n_root,  5, 10), n_left, "(5,10) -> left");
+    assert_eq(window_leaf_at(n_root, 23, 39), n_left, "(23,39) -> left (last col)");
+    assert_eq(window_leaf_at(n_root,  5, 40), n_rt,   "(5,40) -> right-top");
+    assert_eq(window_leaf_at(n_root, 11, 79), n_rt,   "(11,79) -> right-top");
+    assert_eq(window_leaf_at(n_root, 12, 40), n_rb,   "(12,40) -> right-bottom");
+    assert_eq(window_leaf_at(n_root, 23, 79), n_rb,   "(23,79) -> right-bottom");
+    # Out-of-rect points return 0.
+    assert_eq(window_leaf_at(n_root, 24, 0),  0, "below rect -> 0");
+    assert_eq(window_leaf_at(n_root,  0, 80), 0, "right of rect -> 0");
+    assert_eq(window_leaf_at(n_root, 0 - 1, 0), 0, "negative row -> 0");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);
