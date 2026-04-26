@@ -337,6 +337,272 @@ def main():
             content = f.read()
         ok &= assert_eq(content, b"EDIThello\n", "--headless iEDIT<Esc>:wq writes 'EDIThello'")
 
+    print("=== --grep: emit FILE:N:LINE for every line containing PATTERN ===")
+    grep_fixture = "/tmp/cyim-grep-fixture.txt"
+    with open(grep_fixture, "wb") as f:
+        f.write(b"alpha foo\nbeta bar\ngamma foo\ndelta\n")
+    proc = subprocess.run(
+        [CYIM, "--grep", "foo", grep_fixture],
+        capture_output=True,
+        timeout=5,
+    )
+    expected = (
+        f"{grep_fixture}:1:alpha foo\n"
+        f"{grep_fixture}:3:gamma foo\n"
+    ).encode()
+    if proc.returncode != 0:
+        print(f"  FAIL: --grep hit exited {proc.returncode}; stderr: {proc.stderr!r}")
+        ok = False
+    else:
+        ok &= assert_eq(proc.stdout, expected, "--grep emits FILE:N:LINE for each match")
+
+    print("=== --grep: no match exits 1 with empty stdout ===")
+    proc = subprocess.run(
+        [CYIM, "--grep", "zzzzz", grep_fixture],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 1:
+        print(f"  FAIL: --grep no-match exited {proc.returncode}, expected 1")
+        ok = False
+    else:
+        ok &= assert_eq(proc.stdout, b"", "--grep no-match produces empty stdout")
+
+    print("=== --grep: missing args exits 2 ===")
+    proc = subprocess.run([CYIM, "--grep"], capture_output=True, timeout=5)
+    if proc.returncode != 2:
+        print(f"  FAIL: --grep no-args exited {proc.returncode}, expected 2")
+        ok = False
+    else:
+        print("  PASS: --grep with no args exits 2")
+
+    print("=== --grep: file not found exits 3 ===")
+    proc = subprocess.run(
+        [CYIM, "--grep", "x", "/tmp/cyim-grep-does-not-exist.txt"],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 3:
+        print(f"  FAIL: --grep missing file exited {proc.returncode}, expected 3")
+        ok = False
+    else:
+        print("  PASS: --grep missing file exits 3")
+
+    print("=== --grep: empty pattern exits 2 ===")
+    proc = subprocess.run(
+        [CYIM, "--grep", "", grep_fixture],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 2:
+        print(f"  FAIL: --grep empty pattern exited {proc.returncode}, expected 2")
+        ok = False
+    else:
+        print("  PASS: --grep empty pattern exits 2")
+
+    print("=== --grep: file without trailing newline still emits last line ===")
+    no_nl_fixture = "/tmp/cyim-grep-nonl.txt"
+    with open(no_nl_fixture, "wb") as f:
+        f.write(b"alpha\nbeta MARK")  # no trailing \n
+    proc = subprocess.run(
+        [CYIM, "--grep", "MARK", no_nl_fixture],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --grep no-trailing-nl exited {proc.returncode}")
+        ok = False
+    else:
+        ok &= assert_eq(proc.stdout, f"{no_nl_fixture}:2:beta MARK\n".encode(),
+                        "--grep matches final line without trailing newline")
+
+    print("=== --write --expect: post-save assertion (must contain) ===")
+    expect_fixture = "/tmp/cyim-expect-fixture.txt"
+    # Pass: pattern present in stdin → exit 0, file saved
+    proc = subprocess.run(
+        [CYIM, "--write", "--expect=KEEP", expect_fixture],
+        input=b"line with KEEP marker\n",
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --write --expect (pass) exited {proc.returncode}; stderr: {proc.stderr!r}")
+        ok = False
+    else:
+        with open(expect_fixture, "rb") as f:
+            ok &= assert_eq(f.read(), b"line with KEEP marker\n",
+                            "--write --expect (matched) saves file")
+    # Fail: pattern absent → exit 6 (file is still saved per spec — assertion is on result)
+    proc = subprocess.run(
+        [CYIM, "--write", "--expect=MISSING", expect_fixture],
+        input=b"this stdin lacks the marker\n",
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 6:
+        print(f"  FAIL: --write --expect (miss) exited {proc.returncode}, expected 6")
+        ok = False
+    else:
+        print("  PASS: --write --expect mismatch exits 6")
+
+    print("=== --write --expect-not: post-save assertion (must not contain) ===")
+    proc = subprocess.run(
+        [CYIM, "--write", "--expect-not=DEAD_SYMBOL", expect_fixture],
+        input=b"clean rewrite\n",
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --write --expect-not (pass) exited {proc.returncode}; stderr: {proc.stderr!r}")
+        ok = False
+    else:
+        with open(expect_fixture, "rb") as f:
+            ok &= assert_eq(f.read(), b"clean rewrite\n",
+                            "--write --expect-not (absent) saves file")
+    proc = subprocess.run(
+        [CYIM, "--write", "--expect-not=DEAD_SYMBOL", expect_fixture],
+        input=b"oops DEAD_SYMBOL slipped in\n",
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 6:
+        print(f"  FAIL: --write --expect-not (hit) exited {proc.returncode}, expected 6")
+        ok = False
+    else:
+        print("  PASS: --write --expect-not hit exits 6")
+
+    print("=== --write --wc --expect composes (modifier order independent) ===")
+    payload = b"three\nshort\nlines\n"
+    proc = subprocess.run(
+        [CYIM, "--write", "--wc", "--expect=lines", expect_fixture],
+        input=payload,
+        capture_output=True,
+        timeout=5,
+    )
+    expected = f"3 3 {len(payload)} {expect_fixture}\n".encode()
+    if proc.returncode != 0:
+        print(f"  FAIL: --write --wc --expect (composed) exited {proc.returncode}; stderr: {proc.stderr!r}")
+        ok = False
+    else:
+        ok &= assert_eq(proc.stdout, expected, "--wc + --expect compose, both honored")
+    # Reverse modifier order — same result
+    proc = subprocess.run(
+        [CYIM, "--write", "--expect=lines", "--wc", expect_fixture],
+        input=payload,
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --write --expect --wc (reverse order) exited {proc.returncode}")
+        ok = False
+    else:
+        ok &= assert_eq(proc.stdout, expected,
+                        "--expect + --wc (reversed order) gives same wc output")
+
+    print("=== --replace --expect-1: assert OLD count == 1 ===")
+    repl_expect = "/tmp/cyim-replace-expect.txt"
+    with open(repl_expect, "wb") as f:
+        f.write(b"alpha OLD bravo\n")
+    proc = subprocess.run(
+        [CYIM, "--replace", "--expect-1", "OLD", "NEW", repl_expect],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --replace --expect-1 (count=1) exited {proc.returncode}; stderr: {proc.stderr!r}")
+        ok = False
+    else:
+        with open(repl_expect, "rb") as f:
+            ok &= assert_eq(f.read(), b"alpha NEW bravo\n",
+                            "--replace --expect-1 substitutes when count matches")
+    # --expect-1 with count=0 → exit 6
+    with open(repl_expect, "wb") as f:
+        f.write(b"no marker here\n")
+    proc = subprocess.run(
+        [CYIM, "--replace", "--expect-1", "OLD", "NEW", repl_expect],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 6:
+        print(f"  FAIL: --replace --expect-1 (count=0) exited {proc.returncode}, expected 6")
+        ok = False
+    else:
+        with open(repl_expect, "rb") as f:
+            ok &= assert_eq(f.read(), b"no marker here\n",
+                            "--replace --expect-1 (count=0) leaves file untouched")
+
+    print("=== --replace-all --expect-N: assert exact pre-sub count ===")
+    with open(repl_expect, "wb") as f:
+        f.write(b"OLD OLD OLD\n")
+    proc = subprocess.run(
+        [CYIM, "--replace-all", "--expect-N=3", "OLD", "NEW", repl_expect],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --replace-all --expect-N=3 (count=3) exited {proc.returncode}")
+        ok = False
+    else:
+        with open(repl_expect, "rb") as f:
+            ok &= assert_eq(f.read(), b"NEW NEW NEW\n",
+                            "--replace-all --expect-N=3 substitutes all when count matches")
+    # Mismatch
+    with open(repl_expect, "wb") as f:
+        f.write(b"OLD OLD\n")
+    proc = subprocess.run(
+        [CYIM, "--replace-all", "--expect-N=3", "OLD", "NEW", repl_expect],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 6:
+        print(f"  FAIL: --replace-all --expect-N=3 (count=2) exited {proc.returncode}, expected 6")
+        ok = False
+    else:
+        with open(repl_expect, "rb") as f:
+            ok &= assert_eq(f.read(), b"OLD OLD\n",
+                            "--replace-all --expect-N mismatch leaves file untouched")
+
+    print("=== --replace --expect-N=0: defensive no-op assertion ===")
+    with open(repl_expect, "wb") as f:
+        f.write(b"clean file, no marker\n")
+    proc = subprocess.run(
+        [CYIM, "--replace", "--expect-N=0", "MARKER", "X", repl_expect],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --replace --expect-N=0 (count=0) exited {proc.returncode}")
+        ok = False
+    else:
+        with open(repl_expect, "rb") as f:
+            ok &= assert_eq(f.read(), b"clean file, no marker\n",
+                            "--replace --expect-N=0 (count=0) is a clean no-op")
+    # --expect-N=0 fails when MARKER is present
+    with open(repl_expect, "wb") as f:
+        f.write(b"oh no, MARKER appeared\n")
+    proc = subprocess.run(
+        [CYIM, "--replace", "--expect-N=0", "MARKER", "X", repl_expect],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 6:
+        print(f"  FAIL: --replace --expect-N=0 (count=1) exited {proc.returncode}, expected 6")
+        ok = False
+    else:
+        print("  PASS: --replace --expect-N=0 (count>0) exits 6")
+
+    print("=== --replace --expect-N: malformed value exits 2 ===")
+    proc = subprocess.run(
+        [CYIM, "--replace", "--expect-N=abc", "OLD", "NEW", repl_expect],
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 2:
+        print(f"  FAIL: --replace --expect-N=abc exited {proc.returncode}, expected 2")
+        ok = False
+    else:
+        print("  PASS: --replace --expect-N=<non-int> exits 2")
+
     print("=== M3 multi-window: 3 files in 2 splits, navigate, :q cascades ===")
     file_a = "/tmp/cyim-smoke-a.cyr"
     file_b = "/tmp/cyim-smoke-b.cyr"

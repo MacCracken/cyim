@@ -1,8 +1,20 @@
 # cli.cyr — non-interactive CLI surfaces for agent-drive workflows.
 #
-# `cyim --write FILE`        — read stdin, replace FILE with it.
+# `cyim --write FILE`               — read stdin, replace FILE with it.
 # `cyim --replace OLD NEW FILE`     — first occurrence; OLD must be unique.
 # `cyim --replace-all OLD NEW FILE` — every occurrence.
+# `cyim --grep PATTERN FILE`        — read-only; emit `FILE:N:LINE` for
+#                                     every line containing PATTERN
+#                                     (literal substring; same matching
+#                                     semantics as --replace's OLD).
+#
+# Modifiers (consumed in any order, between the verb and its positionals):
+#   --wc[=l|=long]      on --write/--replace[-all]: print wc(1) on success
+#   --expect=<pat>      on --write: post-save assertion (must contain)
+#   --expect-not=<pat>  on --write: post-save assertion (must not contain)
+#   --expect-N=<n>      on --replace[-all]: assert OLD occurs exactly N
+#                       times (pre-substitution); --expect-1 is sugar
+#                       for --expect-N=1.
 #
 # These are direct buffer ops — they don't go through the dispatch +
 # apply chain because there's no edit-history / undo / mode state to
@@ -10,14 +22,16 @@
 # chain is still available via `cyim --headless` for cases where you
 # want the full editor semantics from a script.
 #
-# Exit codes (matched against `~/.local/bin/cyim-edit` so the wrapper
-# can become an `exec` one-liner):
-#   0 — success
-#   1 — save failed (disk full, permission denied, etc.)
-#   2 — bad CLI args (missing OLD/NEW/FILE, empty OLD)
+# Exit codes (per-verb where noted):
+#   0 — success (or, for --grep, ≥1 match)
+#   1 — save failed (--write/--replace[-all]) | no match (--grep)
+#   2 — bad CLI args (missing OLD/NEW/FILE/PATTERN, empty OLD/PATTERN,
+#       malformed --expect-N value)
 #   3 — file not found
-#   4 — OLD not found in FILE
+#   4 — OLD not found in FILE (--replace[-all] only; suppressed when
+#       --expect-N=0 explicitly asserts the no-op case)
 #   5 — OLD occurs more than once and --replace-all wasn't passed
+#   6 — assertion failed (--expect / --expect-not / --expect-N mismatch)
 #
 # Requires: src/buffer.cyr (buf_*), stdlib (file_read / file_save_*
 # / strlen / load8 / store8).
@@ -208,9 +222,162 @@ fn _cli_print_wc(b, file_path, mode) {
     return 0;
 }
 
+# Returns pointer to the byte after `prefix` in `arg` if `arg` starts
+# with `prefix`; returns 0 otherwise. Both args are null-terminated
+# C strings. Used by the modifier parser to split `--expect=PAT` etc.
+fn _cli_argprefix(arg, prefix) {
+    var plen = strlen(prefix);
+    var alen = strlen(arg);
+    if (alen < plen) { return 0; }
+    var i = 0;
+    var matched = 1;
+    while (i < plen) {
+        if (load8(arg + i) != load8(prefix + i)) {
+            matched = 0;
+            i = plen;
+        } else {
+            i = i + 1;
+        }
+    }
+    if (matched == 0) { return 0; }
+    return arg + plen;
+}
+
+# Parse a non-negative decimal integer from C string `s`. Returns the
+# value on success, or -1 on parse failure (empty, non-digit byte, etc.).
+# Used by --expect-N=<n>.
+fn _cli_atoi_nn(s) {
+    if (s == 0) { return 0 - 1; }
+    var i = 0;
+    var n = 0;
+    var any = 0;
+    var bad = 0;
+    var done = 0;
+    while (done == 0) {
+        var c = load8(s + i);
+        if (c == 0) { done = 1; }
+        if (done == 0) {
+            if (c < 48) {
+                bad = 1;
+                done = 1;
+            } else {
+                if (c > 57) {
+                    bad = 1;
+                    done = 1;
+                } else {
+                    n = n * 10 + (c - 48);
+                    any = 1;
+                    i = i + 1;
+                }
+            }
+        }
+    }
+    if (bad == 1) { return 0 - 1; }
+    if (any == 0) { return 0 - 1; }
+    return n;
+}
+
+# Write the byte range [start, end) of buffer `b` to stdout, batching
+# through `chunk` (capacity `cap`) so we issue O(N/cap) write syscalls
+# instead of one per byte. Used by run_grep to emit matching lines.
+fn _cli_write_buf_range(b, start, end, chunk, cap) {
+    var ci = 0;
+    var i = start;
+    while (i < end) {
+        store8(chunk + ci, buf_get(b, i));
+        ci = ci + 1;
+        if (ci == cap) {
+            syscall(1, 1, chunk, cap);
+            ci = 0;
+        }
+        i = i + 1;
+    }
+    if (ci > 0) {
+        syscall(1, 1, chunk, ci);
+    }
+    return 0;
+}
+
+# `cyim --grep PATTERN FILE` — emit `FILE:LINENO:LINE` for every line in
+# FILE containing PATTERN as a literal substring. Matches grep(1)
+# exit conventions: 0 if any line matched, 1 if none, 2 on usage error,
+# 3 if FILE is missing.
+fn run_grep(pattern, file_path) {
+    if (pattern == 0)   { syscall(1, 2, "cyim --grep: missing PATTERN\n", 29); return 2; }
+    if (file_path == 0) { syscall(1, 2, "cyim --grep: missing FILE\n",    26); return 2; }
+    if (strlen(pattern) == 0) {
+        syscall(1, 2, "cyim --grep: PATTERN must be non-empty\n", 39);
+        return 2;
+    }
+
+    var b = buf_new();
+    var loaded = buf_load_file(b, file_path);
+    if (loaded < 0) {
+        syscall(1, 2, "cyim --grep: file not found\n", 28);
+        return 3;
+    }
+
+    var blen = buf_len(b);
+    var plen = strlen(pattern);
+    var fp_len = strlen(file_path);
+    var chunk_cap = 4096;
+    var chunk = alloc(chunk_cap);
+    if (chunk == 0) {
+        syscall(1, 2, "cyim --grep: alloc failed\n", 26);
+        return 1;
+    }
+
+    var line_no = 1;
+    var line_start = 0;
+    var i = 0;
+    var any_hit = 0;
+    while (i <= blen) {
+        var at_eol = 0;
+        if (i == blen) { at_eol = 1; }
+        if (i < blen) {
+            if (buf_get(b, i) == 10) { at_eol = 1; }
+        }
+        if (at_eol == 1) {
+            var line_len = i - line_start;
+            var hit = 0;
+            if (line_len >= plen) {
+                var k = line_start;
+                var stop = i - plen;
+                while (k <= stop) {
+                    if (_cli_match_at(b, k, pattern, plen) == 1) {
+                        hit = 1;
+                        k = stop + 1;
+                    } else {
+                        k = k + 1;
+                    }
+                }
+            }
+            if (hit == 1) {
+                any_hit = 1;
+                syscall(1, 1, file_path, fp_len);
+                syscall(1, 1, ":", 1);
+                fmt_int(line_no);
+                syscall(1, 1, ":", 1);
+                _cli_write_buf_range(b, line_start, i, chunk, chunk_cap);
+                syscall(1, 1, "\n", 1);
+            }
+            line_no = line_no + 1;
+            line_start = i + 1;
+        }
+        i = i + 1;
+    }
+    if (any_hit == 0) { return 1; }
+    return 0;
+}
+
 # `cyim --write FILE` — read stdin, replace FILE's contents with it.
-# `wc_mode`: 0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
-fn run_write(file_path, wc_mode) {
+# `wc_mode`:    0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
+# `expect_pat`: 0 = no assertion; otherwise C-string pattern to check
+#               in the post-save buffer.
+# `expect_pol`: 0 none, 1 must contain (--expect), 2 must not contain
+#               (--expect-not). On mismatch, returns 6 (file is already
+#               saved — the assertion is a contract on the result).
+fn run_write(file_path, wc_mode, expect_pat, expect_pol) {
     if (file_path == 0) {
         syscall(1, 2, "cyim --write: missing FILE argument\n", 36);
         return 2;
@@ -222,14 +389,34 @@ fn run_write(file_path, wc_mode) {
         syscall(1, 2, "cyim --write: save failed\n", 26);
         return 1;
     }
+    if (expect_pol != 0) {
+        var ec = _cli_count_matches(b, expect_pat);
+        if (expect_pol == 1) {
+            if (ec == 0) {
+                syscall(1, 2, "cyim --write: --expect pattern not found in result\n", 51);
+                return 6;
+            }
+        }
+        if (expect_pol == 2) {
+            if (ec > 0) {
+                syscall(1, 2, "cyim --write: --expect-not pattern present in result\n", 53);
+                return 6;
+            }
+        }
+    }
     _cli_print_wc(b, file_path, wc_mode);
     return 0;
 }
 
 # `cyim --replace OLD NEW FILE` (mode = REPLACE_FIRST_UNIQUE) or
 # `cyim --replace-all OLD NEW FILE` (mode = REPLACE_ALL).
-# `wc_mode`: 0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
-fn run_replace(old_str, new_str, file_path, mode, wc_mode) {
+# `wc_mode`:  0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
+# `expect_n`: -1 = no assertion; otherwise the required count of OLD
+#             occurrences in FILE (pre-substitution). On mismatch we
+#             return 6 *before* touching the file. --expect-N=0 is the
+#             "must be a no-op" idiom: success without writing, with
+#             --wc still honored if requested.
+fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n) {
     if (old_str == 0)   { syscall(1, 2, "cyim --replace: missing OLD\n", 28);  return 2; }
     if (new_str == 0)   { syscall(1, 2, "cyim --replace: missing NEW\n", 28);  return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace: missing FILE\n", 29); return 2; }
@@ -246,7 +433,25 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode) {
     }
 
     var count = _cli_count_matches(b, old_str);
+
+    # --expect-N comes first: an explicit count assertion is the
+    # strongest contract the caller can express, and a mismatch is a
+    # hard fail before any of the implicit checks fire.
+    if (expect_n >= 0) {
+        if (count != expect_n) {
+            syscall(1, 2, "cyim --replace: --expect-N count mismatch\n", 42);
+            return 6;
+        }
+    }
+
     if (count == 0) {
+        # --expect-N=0 explicitly asserted "this file does not contain
+        # OLD" — the caller is using us as a defensive check, not an
+        # edit. Honor --wc on the unchanged file and exit clean.
+        if (expect_n == 0) {
+            _cli_print_wc(b, file_path, wc_mode);
+            return 0;
+        }
         syscall(1, 2, "cyim --replace: OLD not found in FILE\n", 38);
         return 4;
     }

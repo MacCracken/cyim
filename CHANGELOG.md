@@ -4,6 +4,91 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-04-26
+
+Agent-drive CLI surface grows three structural-invariant primitives:
+`--grep` (read-only line scan), `--expect` / `--expect-not` (post-write
+shape assertion), `--expect-N` / `--expect-1` (pre-substitution count
+assertion). Each closes a "tool boundary jump" that previously forced
+scripts to chain `rg` / `wc` / `grep -c` around cyim — every check stays
+in one binary, one decision, one exit code.
+
+### Added
+
+- `cyim --grep <pattern> <file>` — read-only line scan. Emits
+  `FILE:N:LINE` (matches `grep -n` exactly: no spaces around the
+  second colon) for every line containing `<pattern>` as a literal
+  substring (same matching semantics as `--replace`'s `OLD` — no regex,
+  byte-wise compare). Exit codes follow grep(1) convention:
+  - **0** — at least one match
+  - **1** — no match (file scanned cleanly, just nothing found)
+  - **2** — usage error (missing args, empty pattern)
+  - **3** — file not found
+
+  Keeps the workflow inside cyim — no `rg` in `PATH`, no shell-escape
+  ceremony for special characters in `<pattern>`. Lines without a
+  trailing newline still emit (unlike a naive `while read line`).
+- `--expect=<pat>` / `--expect-not=<pat>` modifiers on `--write`. After
+  the new file content is saved, the resulting buffer is scanned for
+  `<pat>`; mismatch returns **exit 6** with a message on stderr
+  (`cyim --write: --expect pattern not found in result` or
+  `cyim --write: --expect-not pattern present in result`). The file is
+  saved either way — the assertion is a contract on the *result*, not
+  a save gate. Composes with `--wc` in any order:
+  `cyim --write --wc=l --expect="ROUTE_TABLE" handlers.cyr`.
+
+  Closes the structural-invariant case: "after this rewrite,
+  `TS_LEX_JSX_SKIP` MUST NOT appear" is now one call (one decision,
+  one exit code), not a `cyim --write … && rg -q TS_LEX_JSX_SKIP …`
+  chain that loses the connection between edit and check on failure.
+- `--expect-N=<n>` / `--expect-1` modifiers on `--replace` and
+  `--replace-all`. Asserts `OLD` occurs *exactly* `<n>` times in the
+  file *before* substitution; mismatch returns **exit 6** without
+  writing. `--expect-1` is sugar for `--expect-N=1`.
+  - Takes precedence over the implicit unique/no-match rules — an
+    explicit count assertion is the strongest contract the caller can
+    express.
+  - `--expect-N=0` is the "must be a no-op" idiom: succeeds without
+    writing when `OLD` is absent (and honors `--wc` on the unchanged
+    file); exits 6 if `OLD` is present.
+  - Closes the silent-no-op gap: `--replace OLD NEW FILE` exits 4 when
+    `OLD` is missing, but exit 4 is easy to miss in scripts. Pair with
+    `--expect-1` and the assertion is explicit.
+- `src/cli.cyr` — new helpers backing the surface:
+  `_cli_argprefix(arg, prefix)` (modifier-suffix splitter for
+  `--expect=…`), `_cli_atoi_nn(s)` (non-negative decimal parser for
+  `--expect-N=…`), `_cli_write_buf_range(b, start, end, chunk, cap)`
+  (chunked stdout writer for grep line emission — O(N/cap) syscalls
+  instead of one per byte), `run_grep(pattern, file_path)` (the line
+  walker; handles files without trailing newlines and empty files
+  correctly).
+- `tests/integration_smoke.py` — 18 new checks covering: `--grep` hit,
+  miss, no-args, missing-file, empty-pattern, no-trailing-newline;
+  `--write --expect` pass + miss; `--write --expect-not` pass + hit;
+  `--wc` + `--expect` compose in either order; `--replace --expect-1`
+  match + miss; `--replace-all --expect-N=N` match + mismatch;
+  `--replace --expect-N=0` defensive no-op (both branches);
+  malformed `--expect-N=<non-int>` exits 2.
+
+### Changed
+
+- Exit code **6** added for assertion failures (`--expect` /
+  `--expect-not` / `--expect-N` mismatches). Codes 0–5 unchanged.
+  `--grep` overloads exit 1 with grep(1)-conventional "no match"
+  semantics — disjoint verb, no collision with the `--write`/`--replace`
+  "save failed" meaning of 1.
+- `run_write` signature: now `(file_path, wc_mode, expect_pat,
+  expect_pol)`. Pass `0, 0` for the trailing pair to preserve pre-1.1
+  behavior. `expect_pol`: `0` none, `1` must contain, `2` must not.
+- `run_replace` signature: now `(old_str, new_str, file_path, mode,
+  wc_mode, expect_n)`. Pass `-1` for `expect_n` to preserve pre-1.1
+  behavior (no count assertion).
+- Modifier parsing in `src/main.cyr` now uses a per-verb consume loop
+  so `--wc`, `--expect`, `--expect-not`, `--expect-N`, `--expect-1`
+  can appear in any order between the verb and its positional args.
+  Pre-1.1 `--wc` placement (immediately after the verb) still works —
+  the new behavior is a strict superset.
+
 ## [1.0.2] — 2026-04-26
 
 `--wc` modifier on the agent-drive CLI ops + BUG-001 fix
