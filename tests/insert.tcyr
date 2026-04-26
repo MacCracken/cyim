@@ -8,6 +8,8 @@ include "src/buffer.cyr"
 include "src/mode.cyr"
 include "src/motion.cyr"
 include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
 include "src/driver.cyr"
 
 # Helper: copy buffer bytes to `out` (NUL-terminated). Returns logical length.

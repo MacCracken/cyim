@@ -1,0 +1,22 @@
+# edit.cyr — NORMAL-mode buffer mutations
+#
+# Single home for actions that mutate the main buffer from NORMAL mode.
+# Today: just `x` (delete-right). When dd / yy / paste / change-operators
+# arrive they live here too. Insert-mode mutations remain in insert.cyr.
+#
+# Requires: src/buffer.cyr, src/mode.cyr.
+
+# `x` — delete the byte under the cursor. No-op at end of buffer.
+fn edit_delete_right(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var rc = buf_delete_right(b);
+    if (rc == 1) { editor_set_modified(s, 1); }
+    return rc;
+}
+
+# Top-level NORMAL-edit handler. Returns 1 if it consumed the action.
+fn edit_apply(s, action) {
+    if (action == ACT_DELETE_RIGHT) { edit_delete_right(s); return 1; }
+    return 0;
+}

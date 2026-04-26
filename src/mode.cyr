@@ -68,28 +68,52 @@ var KEY_LF        = 10;
 var KEY_BACKSPACE = 8;
 var KEY_DEL       = 127;
 
-# ──── EditorState layout (24 bytes) ───────────────────────────────────
-#   off  0  mode  i64  current mode (MODE_*)
-#   off  8  buf   i64  pointer to gap-buffer (may be 0 in tests)
-#   off 16  nmap  i64  pointer to NORMAL-mode keymap (map_u64)
+# ──── Error codes (set into state.last_error) ────────────────────────
+var ERR_NONE           = 0;
+var ERR_DIRTY          = 1;  # E37 — no write since last change
+var ERR_NO_FILE_NAME   = 2;  # E32 — :w with no path and no current file
+var ERR_FILE_NOT_FOUND = 3;
+var ERR_SAVE_FAILED    = 4;
+var ERR_UNKNOWN_CMD    = 5;
+
+# ──── EditorState layout (64 bytes) ───────────────────────────────────
+#   off  0  mode        i64  current mode (MODE_*)
+#   off  8  buf         i64  main gap-buffer (may be 0 in tests)
+#   off 16  nmap        i64  NORMAL-mode keymap (map_u64)
+#   off 24  cmdbuf      i64  gap-buffer for the `:cmd` line (always allocated)
+#   off 32  modified    i64  1 if main buffer has unsaved changes
+#   off 40  quit        i64  1 if the main loop should exit
+#   off 48  last_error  i64  most recent ERR_* code; cleared per command
+#   off 56  file_path   i64  cstr (NUL-terminated) of current file, or 0
 
 fn editor_new(buf) {
-    var s = alloc(24);
+    var s = alloc(64);
     store64(s, MODE_NORMAL);
     store64(s + 8, buf);
     var nmap = map_u64_new();
     _seed_normal_keymap(nmap);
     store64(s + 16, nmap);
+    store64(s + 24, buf_new());
+    store64(s + 32, 0);
+    store64(s + 40, 0);
+    store64(s + 48, 0);
+    store64(s + 56, 0);
     return s;
 }
 
-fn editor_mode(s) { return load64(s); }
-fn editor_buf(s)  { return load64(s + 8); }
+fn editor_mode(s)       { return load64(s); }
+fn editor_buf(s)        { return load64(s + 8); }
+fn editor_cmdbuf(s)     { return load64(s + 24); }
+fn editor_modified(s)   { return load64(s + 32); }
+fn editor_quit(s)       { return load64(s + 40); }
+fn editor_last_error(s) { return load64(s + 48); }
+fn editor_file_path(s)  { return load64(s + 56); }
 
-fn editor_set_mode(s, m) {
-    store64(s, m);
-    return 0;
-}
+fn editor_set_mode(s, m)        { store64(s, m);       return 0; }
+fn editor_set_modified(s, v)    { store64(s + 32, v);  return 0; }
+fn editor_set_quit(s, v)        { store64(s + 40, v);  return 0; }
+fn editor_set_last_error(s, v)  { store64(s + 48, v);  return 0; }
+fn editor_set_file_path(s, p)   { store64(s + 56, p);  return 0; }
 
 # Seed NORMAL-mode keymap with the canonical single-byte vi mappings.
 fn _seed_normal_keymap(m) {

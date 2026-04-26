@@ -14,19 +14,23 @@
 #
 # Requires: src/buffer.cyr, src/mode.cyr (consumer must include them first).
 
-# Insert one byte at the cursor.
+# Insert one byte at the cursor. Marks the buffer modified.
 fn insert_literal(s, key) {
     var b = editor_buf(s);
     if (b == 0) { return 0; }
     buf_insert_byte(b, key);
+    editor_set_modified(s, 1);
     return 1;
 }
 
-# Delete one byte to the left of the cursor.
+# Delete one byte to the left of the cursor. Marks modified only when a byte
+# was actually deleted (a no-op at line 0 col 0 should not dirty the buffer).
 fn insert_delete_left(s) {
     var b = editor_buf(s);
     if (b == 0) { return 0; }
-    return buf_delete_left(b);
+    var rc = buf_delete_left(b);
+    if (rc == 1) { editor_set_modified(s, 1); }
+    return rc;
 }
 
 # `a` — step cursor right by 1 (clamped to buf_len, NOT to line_end:

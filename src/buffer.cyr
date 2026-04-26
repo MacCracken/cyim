@@ -166,6 +166,15 @@ fn buf_delete_right(b) {
     return 1;
 }
 
+# Drop all logical content. Allocation is preserved (the freelist allocator
+# can't reclaim arbitrary blocks anyway); we just collapse the live region
+# into the gap. Cursor returns to 0.
+fn buf_clear(b) {
+    store64(b + 8, 0);
+    store64(b + 16, load64(b + 24));
+    return 0;
+}
+
 # Read entire file at `path` into the buffer at the current cursor.
 # Returns bytes loaded on success, -1 if the file could not be opened.
 # The buffer auto-grows; cursor advances past the inserted region.

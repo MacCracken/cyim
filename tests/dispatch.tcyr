@@ -4,6 +4,7 @@
 # Buffer ops aren't exercised here; bites 5–7 cover those. This bite proves
 # the API surface is right for both the human-TTY and headless-agent drivers.
 
+include "src/buffer.cyr"
 include "src/mode.cyr"
 
 fn main() {

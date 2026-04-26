@@ -1,0 +1,304 @@
+# tests/command.tcyr — COMMAND-mode handlers, parser, and end-to-end drives
+#
+# Coverage:
+#   - Command-buffer lifecycle (append / backspace / reset).
+#   - Parser: bare commands, commands with paths, unknown commands.
+#   - Each command's effect on the editor state.
+#   - Modified-flag tracking (set by inserts, cleared by `:w`).
+#   - End-to-end via editor_run for `:q!`, `:w`, `:wq`, `:e`.
+
+include "src/buffer.cyr"
+include "src/mode.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/driver.cyr"
+
+var TMP_W   = "build/test-cmd-w.txt";
+var TMP_E   = "build/test-cmd-e.txt";
+var TMP_WQ  = "build/test-cmd-wq.txt";
+
+fn buf_eq(b, expected, n) {
+    if (buf_len(b) != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (buf_get(b, i) != load8(expected + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Type a NUL-terminated cstr through editor_run and follow with Enter.
+fn type_cmd(s, cstr) {
+    var n = strlen(cstr);
+    var i = 0;
+    while (i < n) {
+        editor_step(s, load8(cstr + i));
+        i = i + 1;
+    }
+    editor_step(s, 13);  # Enter
+    return n;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("command_reset / append / backspace cycle");
+    var b = buf_new();
+    var s = editor_new(b);
+    var cb = editor_cmdbuf(s);
+    assert_nonnull(cb, "cmdbuf allocated");
+    assert_eq(buf_len(cb), 0, "cmdbuf starts empty");
+
+    command_append(s, 119); # 'w'
+    command_append(s, 32);  # ' '
+    command_append(s, 102); # 'f'
+    command_append(s, 111); # 'o'
+    command_append(s, 111); # 'o'
+    assert_eq(buf_len(cb), 5, "cmdbuf has 5 bytes");
+    assert_eq(buf_get(cb, 0), 119, "[0] == 'w'");
+    assert_eq(buf_get(cb, 4), 111, "[4] == 'o'");
+
+    command_backspace(s);
+    assert_eq(buf_len(cb), 4, "len after backspace");
+    command_reset(s);
+    assert_eq(buf_len(cb), 0, "cmdbuf empty after reset");
+
+    test_group("modified flag set by inserts, cleared by save");
+    var b2 = buf_new();
+    var s2 = editor_new(b2);
+    editor_set_file_path(s2, TMP_W);
+
+    assert_eq(editor_modified(s2), 0, "fresh buffer not modified");
+    insert_literal(s2, 65);
+    assert_eq(editor_modified(s2), 1, "insert sets modified");
+
+    # :w to current file
+    command_reset(s2);
+    command_append(s2, 119); # 'w'
+    assert_eq(command_execute(s2), 0, "':w' returns 0");
+    assert_eq(editor_modified(s2), 0, "modified cleared after :w");
+    assert_eq(editor_last_error(s2), ERR_NONE, "no error");
+    # File on disk should contain "A".
+    var rb[8];
+    var n = file_read_all(TMP_W, &rb, 8);
+    assert_eq(n, 1, "saved file is 1 byte");
+    assert_eq(load8(&rb), 65, "saved file is 'A'");
+
+    test_group(":q on dirty buffer is refused with ERR_DIRTY");
+    var b3 = buf_new();
+    var s3 = editor_new(b3);
+    insert_literal(s3, 88); # dirties
+    command_reset(s3);
+    command_append(s3, 113); # 'q'
+    assert_eq(command_execute(s3), 0 - 1, "':q' returns -1 when dirty");
+    assert_eq(editor_quit(s3), 0, "quit flag NOT set");
+    assert_eq(editor_last_error(s3), ERR_DIRTY, "last_error == ERR_DIRTY");
+
+    test_group(":q! quits unconditionally");
+    var b4 = buf_new();
+    var s4 = editor_new(b4);
+    insert_literal(s4, 88);
+    command_reset(s4);
+    command_append(s4, 113); # 'q'
+    command_append(s4, 33);  # '!'
+    assert_eq(command_execute(s4), 0, "':q!' returns 0");
+    assert_eq(editor_quit(s4), 1, "quit flag set");
+
+    test_group(":q on clean buffer quits");
+    var b5 = buf_new();
+    var s5 = editor_new(b5);
+    command_reset(s5);
+    command_append(s5, 113); # 'q'
+    assert_eq(command_execute(s5), 0, "':q' returns 0 when clean");
+    assert_eq(editor_quit(s5), 1, "quit flag set");
+
+    test_group(":w with no path and no current file -> ERR_NO_FILE_NAME");
+    var b6 = buf_new();
+    var s6 = editor_new(b6);
+    insert_literal(s6, 65);
+    command_reset(s6);
+    command_append(s6, 119); # 'w'
+    assert_eq(command_execute(s6), 0 - 1, "':w' returns -1");
+    assert_eq(editor_last_error(s6), ERR_NO_FILE_NAME, "ERR_NO_FILE_NAME");
+    assert_eq(editor_modified(s6), 1, "modified still set");
+
+    test_group(":w <path> updates current file_path");
+    var b7 = buf_new();
+    var s7 = editor_new(b7);
+    insert_literal(s7, 89); # 'Y'
+    command_reset(s7);
+    command_append(s7, 119); # 'w'
+    command_append(s7, 32);  # ' '
+    var p = TMP_W;
+    var pi = 0;
+    var pn = strlen(p);
+    while (pi < pn) {
+        command_append(s7, load8(p + pi));
+        pi = pi + 1;
+    }
+    assert_eq(command_execute(s7), 0, "':w <path>' returns 0");
+    assert_eq(editor_modified(s7), 0, "modified cleared");
+    assert_nonnull(editor_file_path(s7), "file_path now set");
+    # Content on disk is now "Y".
+    var rb2[8];
+    var n2 = file_read_all(TMP_W, &rb2, 8);
+    assert_eq(n2, 1, "file is 1 byte");
+    assert_eq(load8(&rb2), 89, "file is 'Y'");
+
+    test_group(":wq saves then quits");
+    var b8 = buf_new();
+    var s8 = editor_new(b8);
+    insert_literal(s8, 90); # 'Z'
+    command_reset(s8);
+    command_append(s8, 119);
+    command_append(s8, 113);
+    command_append(s8, 32);
+    var pp = TMP_WQ;
+    var ppi = 0;
+    var ppn = strlen(pp);
+    while (ppi < ppn) {
+        command_append(s8, load8(pp + ppi));
+        ppi = ppi + 1;
+    }
+    assert_eq(command_execute(s8), 0, "':wq <path>' returns 0");
+    assert_eq(editor_modified(s8), 0, "modified cleared");
+    assert_eq(editor_quit(s8), 1, "quit flag set");
+
+    test_group(":e <path> loads file when not modified");
+    # Pre-populate target file.
+    file_write_all(TMP_E, "loaded content\n", 15);
+    var b9 = buf_new();
+    var s9 = editor_new(b9);
+    command_reset(s9);
+    command_append(s9, 101); # 'e'
+    command_append(s9, 32);
+    var ep = TMP_E;
+    var epi = 0;
+    var epn = strlen(ep);
+    while (epi < epn) {
+        command_append(s9, load8(ep + epi));
+        epi = epi + 1;
+    }
+    assert_eq(command_execute(s9), 0, "':e <path>' returns 0");
+    assert_eq(buf_len(b9), 15, "buffer loaded with file");
+    assert_eq(buf_eq(b9, "loaded content\n", 15), 1, "buffer matches file content");
+    assert_eq(buf_cursor(b9), 0, "cursor at 0 after :e");
+    assert_eq(editor_modified(s9), 0, "fresh load is not modified");
+    assert_nonnull(editor_file_path(s9), "file_path set");
+
+    test_group(":e on dirty buffer is refused");
+    var b10 = buf_new();
+    var s10 = editor_new(b10);
+    insert_literal(s10, 65);
+    command_reset(s10);
+    command_append(s10, 101);
+    command_append(s10, 32);
+    command_append(s10, 102); # 'f' (any path)
+    assert_eq(command_execute(s10), 0 - 1, "':e' returns -1");
+    assert_eq(editor_last_error(s10), ERR_DIRTY, "ERR_DIRTY on dirty :e");
+    assert_eq(buf_len(b10), 1, "buffer untouched");
+
+    test_group(":e missing file -> ERR_FILE_NOT_FOUND");
+    var b11 = buf_new();
+    var s11 = editor_new(b11);
+    command_reset(s11);
+    command_append(s11, 101);
+    command_append(s11, 32);
+    command_append(s11, 47);  # '/'
+    command_append(s11, 110); # 'n'
+    command_append(s11, 47);  # '/'
+    command_append(s11, 120); # 'x' — `/n/x` won't exist
+    assert_eq(command_execute(s11), 0 - 1, "':e' returns -1");
+    assert_eq(editor_last_error(s11), ERR_FILE_NOT_FOUND, "ERR_FILE_NOT_FOUND");
+
+    test_group("unknown command -> ERR_UNKNOWN_CMD");
+    var b12 = buf_new();
+    var s12 = editor_new(b12);
+    command_reset(s12);
+    command_append(s12, 122); # 'z'
+    command_append(s12, 122);
+    assert_eq(command_execute(s12), 0 - 1, "'zz' returns -1");
+    assert_eq(editor_last_error(s12), ERR_UNKNOWN_CMD, "ERR_UNKNOWN_CMD");
+
+    test_group("editor_run: end-to-end ':q!' from INSERT");
+    var b13 = buf_new();
+    var s13 = editor_new(b13);
+    var seq[5];
+    store8(&seq + 0, 105); # i
+    store8(&seq + 1, 88);  # X
+    store8(&seq + 2, 27);  # Esc -> NORMAL
+    store8(&seq + 3, 58);  # :   -> COMMAND
+    store8(&seq + 4, 113); # q   ... continued below
+    editor_run(s13, &seq, 5);
+    assert_eq(editor_mode(s13), MODE_COMMAND, "in COMMAND after ':'");
+    assert_eq(editor_modified(s13), 1, "buffer dirty");
+
+    var seq2[3];
+    store8(&seq2 + 0, 33);  # !
+    store8(&seq2 + 1, 13);  # Enter
+    store8(&seq2 + 2, 0);   # padding
+    editor_run(s13, &seq2, 2);
+    assert_eq(editor_quit(s13), 1, "quit flag set after ':q!\\n'");
+    assert_eq(editor_mode(s13), MODE_NORMAL, "back to NORMAL after Enter");
+
+    test_group("editor_run: ':w <path>' from INSERT clears modified");
+    var b14 = buf_new();
+    var s14 = editor_new(b14);
+    # Type "iAB<Esc>:w build/test-cmd-w.txt<Enter>"
+    var prefix[5];
+    store8(&prefix + 0, 105); # i
+    store8(&prefix + 1, 65);  # A
+    store8(&prefix + 2, 66);  # B
+    store8(&prefix + 3, 27);  # Esc
+    store8(&prefix + 4, 58);  # :
+    editor_run(s14, &prefix, 5);
+    # "w "
+    editor_step(s14, 119);
+    editor_step(s14, 32);
+    var pa = TMP_W;
+    var pai = 0;
+    var pan = strlen(pa);
+    while (pai < pan) {
+        editor_step(s14, load8(pa + pai));
+        pai = pai + 1;
+    }
+    editor_step(s14, 13); # Enter
+    assert_eq(editor_modified(s14), 0, "modified cleared");
+    assert_eq(editor_mode(s14), MODE_NORMAL, "back to NORMAL after Enter");
+    var rb3[8];
+    var n3 = file_read_all(TMP_W, &rb3, 8);
+    assert_eq(n3, 2, "saved 2 bytes");
+    assert_eq(load8(&rb3), 65, "[0] == 'A'");
+    assert_eq(load8(&rb3 + 1), 66, "[1] == 'B'");
+
+    test_group("editor_run: backspace inside cmdline");
+    var b15 = buf_new();
+    var s15 = editor_new(b15);
+    # Type "qx" then backspace then '!', then Enter — cmdbuf = "q!" -> q!
+    insert_literal(s15, 90); # dirty
+    editor_step(s15, 27);    # Esc
+    editor_step(s15, 58);    # :
+    editor_step(s15, 113);   # q
+    editor_step(s15, 120);   # x
+    editor_step(s15, 127);   # DEL — removes 'x'
+    editor_step(s15, 33);    # !
+    editor_step(s15, 13);    # Enter
+    assert_eq(editor_quit(s15), 1, "quit set: cmdline parsed as 'q!'");
+
+    test_group("editor_run: Esc cancels cmdline");
+    var b16 = buf_new();
+    var s16 = editor_new(b16);
+    editor_step(s16, 58);  # :
+    editor_step(s16, 113); # q
+    editor_step(s16, 27);  # Esc -> CANCEL
+    assert_eq(editor_mode(s16), MODE_NORMAL, "back to NORMAL after Esc");
+    assert_eq(editor_quit(s16), 0, "quit NOT set");
+    assert_eq(buf_len(editor_cmdbuf(s16)), 0, "cmdbuf cleared");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

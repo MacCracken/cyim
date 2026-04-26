@@ -84,6 +84,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build "Hello Wor" via mode round-trip, backspace inside INSERT
   (DEL and ^H both work), and motion+insert mix that prepends
   "hello " before "world".
+- `src/buffer.cyr` — `buf_clear` (drop logical content; capacity
+  preserved).
+- `src/mode.cyr` — `EditorState` grew from 24 → 64 bytes:
+  `cmdbuf` (gap-buffer for the `:cmd` line, allocated in
+  `editor_new`), `modified`, `quit`, `last_error`, `file_path`.
+  Accessors `editor_cmdbuf`, `editor_modified`, `editor_quit`,
+  `editor_last_error`, `editor_file_path`, plus paired
+  `editor_set_*`. Error-code constants `ERR_NONE`, `ERR_DIRTY`,
+  `ERR_NO_FILE_NAME`, `ERR_FILE_NOT_FOUND`, `ERR_SAVE_FAILED`,
+  `ERR_UNKNOWN_CMD`.
+- `src/insert.cyr` — `insert_literal` and `insert_delete_left`
+  now mark the buffer modified (delete only marks if a byte was
+  actually removed, so a no-op at line 0 col 0 stays clean).
+- `src/edit.cyr` — NORMAL-mode mutations: `edit_delete_right`
+  (vim `x`) and `edit_apply` dispatch. New file isolates
+  NORMAL-mode edits from INSERT-mode handlers; future `dd`,
+  `yy`, change-operators land here.
+- `src/command.cyr` — full COMMAND-mode surface: cmdbuf
+  lifecycle (`command_reset`, `_append`, `_backspace`),
+  parser (`command_execute` splits on first space; matches
+  `q` / `q!` / `w` / `wq` / `e`), and per-command implementations
+  with modified-flag tracking. `:q` refuses dirty (sets
+  `ERR_DIRTY`); `:q!` always quits; `:w` saves and clears
+  modified; `:w <path>` updates `file_path`; `:wq` chains; `:e`
+  refuses dirty and `ERR_FILE_NOT_FOUND` on missing path.
+- `src/driver.cyr` — `editor_step` chain extended to call
+  `edit_apply` and `command_apply`; handlers remain mutually
+  exclusive on action ids, so the chain stays trivial.
+- `tests/command.tcyr` — 58 assertions over 16 groups: cmdbuf
+  lifecycle, modified-flag invariants, every command's success
+  + failure path (dirty, missing path, missing file, unknown),
+  and four end-to-end `editor_run` drives including `:q!` from
+  INSERT, `:w <path>` byte-checking the on-disk file, mid-cmdline
+  backspace, and Esc-cancels-cmdline.
+- `tests/dispatch.tcyr` updated to include `src/buffer.cyr`
+  (the new `editor_new` allocates a cmdbuf via `buf_new`).
 
 ## [0.1.0] — 2026-04-25
 
