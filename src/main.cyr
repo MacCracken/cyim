@@ -41,7 +41,7 @@ var DEFAULT_ROWS = 24;
 var DEFAULT_COLS = 80;
 
 fn print_version() {
-    syscall(1, 1, "cyim 1.1.0\n", 11);
+    syscall(1, 1, "cyim 1.1.1\n", 11);
     return 0;
 }
 
@@ -204,136 +204,154 @@ fn main() {
             return run_grep(argv(2), argv(3));
         }
         if (streq(a1, "--write") == 1) {
-            # Modifier loop: --wc[=l|=long], --expect=<pat>, --expect-not=<pat>
-            # accepted in any order between the verb and <file>.
+            # Modifiers (--wc[=l|=long], --expect=<pat>, --expect-not=<pat>)
+            # and the FILE positional may interleave in any order after the
+            # verb. v1.1.0 only consumed modifiers from the front of argv,
+            # so `cyim --write FILE --wc=l` silently dropped the trailing
+            # flag (treated as a stray after-positional arg).
             var w_wc = 0;
             var w_expect = 0;
             var w_expect_pol = 0;
+            var w_pos0 = 0;
+            var w_npos = 0;
             var w_idx = 2;
-            var w_done = 0;
-            while (w_done == 0) {
-                if (w_idx >= ac) {
-                    w_done = 1;
-                } else {
-                    var arg = argv(w_idx);
-                    var consumed = 0;
-                    if (streq(arg, "--wc")      == 1) { w_wc = 1; consumed = 1; }
-                    if (streq(arg, "--wc=l")    == 1) { w_wc = 2; consumed = 1; }
-                    if (streq(arg, "--wc=long") == 1) { w_wc = 2; consumed = 1; }
-                    if (consumed == 0) {
-                        var s1 = _cli_argprefix(arg, "--expect=");
-                        if (s1 != 0) {
-                            if (strlen(s1) == 0) {
-                                syscall(1, 2, "cyim --write: --expect requires a non-empty pattern\n", 52);
-                                return 2;
-                            }
-                            w_expect = s1;
-                            w_expect_pol = 1;
-                            consumed = 1;
+            while (w_idx < ac) {
+                var arg = argv(w_idx);
+                var consumed = 0;
+                if (streq(arg, "--wc")      == 1) { w_wc = 1; consumed = 1; }
+                if (streq(arg, "--wc=l")    == 1) { w_wc = 2; consumed = 1; }
+                if (streq(arg, "--wc=long") == 1) { w_wc = 2; consumed = 1; }
+                if (consumed == 0) {
+                    var s1 = _cli_argprefix(arg, "--expect=");
+                    if (s1 != 0) {
+                        if (strlen(s1) == 0) {
+                            syscall(1, 2, "cyim --write: --expect requires a non-empty pattern\n", 52);
+                            return 2;
                         }
-                    }
-                    if (consumed == 0) {
-                        var s2 = _cli_argprefix(arg, "--expect-not=");
-                        if (s2 != 0) {
-                            if (strlen(s2) == 0) {
-                                syscall(1, 2, "cyim --write: --expect-not requires a non-empty pattern\n", 56);
-                                return 2;
-                            }
-                            w_expect = s2;
-                            w_expect_pol = 2;
-                            consumed = 1;
-                        }
-                    }
-                    if (consumed == 0) {
-                        w_done = 1;
-                    } else {
-                        w_idx = w_idx + 1;
+                        w_expect = s1;
+                        w_expect_pol = 1;
+                        consumed = 1;
                     }
                 }
+                if (consumed == 0) {
+                    var s2 = _cli_argprefix(arg, "--expect-not=");
+                    if (s2 != 0) {
+                        if (strlen(s2) == 0) {
+                            syscall(1, 2, "cyim --write: --expect-not requires a non-empty pattern\n", 56);
+                            return 2;
+                        }
+                        w_expect = s2;
+                        w_expect_pol = 2;
+                        consumed = 1;
+                    }
+                }
+                if (consumed == 0) {
+                    if (w_npos > 0) {
+                        syscall(1, 2, "cyim --write: unexpected extra argument\n", 40);
+                        return 2;
+                    }
+                    w_pos0 = arg;
+                    w_npos = 1;
+                }
+                w_idx = w_idx + 1;
             }
-            var wfp = 0;
-            if (ac > w_idx) { wfp = argv(w_idx); }
-            return run_write(wfp, w_wc, w_expect, w_expect_pol);
+            return run_write(w_pos0, w_wc, w_expect, w_expect_pol);
         }
         if (streq(a1, "--replace") == 1) {
+            # Modifiers and the OLD/NEW/FILE positionals may interleave in
+            # any order after the verb. v1.1.0 bailed at the first non-flag
+            # arg, so a trailing modifier (e.g. `--replace OLD NEW
+            # --expect-1 FILE`) was misread as FILE, and the actual FILE
+            # was dropped — surfacing as exit-3 "file not found".
             var r_wc = 0;
             var r_expect_n = 0 - 1;
+            var r_p0 = 0;
+            var r_p1 = 0;
+            var r_p2 = 0;
+            var r_npos = 0;
             var r_idx = 2;
-            var r_done = 0;
-            while (r_done == 0) {
-                if (r_idx >= ac) {
-                    r_done = 1;
-                } else {
-                    var arg = argv(r_idx);
-                    var consumed = 0;
-                    if (streq(arg, "--wc")        == 1) { r_wc = 1; consumed = 1; }
-                    if (streq(arg, "--wc=l")      == 1) { r_wc = 2; consumed = 1; }
-                    if (streq(arg, "--wc=long")   == 1) { r_wc = 2; consumed = 1; }
-                    if (streq(arg, "--expect-1")  == 1) { r_expect_n = 1; consumed = 1; }
-                    if (consumed == 0) {
-                        var s = _cli_argprefix(arg, "--expect-N=");
-                        if (s != 0) {
-                            var n = _cli_atoi_nn(s);
-                            if (n < 0) {
-                                syscall(1, 2, "cyim --replace: --expect-N requires a non-negative integer\n", 59);
-                                return 2;
-                            }
-                            r_expect_n = n;
-                            consumed = 1;
+            while (r_idx < ac) {
+                var arg = argv(r_idx);
+                var consumed = 0;
+                if (streq(arg, "--wc")        == 1) { r_wc = 1; consumed = 1; }
+                if (streq(arg, "--wc=l")      == 1) { r_wc = 2; consumed = 1; }
+                if (streq(arg, "--wc=long")   == 1) { r_wc = 2; consumed = 1; }
+                if (streq(arg, "--expect-1")  == 1) { r_expect_n = 1; consumed = 1; }
+                if (consumed == 0) {
+                    var s = _cli_argprefix(arg, "--expect-N=");
+                    if (s != 0) {
+                        var n = _cli_atoi_nn(s);
+                        if (n < 0) {
+                            syscall(1, 2, "cyim --replace: --expect-N requires a non-negative integer\n", 59);
+                            return 2;
                         }
-                    }
-                    if (consumed == 0) {
-                        r_done = 1;
-                    } else {
-                        r_idx = r_idx + 1;
+                        r_expect_n = n;
+                        consumed = 1;
                     }
                 }
+                if (consumed == 0) {
+                    if (r_npos == 0) { r_p0 = arg; }
+                    if (r_npos == 1) { r_p1 = arg; }
+                    if (r_npos == 2) { r_p2 = arg; }
+                    if (r_npos >= 3) {
+                        syscall(1, 2, "cyim --replace: unexpected extra argument\n", 42);
+                        return 2;
+                    }
+                    r_npos = r_npos + 1;
+                }
+                r_idx = r_idx + 1;
             }
-            if (ac < r_idx + 3) {
+            if (r_npos < 3) {
                 syscall(1, 2, "usage: cyim --replace [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 80);
                 return 2;
             }
-            return run_replace(argv(r_idx), argv(r_idx + 1), argv(r_idx + 2), 0, r_wc, r_expect_n);
+            return run_replace(r_p0, r_p1, r_p2, 0, r_wc, r_expect_n);
         }
         if (streq(a1, "--replace-all") == 1) {
+            # Same interspersed-modifier semantics as --replace.
             var ra_wc = 0;
             var ra_expect_n = 0 - 1;
+            var ra_p0 = 0;
+            var ra_p1 = 0;
+            var ra_p2 = 0;
+            var ra_npos = 0;
             var ra_idx = 2;
-            var ra_done = 0;
-            while (ra_done == 0) {
-                if (ra_idx >= ac) {
-                    ra_done = 1;
-                } else {
-                    var arg = argv(ra_idx);
-                    var consumed = 0;
-                    if (streq(arg, "--wc")        == 1) { ra_wc = 1; consumed = 1; }
-                    if (streq(arg, "--wc=l")      == 1) { ra_wc = 2; consumed = 1; }
-                    if (streq(arg, "--wc=long")   == 1) { ra_wc = 2; consumed = 1; }
-                    if (streq(arg, "--expect-1")  == 1) { ra_expect_n = 1; consumed = 1; }
-                    if (consumed == 0) {
-                        var s = _cli_argprefix(arg, "--expect-N=");
-                        if (s != 0) {
-                            var n = _cli_atoi_nn(s);
-                            if (n < 0) {
-                                syscall(1, 2, "cyim --replace-all: --expect-N requires a non-negative integer\n", 63);
-                                return 2;
-                            }
-                            ra_expect_n = n;
-                            consumed = 1;
+            while (ra_idx < ac) {
+                var arg = argv(ra_idx);
+                var consumed = 0;
+                if (streq(arg, "--wc")        == 1) { ra_wc = 1; consumed = 1; }
+                if (streq(arg, "--wc=l")      == 1) { ra_wc = 2; consumed = 1; }
+                if (streq(arg, "--wc=long")   == 1) { ra_wc = 2; consumed = 1; }
+                if (streq(arg, "--expect-1")  == 1) { ra_expect_n = 1; consumed = 1; }
+                if (consumed == 0) {
+                    var s = _cli_argprefix(arg, "--expect-N=");
+                    if (s != 0) {
+                        var n = _cli_atoi_nn(s);
+                        if (n < 0) {
+                            syscall(1, 2, "cyim --replace-all: --expect-N requires a non-negative integer\n", 63);
+                            return 2;
                         }
-                    }
-                    if (consumed == 0) {
-                        ra_done = 1;
-                    } else {
-                        ra_idx = ra_idx + 1;
+                        ra_expect_n = n;
+                        consumed = 1;
                     }
                 }
+                if (consumed == 0) {
+                    if (ra_npos == 0) { ra_p0 = arg; }
+                    if (ra_npos == 1) { ra_p1 = arg; }
+                    if (ra_npos == 2) { ra_p2 = arg; }
+                    if (ra_npos >= 3) {
+                        syscall(1, 2, "cyim --replace-all: unexpected extra argument\n", 46);
+                        return 2;
+                    }
+                    ra_npos = ra_npos + 1;
+                }
+                ra_idx = ra_idx + 1;
             }
-            if (ac < ra_idx + 3) {
+            if (ra_npos < 3) {
                 syscall(1, 2, "usage: cyim --replace-all [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 84);
                 return 2;
             }
-            return run_replace(argv(ra_idx), argv(ra_idx + 1), argv(ra_idx + 2), 1, ra_wc, ra_expect_n);
+            return run_replace(ra_p0, ra_p1, ra_p2, 1, ra_wc, ra_expect_n);
         }
         fpath = a1;
     }

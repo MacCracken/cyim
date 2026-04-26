@@ -4,6 +4,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-04-26
+
+Patch release — agent-drive CLI flag-parser fix.
+
+### Fixed
+
+- `--write`, `--replace`, `--replace-all`: modifier flags
+  (`--wc[=l|=long]`, `--expect=<pat>`, `--expect-not=<pat>`,
+  `--expect-N=<n>`, `--expect-1`) are now parseable in any position
+  *after the verb*, including interleaved with the positionals or
+  after them. v1.1.0 had a front-only modifier loop that bailed at
+  the first non-flag arg, so:
+  - `cyim --replace OLD NEW --expect-1 FILE` parsed `--expect-1` as
+    `FILE` and dropped the real `FILE`, surfacing as exit-3
+    `file not found` against the literal path `--expect-1`.
+  - `cyim --write FILE --wc=l` silently dropped `--wc=l` (treated as
+    a stray after-positional arg, exit 0 with no `wc` output).
+  - `cyim --replace OLD NEW --expect-N=1 FILE` had the same shape as
+    the `--expect-1` case.
+
+  The fix walks the full argv after the verb, segregating recognized
+  modifier flags vs positionals; an unexpected fourth positional
+  yields `exit 2` with `unexpected extra argument` on stderr (was
+  silently consumed before).
+
+  Note: modifiers BEFORE the verb (`cyim --expect-1 --replace ...`)
+  remain out-of-spec — `cyim --help` and the CLAUDE.md surface both
+  document modifiers as living between the verb and the positionals.
+  An unrecognized first arg falls through to the editor-launch path,
+  the same as v1.1.0.
+
 ## [1.1.0] — 2026-04-26
 
 Agent-drive CLI surface grows three structural-invariant primitives:
