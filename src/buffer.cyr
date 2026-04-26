@@ -165,3 +165,51 @@ fn buf_delete_right(b) {
     store64(b + 16, ge + 1);
     return 1;
 }
+
+# Read entire file at `path` into the buffer at the current cursor.
+# Returns bytes loaded on success, -1 if the file could not be opened.
+# The buffer auto-grows; cursor advances past the inserted region.
+fn buf_load_file(b, path) {
+    var fd = file_open(path, O_RDONLY, 0);
+    if (fd < 0) { return 0 - 1; }
+    var chunk[4096];
+    var total = 0;
+    var go = 1;
+    while (go == 1) {
+        var n = file_read(fd, &chunk, 4096);
+        if (n <= 0) { go = 0; }
+        if (n > 0) {
+            buf_insert(b, &chunk, n);
+            total = total + n;
+        }
+    }
+    file_close(fd);
+    return total;
+}
+
+# Write the buffer's logical content to `path` (O_WRONLY|O_CREAT|O_TRUNC, 0644).
+# Returns bytes written on success, -1 on open failure, or a propagated negative
+# write error. Pre-gap and post-gap segments are written separately so the
+# cursor position is not disturbed.
+fn buf_save_file(b, path) {
+    var fd = file_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    if (fd < 0) { return 0 - 1; }
+    var data = load64(b);
+    var gs = load64(b + 8);
+    var ge = load64(b + 16);
+    var cap = load64(b + 24);
+    var total = 0;
+    if (gs > 0) {
+        var n1 = file_write(fd, data, gs);
+        if (n1 < 0) { file_close(fd); return n1; }
+        total = total + n1;
+    }
+    var post_len = cap - ge;
+    if (post_len > 0) {
+        var n2 = file_write(fd, data + ge, post_len);
+        if (n2 < 0) { file_close(fd); return n2; }
+        total = total + n2;
+    }
+    file_close(fd);
+    return total;
+}

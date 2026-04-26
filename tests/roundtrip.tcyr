@@ -1,0 +1,117 @@
+# tests/roundtrip.tcyr — file load + save round-trip is byte-identical
+#
+# Strategy:
+#   1. Write a known fixture to disk.
+#   2. Load it into a fresh gap-buffer; assert len + content match.
+#   3. Save the buffer to a second path.
+#   4. Read both files raw and assert byte-identical.
+#   5. Repeat with a buffer whose cursor is mid-content (gap straddling the
+#      logical middle) so the save path's two-segment write is exercised.
+#
+# Fixture lives under build/ which is gitignored — auto-cleans with `rm -rf build`.
+
+include "src/buffer.cyr"
+
+var INPUT_PATH = "build/test-roundtrip-input.txt";
+var OUTPUT_PATH = "build/test-roundtrip-output.txt";
+
+# Read whole file into pre-allocated buf, return bytes read or -1.
+fn read_raw(path, buf, max) {
+    return file_read_all(path, buf, max);
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("end-cursor round-trip");
+    # Fixture: a few lines with a trailing newline. 38 bytes.
+    var fixture = "hello cyim\nsecond line\nthird line\n";
+    var fixture_len = 34;
+    var n_in = file_write_all(INPUT_PATH, fixture, fixture_len);
+    assert_eq(n_in, fixture_len, "fixture written");
+
+    var b = buf_new();
+    var loaded = buf_load_file(b, INPUT_PATH);
+    assert_eq(loaded, fixture_len, "buf_load_file returned fixture_len");
+    assert_eq(buf_len(b), fixture_len, "buffer len matches fixture");
+    assert_eq(buf_cursor(b), fixture_len, "cursor advanced past load");
+
+    # Spot-check content
+    assert_eq(buf_get(b, 0), 104, "[0] == 'h'");
+    assert_eq(buf_get(b, 5), 32, "[5] == ' '");
+    assert_eq(buf_get(b, fixture_len - 1), 10, "last byte is '\\n'");
+
+    var saved = buf_save_file(b, OUTPUT_PATH);
+    assert_eq(saved, fixture_len, "buf_save_file wrote fixture_len bytes");
+
+    var rb1[256];
+    var rb2[256];
+    var n1 = read_raw(INPUT_PATH, &rb1, 256);
+    var n2 = read_raw(OUTPUT_PATH, &rb2, 256);
+    assert_eq(n1, fixture_len, "input file size matches fixture");
+    assert_eq(n2, fixture_len, "output file size matches fixture");
+    var i = 0;
+    var byte_match = 1;
+    while (i < fixture_len) {
+        if (load8(&rb1 + i) != load8(&rb2 + i)) { byte_match = 0; }
+        i = i + 1;
+    }
+    assert_eq(byte_match, 1, "input and output are byte-identical");
+
+    test_group("mid-cursor round-trip exercises two-segment write");
+    var b2 = buf_new();
+    var loaded2 = buf_load_file(b2, INPUT_PATH);
+    assert_eq(loaded2, fixture_len, "second load matches");
+    # Move cursor to the middle so the gap straddles position 17.
+    buf_move(b2, 17);
+    assert_eq(buf_cursor(b2), 17, "cursor at 17");
+    # Save without moving the gap — exercises pre-gap + post-gap writes.
+    var saved2 = buf_save_file(b2, OUTPUT_PATH);
+    assert_eq(saved2, fixture_len, "mid-cursor save wrote fixture_len bytes");
+    assert_eq(buf_cursor(b2), 17, "cursor unchanged by save");
+
+    var rb3[256];
+    var n3 = read_raw(OUTPUT_PATH, &rb3, 256);
+    assert_eq(n3, fixture_len, "mid-cursor output size matches fixture");
+    var j = 0;
+    var byte_match2 = 1;
+    while (j < fixture_len) {
+        if (load8(&rb1 + j) != load8(&rb3 + j)) { byte_match2 = 0; }
+        j = j + 1;
+    }
+    assert_eq(byte_match2, 1, "mid-cursor save is still byte-identical");
+
+    test_group("missing file returns -1");
+    var b3 = buf_new();
+    var miss = buf_load_file(b3, "build/test-roundtrip-does-not-exist");
+    assert_eq(miss, 0 - 1, "buf_load_file returns -1 on ENOENT");
+    assert_eq(buf_len(b3), 0, "buffer untouched on failed load");
+
+    test_group("save-then-load survives growth");
+    # Build a buffer past initial cap (>64 bytes), save, reload, compare.
+    var b4 = buf_new();
+    var k = 0;
+    while (k < 300) {
+        buf_insert_byte(b4, 65 + (k % 26));
+        k = k + 1;
+    }
+    var n_save = buf_save_file(b4, OUTPUT_PATH);
+    assert_eq(n_save, 300, "saved 300 bytes");
+
+    var b5 = buf_new();
+    var n_load = buf_load_file(b5, OUTPUT_PATH);
+    assert_eq(n_load, 300, "loaded 300 bytes");
+    assert_eq(buf_len(b5), 300, "len matches");
+    var m = 0;
+    var content_match = 1;
+    while (m < 300) {
+        if (buf_get(b5, m) != 65 + (m % 26)) { content_match = 0; }
+        m = m + 1;
+    }
+    assert_eq(content_match, 1, "all 300 bytes round-tripped");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);
