@@ -41,7 +41,7 @@ var DEFAULT_ROWS = 24;
 var DEFAULT_COLS = 80;
 
 fn print_version() {
-    syscall(1, 1, "cyim 1.0.1\n", 11);
+    syscall(1, 1, "cyim 1.0.2\n", 11);
     return 0;
 }
 
@@ -54,6 +54,7 @@ fn print_help() {
     syscall(1, 1, "       cyim --write <file>                   (replace <file> with stdin)\n", 73);
     syscall(1, 1, "       cyim --replace <old> <new> <file>     (substitute first; OLD must be unique)\n", 84);
     syscall(1, 1, "       cyim --replace-all <old> <new> <file> (substitute every occurrence)\n", 75);
+    syscall(1, 1, "       --wc[=l|=long] follows --write/--replace[-all] to print wc(1) output\n", 76);
     return 0;
 }
 
@@ -190,23 +191,44 @@ fn main() {
             return run_headless(hfp);
         }
         if (streq(a1, "--write") == 1) {
+            var w_wc = 0;
+            var w_idx = 2;
+            if (ac > 2) {
+                if (streq(argv(2), "--wc")      == 1) { w_wc = 1; w_idx = 3; }
+                if (streq(argv(2), "--wc=l")    == 1) { w_wc = 2; w_idx = 3; }
+                if (streq(argv(2), "--wc=long") == 1) { w_wc = 2; w_idx = 3; }
+            }
             var wfp = 0;
-            if (ac > 2) { wfp = argv(2); }
-            return run_write(wfp);
+            if (ac > w_idx) { wfp = argv(w_idx); }
+            return run_write(wfp, w_wc);
         }
         if (streq(a1, "--replace") == 1) {
-            if (ac < 5) {
-                syscall(1, 2, "usage: cyim --replace <old> <new> <file>\n", 41);
+            var r_wc = 0;
+            var r_idx = 2;
+            if (ac > 2) {
+                if (streq(argv(2), "--wc")      == 1) { r_wc = 1; r_idx = 3; }
+                if (streq(argv(2), "--wc=l")    == 1) { r_wc = 2; r_idx = 3; }
+                if (streq(argv(2), "--wc=long") == 1) { r_wc = 2; r_idx = 3; }
+            }
+            if (ac < r_idx + 3) {
+                syscall(1, 2, "usage: cyim --replace [--wc[=l]] <old> <new> <file>\n", 52);
                 return 2;
             }
-            return run_replace(argv(2), argv(3), argv(4), 0);
+            return run_replace(argv(r_idx), argv(r_idx + 1), argv(r_idx + 2), 0, r_wc);
         }
         if (streq(a1, "--replace-all") == 1) {
-            if (ac < 5) {
-                syscall(1, 2, "usage: cyim --replace-all <old> <new> <file>\n", 45);
+            var ra_wc = 0;
+            var ra_idx = 2;
+            if (ac > 2) {
+                if (streq(argv(2), "--wc")      == 1) { ra_wc = 1; ra_idx = 3; }
+                if (streq(argv(2), "--wc=l")    == 1) { ra_wc = 2; ra_idx = 3; }
+                if (streq(argv(2), "--wc=long") == 1) { ra_wc = 2; ra_idx = 3; }
+            }
+            if (ac < ra_idx + 3) {
+                syscall(1, 2, "usage: cyim --replace-all [--wc[=l]] <old> <new> <file>\n", 56);
                 return 2;
             }
-            return run_replace(argv(2), argv(3), argv(4), 1);
+            return run_replace(argv(ra_idx), argv(ra_idx + 1), argv(ra_idx + 2), 1, ra_wc);
         }
         fpath = a1;
     }

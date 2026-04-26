@@ -4,6 +4,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-04-25
+
+`--wc` modifier on the agent-drive CLI ops, so callers can collapse
+`cyim --write file < input && wc -l file` into a single process.
+
+### Added
+
+- `--wc` modifier may follow `--write`, `--replace`, or `--replace-all`.
+  On a successful save, prints `wc(1)` output for the resulting file
+  to stdout (matches GNU `wc`'s field order so it drops in for
+  existing wrappers):
+  - **bare** `--wc`     → `<lines> <words> <bytes> <file>\n`  (matches `wc <file>`)
+  - `--wc=l`            → `<lines> <file>\n`                  (matches `wc -l <file>`)
+  - `--wc=long`         → alias for `--wc=l`
+  Modifier sits between the operation flag and its positional args:
+  `cyim --write --wc <file>`,
+  `cyim --replace --wc=l <old> <new> <file>`,
+  `cyim --replace-all --wc <old> <new> <file>`.
+- `src/cli.cyr` — `_cli_count_lines`, `_cli_count_words`,
+  `_cli_print_wc` helpers. Word counter follows the POSIX `wc`
+  whitespace set (space, tab, LF, VT, FF, CR).
+- `tests/integration_smoke.py` — three new checks: `--write --wc`
+  full output; `--write --wc=l` lines-only output; `--write --wc=long`
+  alias.
+
+### Changed
+
+- `run_write` and `run_replace` now take a trailing `wc_mode`
+  parameter (`0` silent, `1` full, `2` lines). Silent (`0`) is the
+  pre-1.0.2 behaviour, so existing callers and the `cyim-edit` wrapper
+  one-liners need no changes.
+
 ## [1.0.1] — 2026-04-25
 
 Agent-drive surface, first-class.

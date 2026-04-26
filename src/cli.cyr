@@ -108,8 +108,76 @@ fn _cli_substitute(src, old, new, mode) {
     return out;
 }
 
+# Count newline bytes in `b` (matches `wc -l`).
+fn _cli_count_lines(b) {
+    var n = buf_len(b);
+    var i = 0;
+    var lines = 0;
+    while (i < n) {
+        if (buf_get(b, i) == 10) { lines = lines + 1; }
+        i = i + 1;
+    }
+    return lines;
+}
+
+# Count POSIX-style words: maximal runs of non-whitespace bytes.
+# Whitespace = space (32), tab (9), LF (10), VT (11), FF (12), CR (13).
+fn _cli_count_words(b) {
+    var n = buf_len(b);
+    var i = 0;
+    var words = 0;
+    var in_word = 0;
+    while (i < n) {
+        var c = buf_get(b, i);
+        var is_ws = 0;
+        if (c == 32) { is_ws = 1; }
+        if (c == 9)  { is_ws = 1; }
+        if (c == 10) { is_ws = 1; }
+        if (c == 11) { is_ws = 1; }
+        if (c == 12) { is_ws = 1; }
+        if (c == 13) { is_ws = 1; }
+        if (is_ws == 1) {
+            in_word = 0;
+        } else {
+            if (in_word == 0) {
+                words = words + 1;
+                in_word = 1;
+            }
+        }
+        i = i + 1;
+    }
+    return words;
+}
+
+# Print wc(1) output for `b` to stdout. Mirrors GNU wc field order.
+#   mode 0 — silent (no-op)
+#   mode 1 — full:   "<lines> <words> <bytes> <file>\n"  (matches `wc <file>`)
+#   mode 2 — lines:  "<lines> <file>\n"                  (matches `wc -l <file>`)
+fn _cli_print_wc(b, file_path, mode) {
+    if (mode == 0) { return 0; }
+    var lines = _cli_count_lines(b);
+    if (mode == 1) {
+        fmt_int(lines);
+        syscall(1, 1, " ", 1);
+        fmt_int(_cli_count_words(b));
+        syscall(1, 1, " ", 1);
+        fmt_int(buf_len(b));
+        syscall(1, 1, " ", 1);
+        syscall(1, 1, file_path, strlen(file_path));
+        syscall(1, 1, "\n", 1);
+    }
+    if (mode == 2) {
+        fmt_int(lines);
+        syscall(1, 1, " ", 1);
+        syscall(1, 1, file_path, strlen(file_path));
+        syscall(1, 1, "\n", 1);
+    }
+    return 0;
+}
+
 # `cyim --write FILE` — read stdin, replace FILE's contents with it.
-fn run_write(file_path) {
+# `wc_mode`: 0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
+fn run_write(file_path, wc_mode) {
     if (file_path == 0) {
         syscall(1, 2, "cyim --write: missing FILE argument\n", 36);
         return 2;
@@ -121,12 +189,14 @@ fn run_write(file_path) {
         syscall(1, 2, "cyim --write: save failed\n", 26);
         return 1;
     }
+    _cli_print_wc(b, file_path, wc_mode);
     return 0;
 }
 
 # `cyim --replace OLD NEW FILE` (mode = REPLACE_FIRST_UNIQUE) or
 # `cyim --replace-all OLD NEW FILE` (mode = REPLACE_ALL).
-fn run_replace(old_str, new_str, file_path, mode) {
+# `wc_mode`: 0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
+fn run_replace(old_str, new_str, file_path, mode, wc_mode) {
     if (old_str == 0)   { syscall(1, 2, "cyim --replace: missing OLD\n", 28);  return 2; }
     if (new_str == 0)   { syscall(1, 2, "cyim --replace: missing NEW\n", 28);  return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace: missing FILE\n", 29); return 2; }
@@ -160,5 +230,6 @@ fn run_replace(old_str, new_str, file_path, mode) {
         syscall(1, 2, "cyim --replace: save failed\n", 28);
         return 1;
     }
+    _cli_print_wc(out, file_path, wc_mode);
     return 0;
 }

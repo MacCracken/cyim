@@ -198,6 +198,50 @@ def main():
         with open(write_fixture, "rb") as f:
             ok &= assert_eq(f.read(), b"replaced\n", "--write replaces file with stdin")
 
+    print("=== --write --wc: prints `wc <file>` after success ===")
+    wc_fixture = "/tmp/cyim-wc-fixture.txt"
+    payload = b"hello world\nfoo bar baz\n"
+    proc = subprocess.run(
+        [CYIM, "--write", "--wc", wc_fixture],
+        input=payload,
+        capture_output=True,
+        timeout=5,
+    )
+    expected = f"2 5 {len(payload)} {wc_fixture}\n".encode()
+    if proc.returncode != 0:
+        print(f"  FAIL: --write --wc exited {proc.returncode}")
+        ok = False
+    else:
+        ok &= assert_eq(proc.stdout, expected, "--wc prints '<lines> <words> <bytes> <file>'")
+        with open(wc_fixture, "rb") as f:
+            ok &= assert_eq(f.read(), payload, "--wc still wrote payload to file")
+
+    print("=== --write --wc=l: prints `wc -l <file>` after success ===")
+    proc = subprocess.run(
+        [CYIM, "--write", "--wc=l", wc_fixture],
+        input=payload,
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --write --wc=l exited {proc.returncode}")
+        ok = False
+    else:
+        ok &= assert_eq(proc.stdout, f"2 {wc_fixture}\n".encode(), "--wc=l prints '<lines> <file>'")
+
+    print("=== --write --wc=long: alias for --wc=l ===")
+    proc = subprocess.run(
+        [CYIM, "--write", "--wc=long", wc_fixture],
+        input=payload,
+        capture_output=True,
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --write --wc=long exited {proc.returncode}")
+        ok = False
+    else:
+        ok &= assert_eq(proc.stdout, f"2 {wc_fixture}\n".encode(), "--wc=long matches --wc=l")
+
     print("=== --replace: unique OLD substitutes; non-unique exits 5 ===")
     repl_fixture = "/tmp/cyim-replace-fixture.txt"
     # Unique-mode success
