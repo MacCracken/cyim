@@ -49,6 +49,63 @@ fn print_help() {
     syscall(1, 1, "       cyim --version\n", 22);
     syscall(1, 1, "       cyim --help\n", 19);
     syscall(1, 1, "       cyim --probe   (TTY round-trip diagnostic)\n", 50);
+    syscall(1, 1, "       cyim --headless [<file>]   (read keystrokes from stdin; no TTY)\n", 71);
+    return 0;
+}
+
+# Headless drive — non-interactive entry point. Reads keystroke bytes
+# from stdin until EOF or `editor_quit` fires, runs the same dispatch
+# + apply chain a TTY consumer takes, then exits. No `tty_raw`, no
+# alt-screen, no per-frame render. The roadmap's "daimon-orchestrated
+# agents" consumer plus any shell-driven editing harness lives here.
+#
+# Recipe:
+#   printf 'iEDIT\x1b:wq\r' | cyim --headless file.cyr
+#
+# Notes:
+#   - The buffer mutates in memory; `:w` is what persists to disk.
+#     Forget the `:wq` and your edits stay only in the (now exited)
+#     process.
+#   - Exit code is 0 on graceful exit (either editor_quit fired or
+#     stdin closed cleanly), non-zero only on file-load failure.
+#   - Same dispatch chain as the TTY path — search / undo / dot /
+#     visual / multi-window / multi-buffer all available.
+fn run_headless(file_path) {
+    var b = buf_new();
+    var lang = "plain";
+    if (file_path != 0) {
+        if (file_exists(file_path) == 1) {
+            buf_load_file(b, file_path);
+            buf_move(b, 0);
+        }
+        lang = detect_language_from_path(file_path);
+    }
+    highlight_init();
+    cyimrc_load();
+
+    var s = editor_new(b);
+    if (file_path != 0) {
+        editor_set_file_path(s, file_path);
+    }
+    editor_set_modified(s, 0);
+    if (cyimrc_cfg_ignorecase()   != 0 - 1) { editor_set_cfg_ignorecase(s, cyimrc_cfg_ignorecase()); }
+    if (cyimrc_cfg_line_numbers() != 0 - 1) { editor_set_cfg_line_numbers(s, cyimrc_cfg_line_numbers()); }
+    if (cyimrc_cfg_tabstop()      != 0 - 1) { editor_set_cfg_tabstop(s, cyimrc_cfg_tabstop()); }
+    bl_init(s, b);
+    window_init(s);
+
+    var quit = 0;
+    while (quit == 0) {
+        var key_buf[1];
+        var n = file_read(0, &key_buf, 1);
+        if (n <= 0) {
+            quit = 1;
+        }
+        if (quit == 0) {
+            editor_step(s, load8(&key_buf));
+            if (editor_quit(s) == 1) { quit = 1; }
+        }
+    }
     return 0;
 }
 
@@ -120,9 +177,14 @@ fn main() {
     var fpath = 0;
     if (ac > 1) {
         var a1 = argv(1);
-        if (streq(a1, "--version") == 1) { return print_version(); }
-        if (streq(a1, "--help")    == 1) { return print_help(); }
-        if (streq(a1, "--probe")   == 1) { return tty_probe(); }
+        if (streq(a1, "--version")  == 1) { return print_version(); }
+        if (streq(a1, "--help")     == 1) { return print_help(); }
+        if (streq(a1, "--probe")    == 1) { return tty_probe(); }
+        if (streq(a1, "--headless") == 1) {
+            var hfp = 0;
+            if (ac > 2) { hfp = argv(2); }
+            return run_headless(hfp);
+        }
         fpath = a1;
     }
     return run_editor(fpath);

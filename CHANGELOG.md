@@ -36,7 +36,12 @@ between minor bumps" cadence.
 - **`.cyimrc`** flat-CYML config with palette overrides + the
   same editor options.
 - **Headless / agent-drive** entry point — `editor_run(s, keys, n)`
-  drives the same dispatch+apply chain a TTY consumer takes.
+  drives the same dispatch+apply chain a TTY consumer takes,
+  exposed via `cyim --headless [<file>]` for shell scripts and
+  agents. Reads keystroke bytes from stdin until EOF or
+  `editor_quit`; no `tty_raw`, no alt-screen, no per-frame
+  render. Recipe:
+  `printf 'iEDIT\x1b:wq\r' | cyim --headless file.cyr`.
 - **No embedded scripting language. Ever.** Configuration is
   data, not code. The bulk of vim's historical CVE surface
   (Vimscript injection, modeline RCE, plugin sandbox escapes)
@@ -49,8 +54,10 @@ between minor bumps" cadence.
 - Source: **~4 200 LOC editor + ~5 100 LOC tests/fuzz/grammars**
   (~125× smaller than vim's editor core).
 - **847 .tcyr assertions** across 18 suites.
-- **14 PTY-driven end-to-end checks** in
-  `tests/integration_smoke.py`.
+- **15 integration checks** in `tests/integration_smoke.py` —
+  14 PTY-driven (search / undo / dot / visual / multi-window /
+  highlight) + 1 headless (subprocess pipe into `cyim
+  --headless`).
 - **3 fuzz harnesses** (gap-buffer, tokenizer, full-driver), all
   pass `cyrius fuzz`.
 - **9 perf benches** in `tests/perf.bcyr` with M5 baseline + M6
@@ -70,6 +77,24 @@ between minor bumps" cadence.
   avoid flicker" — a UX polish that's plausible-near-future.
   Total binary cost of the two: ~80 B. Recorded here so a
   future audit can decide whether to delete or wire.
+
+### Late-bite addition (rolled into 1.0.0)
+
+- `cyim --headless [<file>]` — the agent-drive surface promised
+  by M1 ("the keymap dispatch is the API for both human + agent
+  drivers") finally exposed at the CLI. The internal
+  `editor_run` had been in the binary since M1 bite 6 but
+  reachable only from `.tcyr` tests. Discovered missing when an
+  external agent tried to shell out to cyim and found the
+  TTY-only surface; added before the v1.0 tag so consumers
+  shipping against 1.0.x have it from day one.
+- Recipe (raw bytes; `printf` for ESC / CR):
+  `printf 'iEDIT\x1b:wq\r' | cyim --headless file.cyr`
+- `tests/integration_smoke.py` — new headless check via
+  `subprocess.run` (no PTY needed); proves the
+  load → drive → save → exit path round-trips.
+- `docs/guides/usage.md` — "Headless / agent-drive" section
+  added under Starting cyim.
 
 ### CI / release plumbing (v1.0 ship-prep)
 

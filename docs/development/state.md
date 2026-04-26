@@ -20,7 +20,7 @@
 
 - Test suites: M0 + M1 (8) + M2 (4) + M3 (2) + M4 (4)
 - Assertion count: 847 (M1 350; M2 +117 = 467; M3 +192 = 659; M4 +153 = 812; M6 +26 = 838; M7 +9 = 847)
-- Integration smoke: `tests/integration_smoke.py` — 14 PTY-driven end-to-end checks (5 M1 + 2 M2 + 4 M3 + 3 M4)
+- Integration smoke: `tests/integration_smoke.py` — 15 checks (14 PTY-driven + 1 headless via subprocess pipe into `cyim --headless`)
 - Fuzz harnesses: 3; all pass under `cyrius fuzz`
 - Performance benches: 9; M5 baseline + M6 cache-hit win in [`BENCHMARKS.md`](../../BENCHMARKS.md)
 - Security audit: initial pass [M5](../audit/2026-04-25-security-audit.md), second pass [M7](../audit/2026-04-25-m7-audit.md), 0day-corpus survey at [`docs/security/2026-04-25-0day-corpus.md`](../security/2026-04-25-0day-corpus.md), trust-model ADR at [`docs/adr/0001-trust-model.md`](../adr/0001-trust-model.md). **End-of-M7 triage: 0 CRITICAL / 0 HIGH / 0 MEDIUM**; 8 LOW findings all triaged with rationale.

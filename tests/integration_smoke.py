@@ -181,6 +181,26 @@ def main():
     )
     ok &= assert_eq(out, b"dabcef\n", "vlld then p produces 'dabcef'")
 
+    print("=== --headless: read keystrokes from stdin, no PTY required ===")
+    # The headless drive doesn't need pty.fork — it reads stdin directly
+    # and never touches termios. Agent-friendly: just pipe bytes.
+    import subprocess
+    headless_fixture = "/tmp/cyim-headless-fixture.txt"
+    with open(headless_fixture, "wb") as f:
+        f.write(b"hello\n")
+    proc = subprocess.run(
+        [CYIM, "--headless", headless_fixture],
+        input=b"iEDIT\x1b:wq\r",
+        timeout=5,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --headless exited {proc.returncode}")
+        ok = False
+    else:
+        with open(headless_fixture, "rb") as f:
+            content = f.read()
+        ok &= assert_eq(content, b"EDIThello\n", "--headless iEDIT<Esc>:wq writes 'EDIThello'")
+
     print("=== M3 multi-window: 3 files in 2 splits, navigate, :q cascades ===")
     file_a = "/tmp/cyim-smoke-a.cyr"
     file_b = "/tmp/cyim-smoke-b.cyr"

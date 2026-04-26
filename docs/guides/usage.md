@@ -17,12 +17,42 @@ cyim foo.cyr        # open foo.cyr
 cyim --version
 cyim --help
 cyim --probe        # TTY round-trip diagnostic (raw on / sleep / cooked off)
+cyim --headless [<file>]   # read keystrokes from stdin; no TTY
 ```
 
 `cyim --probe` is the smoke test for "does my terminal cooperate?" — it
 flips into raw mode for ~50 ms, prints a banner, restores cooked mode.
 If raw mode fails to engage, your terminal isn't a TTY (maybe stdin is
 piped) and cyim exits 1.
+
+### Headless / agent-drive
+
+`cyim --headless [<file>]` runs the editor without touching the TTY:
+no raw mode, no alt-screen, no per-frame render. Keystroke bytes are
+read from stdin and pushed through the same dispatch + apply chain
+the interactive path uses, until stdin closes or `:q`/`:q!` fires.
+
+Recipe — make a one-line edit and save from a shell script:
+
+```sh
+printf 'iEDIT\x1b:wq\r' | cyim --headless file.cyr
+```
+
+Encoding notes:
+
+- `\x1b` is Esc, `\r` is Enter. Bash's `$''` form (e.g. `$'\x1b'`) and
+  `printf` both emit raw bytes; plain double-quoted strings won't.
+- `:w` is what persists changes to disk. Without `:wq` (or some `:w`),
+  edits stay only in the (now exited) process.
+- Exit code: 0 on graceful exit (either `:q`/`:q!` fired or stdin
+  closed cleanly); non-zero only on file-load failure.
+
+Same dispatch chain as the TTY path — search / undo / dot / visual /
+multi-window / multi-buffer all available. This is the surface for
+shell scripts, CI checks, and `daimon`-orchestrated agents per the
+roadmap. For higher-level wrappers (sed-style search/replace, an
+`--apply` macro language, etc.), build them on top of this — they
+compose cleanly through `printf`.
 
 ---
 
