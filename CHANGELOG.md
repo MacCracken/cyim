@@ -45,6 +45,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   motion, mode-default, every transition path, Backspace/DEL/Enter/LF
   equivalences, and an 8-key headless drive (`i H i Esc l : q Enter`)
   that asserts the full action sequence and final mode.
+- `src/buffer.cyr` line/column queries: `buf_line_start`, `buf_line_end`,
+  `buf_line_of`, `buf_line_count`, `buf_pos_of_line` (clamps past-end
+  to last actual line in a single forward pass), `buf_col_of`. Vim
+  convention: trailing `\n` is a line terminator, not a new empty line.
+- `src/motion.cyr` — vi motions over the gap-buffer: `motion_left`,
+  `_right`, `_up`, `_down`, `_line_start`, `_line_end`, `_word_fwd`,
+  `_word_back`, `_file_end`, `_file_start`, plus `motion_cclass`
+  (whitespace / word / punctuation classifier — vim-style
+  iskeyword) and `motion_apply` which dispatches `ACT_MOVE_*` to the
+  right handler and updates `buf_move`. j/k preserve column with
+  clamp to target-line end. l/h respect line boundaries. w/b honor
+  class transitions and skip whitespace runs. G lands on column 0
+  of the last line (first-non-blank refinement deferred).
+- `tests/motion.tcyr` — 87 assertions over 11 groups: line-count
+  edge cases (empty / lone-`\n` / trailing-`\n`), line/col helpers
+  on a 26-byte 3-line fixture, h/l line-boundary clamps, 0/$,
+  j/k column-preservation with clamp on shorter lines, w across
+  newlines, b across whitespace, G/gg, `motion_apply` end-to-end
+  via the editor state, and "all motions on an empty buffer are
+  safe no-ops".
 
 ## [0.1.0] — 2026-04-25
 

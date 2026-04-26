@@ -1,0 +1,169 @@
+# motion.cyr — vi motions over the gap-buffer
+#
+# Each motion takes a buffer and a starting byte position and returns a new
+# byte position; none of them mutate the buffer. The dispatch handler
+# (`motion_apply`) walks an editor state, looks at the action id, calls the
+# right motion, and updates the buffer's cursor via `buf_move`.
+#
+# Requires: src/buffer.cyr (for buf_get / buf_len / buf_line_* / buf_col_of)
+#           src/mode.cyr   (for ACT_MOVE_* + editor_buf)
+# The consumer (a test or main.cyr) must include those before this file.
+# Motion.cyr does not re-include them so duplicate textual inclusion is
+# never a risk.
+#
+# Multi-byte sequences (gg) are not handled here — the keymap only emits
+# single-byte motion actions. `motion_file_start` exists as a function so
+# bite 4's gg dispatcher can call it once that lands.
+
+# Character class — defines word boundaries for w / b.
+var CCLASS_SPACE = 0;
+var CCLASS_WORD  = 1;
+var CCLASS_PUNCT = 2;
+
+# Classify one byte. Word chars are alnum + underscore (vim's "iskeyword").
+fn motion_cclass(c) {
+    if (c == 32) { return CCLASS_SPACE; }
+    if (c == 9)  { return CCLASS_SPACE; }
+    if (c == 10) { return CCLASS_SPACE; }
+    if (c == 13) { return CCLASS_SPACE; }
+    if (c == 95) { return CCLASS_WORD; }                   # _
+    if (c >= 48) { if (c <= 57)  { return CCLASS_WORD; } } # 0-9
+    if (c >= 65) { if (c <= 90)  { return CCLASS_WORD; } } # A-Z
+    if (c >= 97) { if (c <= 122) { return CCLASS_WORD; } } # a-z
+    return CCLASS_PUNCT;
+}
+
+# h — one byte left, but never crosses the line start.
+fn motion_left(b, pos) {
+    var ls = buf_line_start(b, pos);
+    if (pos > ls) { return pos - 1; }
+    return pos;
+}
+
+# l — one byte right, but never past the line end (last printable char).
+fn motion_right(b, pos) {
+    var le = buf_line_end(b, pos);
+    if (pos < le) { return pos + 1; }
+    return pos;
+}
+
+# 0 — start of current line.
+fn motion_line_start(b, pos) {
+    return buf_line_start(b, pos);
+}
+
+# $ — end of current line (last printable byte; for empty lines == start).
+fn motion_line_end(b, pos) {
+    return buf_line_end(b, pos);
+}
+
+# k — same column on the previous line, clamped to that line's end.
+fn motion_up(b, pos) {
+    var line = buf_line_of(b, pos);
+    if (line == 0) { return pos; }
+    var col = buf_col_of(b, pos);
+    var prev_start = buf_pos_of_line(b, line - 1);
+    var prev_end = buf_line_end(b, prev_start);
+    var target = prev_start + col;
+    if (target > prev_end) { return prev_end; }
+    return target;
+}
+
+# j — same column on the next line, clamped. No-op on the last line.
+fn motion_down(b, pos) {
+    var line = buf_line_of(b, pos);
+    var total = buf_line_count(b);
+    if (line + 1 >= total) { return pos; }
+    var col = buf_col_of(b, pos);
+    var next_start = buf_pos_of_line(b, line + 1);
+    var next_end = buf_line_end(b, next_start);
+    var target = next_start + col;
+    if (target > next_end) { return next_end; }
+    return target;
+}
+
+# w — start of next word. Skips the current class run, then any whitespace.
+fn motion_word_fwd(b, pos) {
+    var len = buf_len(b);
+    if (pos >= len) { return pos; }
+    var cur = motion_cclass(buf_get(b, pos));
+    var done = 0;
+    while (done == 0) {
+        if (pos >= len) { done = 1; }
+        if (done == 0) {
+            if (motion_cclass(buf_get(b, pos)) != cur) { done = 1; }
+        }
+        if (done == 0) { pos = pos + 1; }
+    }
+    var done2 = 0;
+    while (done2 == 0) {
+        if (pos >= len) { done2 = 1; }
+        if (done2 == 0) {
+            if (motion_cclass(buf_get(b, pos)) != CCLASS_SPACE) { done2 = 1; }
+        }
+        if (done2 == 0) { pos = pos + 1; }
+    }
+    return pos;
+}
+
+# b — start of previous word. Skips back over whitespace, then over the
+# class run we landed in.
+fn motion_word_back(b, pos) {
+    if (pos == 0) { return 0; }
+    pos = pos - 1;
+    var done = 0;
+    while (done == 0) {
+        if (pos == 0) { done = 1; }
+        if (done == 0) {
+            if (motion_cclass(buf_get(b, pos)) != CCLASS_SPACE) { done = 1; }
+        }
+        if (done == 0) { pos = pos - 1; }
+    }
+    if (motion_cclass(buf_get(b, pos)) == CCLASS_SPACE) { return 0; }
+    var cur = motion_cclass(buf_get(b, pos));
+    var done2 = 0;
+    while (done2 == 0) {
+        if (pos == 0) { done2 = 1; }
+        if (done2 == 0) {
+            if (motion_cclass(buf_get(b, pos - 1)) != cur) { done2 = 1; }
+        }
+        if (done2 == 0) { pos = pos - 1; }
+    }
+    return pos;
+}
+
+# G — start of last line. Vim's default `G` lands on the first non-blank,
+# but for M1 we land on column 0; first-non-blank is a refinement worth its
+# own bite if it earns the room.
+fn motion_file_end(b) {
+    var total = buf_line_count(b);
+    if (total <= 1) { return 0; }
+    return buf_pos_of_line(b, total - 1);
+}
+
+# gg — start of file. Multi-byte input dispatch is not yet wired in mode.cyr,
+# but the function itself exists so once gg lands it has somewhere to call.
+fn motion_file_start(b) {
+    return 0;
+}
+
+# Apply an `ACT_MOVE_*` action to the editor's current buffer cursor.
+# Returns the new cursor position. Non-motion actions are passed through
+# unchanged (the caller handles them).
+fn motion_apply(s, action) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var pos = buf_cursor(b);
+    var new_pos = pos;
+    if (action == ACT_MOVE_LEFT)       { new_pos = motion_left(b, pos); }
+    if (action == ACT_MOVE_RIGHT)      { new_pos = motion_right(b, pos); }
+    if (action == ACT_MOVE_UP)         { new_pos = motion_up(b, pos); }
+    if (action == ACT_MOVE_DOWN)       { new_pos = motion_down(b, pos); }
+    if (action == ACT_MOVE_LINE_START) { new_pos = motion_line_start(b, pos); }
+    if (action == ACT_MOVE_LINE_END)   { new_pos = motion_line_end(b, pos); }
+    if (action == ACT_MOVE_WORD_FWD)   { new_pos = motion_word_fwd(b, pos); }
+    if (action == ACT_MOVE_WORD_BACK)  { new_pos = motion_word_back(b, pos); }
+    if (action == ACT_MOVE_FILE_END)   { new_pos = motion_file_end(b); }
+    buf_move(b, new_pos);
+    return new_pos;
+}

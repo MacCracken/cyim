@@ -187,6 +187,107 @@ fn buf_load_file(b, path) {
     return total;
 }
 
+# ──── Line / column queries ─────────────────────────────────────────
+# All positions are byte offsets into the logical buffer (0..buf_len).
+# Lines are separated by '\n'; the trailing '\n' (if any) is the line
+# terminator, not the start of a new line. An empty buffer has 1 line.
+
+# Byte offset of the first byte of the line containing `pos`.
+# Walks backward to the previous '\n' (exclusive) or 0.
+fn buf_line_start(b, pos) {
+    var i = pos;
+    var done = 0;
+    while (done == 0) {
+        if (i == 0) { done = 1; }
+        if (done == 0) {
+            if (buf_get(b, i - 1) == 10) { done = 1; }
+        }
+        if (done == 0) { i = i - 1; }
+    }
+    return i;
+}
+
+# Byte offset of the last printable byte of the line containing `pos`,
+# i.e. the byte just before the next '\n' or end-of-buffer. For an empty
+# line (just '\n'), this equals `buf_line_start` — cursor stays put on $.
+fn buf_line_end(b, pos) {
+    var len = buf_len(b);
+    var i = buf_line_start(b, pos);
+    var end = i;
+    var done = 0;
+    while (done == 0) {
+        if (end >= len) { done = 1; }
+        if (done == 0) {
+            if (buf_get(b, end) == 10) { done = 1; }
+        }
+        if (done == 0) { end = end + 1; }
+    }
+    if (end == i) { return i; }
+    return end - 1;
+}
+
+# 0-indexed line number of the line containing `pos`. Counts '\n' bytes
+# strictly before `pos`.
+fn buf_line_of(b, pos) {
+    var i = 0;
+    var n = 0;
+    while (i < pos) {
+        if (buf_get(b, i) == 10) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+# Total line count. Empty buffer == 1 line. Trailing '\n' is a terminator,
+# not a new empty line.
+fn buf_line_count(b) {
+    var len = buf_len(b);
+    if (len == 0) { return 1; }
+    var i = 0;
+    var n = 0;
+    while (i < len) {
+        if (buf_get(b, i) == 10) { n = n + 1; }
+        i = i + 1;
+    }
+    if (buf_get(b, len - 1) == 10) {
+        if (n == 0) { return 1; }
+        return n;
+    }
+    return n + 1;
+}
+
+# Byte offset of the first byte of 0-indexed `line`. Clamps to the start
+# of the last actual line if `line` exceeds `buf_line_count - 1`.
+#
+# Single forward pass: every '\n' marks the end of a line; the byte right
+# after it is the start of the next line — but only if there *is* a byte
+# right after it (otherwise that '\n' is just the terminator). We track
+# the most recent valid line-start, return early on a match, and fall
+# through to the tracked value if `line` is out of range.
+fn buf_pos_of_line(b, line) {
+    if (line <= 0) { return 0; }
+    var len = buf_len(b);
+    var i = 0;
+    var seen = 0;
+    var last_line_start = 0;
+    while (i < len) {
+        if (buf_get(b, i) == 10) {
+            seen = seen + 1;
+            if (i + 1 < len) {
+                if (seen == line) { return i + 1; }
+                last_line_start = i + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return last_line_start;
+}
+
+# Column of `pos` within its line (== pos - buf_line_start(pos)).
+fn buf_col_of(b, pos) {
+    return pos - buf_line_start(b, pos);
+}
+
 # Write the buffer's logical content to `path` (O_WRONLY|O_CREAT|O_TRUNC, 0644).
 # Returns bytes written on success, -1 on open failure, or a propagated negative
 # write error. Pre-gap and post-gap segments are written separately so the
