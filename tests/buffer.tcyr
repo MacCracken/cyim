@@ -1,0 +1,109 @@
+# tests/buffer.tcyr — gap-buffer invariants
+# Stdlib (alloc, assert) auto-resolved via cyrius.cyml; project source
+# is included explicitly because it is not a stdlib dep.
+include "src/buffer.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("buf_new");
+    var b = buf_new();
+    assert_nonnull(b, "buffer header alloc");
+    assert_eq(buf_len(b), 0, "empty len");
+    assert_eq(buf_cursor(b), 0, "cursor at 0");
+    assert_eq(buf_cap(b), 64, "initial cap is 64");
+    assert_eq(buf_gap(b), 64, "gap fills the buffer when empty");
+
+    test_group("insert at end");
+    buf_insert(b, "abc", 3);
+    assert_eq(buf_len(b), 3, "len after insert");
+    assert_eq(buf_cursor(b), 3, "cursor advanced");
+    assert_eq(buf_get(b, 0), 97, "[0] == 'a'");
+    assert_eq(buf_get(b, 1), 98, "[1] == 'b'");
+    assert_eq(buf_get(b, 2), 99, "[2] == 'c'");
+
+    test_group("move + insert in middle");
+    buf_move(b, 1);
+    assert_eq(buf_cursor(b), 1, "cursor moved to 1");
+    buf_insert_byte(b, 88);
+    assert_eq(buf_len(b), 4, "len after middle insert");
+    assert_eq(buf_get(b, 0), 97, "[0] == 'a'");
+    assert_eq(buf_get(b, 1), 88, "[1] == 'X'");
+    assert_eq(buf_get(b, 2), 98, "[2] == 'b'");
+    assert_eq(buf_get(b, 3), 99, "[3] == 'c'");
+
+    test_group("delete_left (backspace)");
+    assert_eq(buf_cursor(b), 2, "cursor before delete_left");
+    var ok = buf_delete_left(b);
+    assert_eq(ok, 1, "delete_left returns 1");
+    assert_eq(buf_len(b), 3, "len after delete_left");
+    assert_eq(buf_cursor(b), 1, "cursor moved left");
+    assert_eq(buf_get(b, 0), 97, "[0] == 'a'");
+    assert_eq(buf_get(b, 1), 98, "[1] == 'b'");
+    assert_eq(buf_get(b, 2), 99, "[2] == 'c'");
+
+    test_group("delete_left at start is a no-op");
+    buf_move(b, 0);
+    var ok2 = buf_delete_left(b);
+    assert_eq(ok2, 0, "delete_left at 0 returns 0");
+    assert_eq(buf_len(b), 3, "len unchanged");
+
+    test_group("delete_right (vim x)");
+    var ok3 = buf_delete_right(b);
+    assert_eq(ok3, 1, "delete_right returns 1");
+    assert_eq(buf_len(b), 2, "len after delete_right");
+    assert_eq(buf_cursor(b), 0, "cursor stays at 0");
+    assert_eq(buf_get(b, 0), 98, "[0] == 'b'");
+    assert_eq(buf_get(b, 1), 99, "[1] == 'c'");
+
+    test_group("delete_right at end is a no-op");
+    buf_move(b, buf_len(b));
+    var ok4 = buf_delete_right(b);
+    assert_eq(ok4, 0, "delete_right at end returns 0");
+    assert_eq(buf_len(b), 2, "len unchanged");
+
+    test_group("growth past initial capacity");
+    var g = buf_new();
+    assert_eq(buf_cap(g), 64, "starts at 64");
+    var i = 0;
+    while (i < 100) {
+        buf_insert_byte(g, 65 + (i % 26));
+        i = i + 1;
+    }
+    assert_eq(buf_len(g), 100, "len after 100 inserts");
+    assert_gte(buf_cap(g), 100, "cap grew to fit");
+    # Cap is doubled, so the first growth is 64 -> 128, which fits 100.
+    assert_eq(buf_cap(g), 128, "cap doubled exactly once");
+    # Verify content survived the realloc.
+    assert_eq(buf_get(g, 0), 65, "[0] survived");
+    assert_eq(buf_get(g, 25), 65 + 25, "[25] survived");
+    assert_eq(buf_get(g, 99), 65 + (99 % 26), "[99] survived");
+
+    test_group("growth preserves cursor position");
+    var h = buf_new();
+    var j = 0;
+    while (j < 30) {
+        buf_insert_byte(h, 97 + j);
+        j = j + 1;
+    }
+    buf_move(h, 10);
+    # Now insert enough to force growth while cursor is in the middle.
+    var k = 0;
+    while (k < 50) {
+        buf_insert_byte(h, 33);
+        k = k + 1;
+    }
+    assert_eq(buf_len(h), 80, "len after middle-insert growth");
+    assert_eq(buf_cursor(h), 60, "cursor advanced past inserts");
+    assert_eq(buf_get(h, 0), 97, "pre-cursor [0] survived");
+    assert_eq(buf_get(h, 9), 97 + 9, "pre-cursor [9] survived");
+    assert_eq(buf_get(h, 10), 33, "first inserted byte at cursor");
+    assert_eq(buf_get(h, 59), 33, "last inserted byte at cursor end");
+    assert_eq(buf_get(h, 60), 97 + 10, "post-cursor [60] survived");
+    assert_eq(buf_get(h, 79), 97 + 29, "post-cursor [79] survived");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

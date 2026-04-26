@@ -1,0 +1,167 @@
+# buffer.cyr — gap-buffer primitive for cyim
+#
+# A gap-buffer is a contiguous byte buffer split into three regions:
+# pre-gap content, the gap (uninitialized scratch), and post-gap content.
+# The gap sits at the cursor; insertion and deletion at the cursor are
+# O(1) byte writes plus a head/tail pointer bump. Cursor movement is the
+# only O(n) op (it shifts bytes across the gap).
+#
+# Layout (32 B header on the heap):
+#   off  0: data       i64  pointer to the byte buffer (capacity = `cap`)
+#   off  8: gap_start  i64  byte offset where the gap begins (== cursor)
+#   off 16: gap_end    i64  byte offset of the first byte after the gap
+#   off 24: cap        i64  total bytes allocated for `data`
+#
+# Logical length:  cap - (gap_end - gap_start)
+# Logical index i maps to physical byte:
+#   i < gap_start          -> data[i]
+#   i >= gap_start          -> data[gap_end + (i - gap_start)]
+#
+# Invariants (must hold after every public op):
+#   0 <= gap_start <= gap_end <= cap
+#   data points to a heap allocation of `cap` bytes
+
+var BUF_INIT_CAP = 64;
+
+# Create a new empty gap-buffer with initial capacity.
+fn buf_new() {
+    var b = alloc(32);
+    var data = alloc(BUF_INIT_CAP);
+    store64(b, data);
+    store64(b + 8, 0);
+    store64(b + 16, BUF_INIT_CAP);
+    store64(b + 24, BUF_INIT_CAP);
+    return b;
+}
+
+# Logical length (bytes of content; excludes the gap).
+fn buf_len(b) {
+    return load64(b + 24) - (load64(b + 16) - load64(b + 8));
+}
+
+# Total allocated capacity (gap + content combined).
+fn buf_cap(b) {
+    return load64(b + 24);
+}
+
+# Current gap size.
+fn buf_gap(b) {
+    return load64(b + 16) - load64(b + 8);
+}
+
+# Cursor position == start of the gap, in logical coords.
+fn buf_cursor(b) {
+    return load64(b + 8);
+}
+
+# Read the byte at logical position i. Caller must ensure 0 <= i < buf_len(b).
+fn buf_get(b, i) {
+    var data = load64(b);
+    var gs = load64(b + 8);
+    if (i < gs) { return load8(data + i); }
+    var ge = load64(b + 16);
+    return load8(data + ge + (i - gs));
+}
+
+# Move the gap (and cursor) to logical position pos. O(distance).
+fn buf_move(b, pos) {
+    var data = load64(b);
+    var gs = load64(b + 8);
+    var ge = load64(b + 16);
+    if (pos < gs) {
+        # Shift bytes [pos, gs) rightward into [pos + (ge - gs), ge).
+        # Walk from the right end so source/dest don't alias destructively.
+        var n = gs - pos;
+        var i = 0;
+        while (i < n) {
+            store8(data + ge - 1 - i, load8(data + gs - 1 - i));
+            i = i + 1;
+        }
+        store64(b + 8, pos);
+        store64(b + 16, ge - n);
+        return 0;
+    }
+    if (pos > gs) {
+        # Shift bytes [ge, ge + (pos - gs)) leftward into [gs, pos).
+        var n = pos - gs;
+        var i = 0;
+        while (i < n) {
+            store8(data + gs + i, load8(data + ge + i));
+            i = i + 1;
+        }
+        store64(b + 8, pos);
+        store64(b + 16, ge + n);
+        return 0;
+    }
+    return 0;
+}
+
+# Grow capacity to at least min_cap. Doubles repeatedly until satisfied.
+fn buf_grow(b, min_cap) {
+    var old_data = load64(b);
+    var old_gs = load64(b + 8);
+    var old_ge = load64(b + 16);
+    var old_cap = load64(b + 24);
+    var new_cap = old_cap * 2;
+    while (new_cap < min_cap) { new_cap = new_cap * 2; }
+    var new_data = alloc(new_cap);
+    # Copy pre-gap content unchanged.
+    var i = 0;
+    while (i < old_gs) {
+        store8(new_data + i, load8(old_data + i));
+        i = i + 1;
+    }
+    # Copy post-gap content to the new tail; the gap absorbs the growth.
+    var post_len = old_cap - old_ge;
+    var new_ge = new_cap - post_len;
+    i = 0;
+    while (i < post_len) {
+        store8(new_data + new_ge + i, load8(old_data + old_ge + i));
+        i = i + 1;
+    }
+    store64(b, new_data);
+    store64(b + 16, new_ge);
+    store64(b + 24, new_cap);
+    return 0;
+}
+
+# Insert one byte at the cursor. Grows on demand.
+fn buf_insert_byte(b, ch) {
+    var gs = load64(b + 8);
+    var ge = load64(b + 16);
+    if (gs >= ge) {
+        buf_grow(b, load64(b + 24) + 1);
+        gs = load64(b + 8);
+        ge = load64(b + 16);
+    }
+    store8(load64(b) + gs, ch);
+    store64(b + 8, gs + 1);
+    return 0;
+}
+
+# Insert n bytes from src at the cursor. Returns the number written.
+fn buf_insert(b, src, n) {
+    var i = 0;
+    while (i < n) {
+        buf_insert_byte(b, load8(src + i));
+        i = i + 1;
+    }
+    return n;
+}
+
+# Delete one byte to the LEFT of the cursor (backspace). Returns 1 if deleted, 0 if at start.
+fn buf_delete_left(b) {
+    var gs = load64(b + 8);
+    if (gs == 0) { return 0; }
+    store64(b + 8, gs - 1);
+    return 1;
+}
+
+# Delete one byte to the RIGHT of the cursor (vim 'x'). Returns 1 if deleted, 0 if at end.
+fn buf_delete_right(b) {
+    var ge = load64(b + 16);
+    var cap = load64(b + 24);
+    if (ge >= cap) { return 0; }
+    store64(b + 16, ge + 1);
+    return 1;
+}

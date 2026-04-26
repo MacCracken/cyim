@@ -18,15 +18,15 @@
 
 ## Tests
 
-- Test suites: `src/test.cyr` (scaffold smoke); milestone-specific `tests/*.tcyr` land at M1+
-- Assertion count: TBD at M1
+- Test suites: `src/test.cyr` (scaffold smoke) + `tests/cyim.tcyr` (M0 smoke) + `tests/buffer.tcyr` (M1 bite 1: gap-buffer invariants)
+- Assertion count: 49 (47 buffer + 2 smoke)
 - Fuzz harnesses: planned at M2 (gap-buffer + tokenizer integration)
 - Benchmarks: planned at M5 (closeout pass)
 
 ## Active Milestone
 
 - **M0** — scaffold. *Done.*
-- **M1 (next)** — gap-buffer + raw-mode TTY + modal dispatch. See [`roadmap.md`](roadmap.md).
+- **M1 (in progress)** — gap-buffer + raw-mode TTY + modal dispatch. Sliced into 8 bites; bite 1 (gap-buffer) landed. See [`roadmap.md`](roadmap.md).
 
 ## Consumers
 
