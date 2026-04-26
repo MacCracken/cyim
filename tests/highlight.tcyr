@@ -1,0 +1,97 @@
+# tests/highlight.tcyr — vyakarana-driven token kind lookup
+#
+# Tests the buffer→cstr→tokenize_source→kind_at path end-to-end against
+# vyakarana's bundled cyrius grammar. Test cwd is the project root, which
+# contains grammars/, so vyakarana's lazy bootstrap finds the cyrius.cyml.
+# `highlight_init` is intentionally NOT called: the test exercises the
+# cwd-fallback that consumers rely on when /proc/self/exe is unavailable.
+#
+# Token kinds (TK_*) come from vyakarana's bundle; the assertions below
+# treat the ten-kind palette as a stable contract (per vyakarana's design
+# spec, breaking it requires a CHANGELOG entry there).
+
+include "lib/vyakarana.cyr"
+include "src/buffer.cyr"
+include "src/highlight.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("highlight_buf returns 0 on unknown language");
+    var b = buf_new();
+    buf_insert(b, "var x = 42\n", 11);
+    buf_move(b, 0);
+    var tb_unknown = highlight_buf(b, "esperanto");
+    assert_eq(tb_unknown, 0, "unknown lang -> 0");
+
+    test_group("Cyrius source: 'var x = 42'");
+    var tb = highlight_buf(b, "cyrius");
+    assert_nonnull(tb, "cyrius tokenbuf returned");
+    assert_gt(tokenbuf_count(tb), 0, "tokenbuf has tokens");
+    # Position layout (bytes):
+    #   0  1  2  3  4  5  6  7  8  9  10
+    #   v  a  r  ' ' x  ' ' =  ' ' 4  2  \n
+    assert_eq(highlight_kind_at(tb, 0), TK_KEYWORD,    "[0] 'v' of var -> KEYWORD");
+    assert_eq(highlight_kind_at(tb, 2), TK_KEYWORD,    "[2] 'r' of var -> KEYWORD");
+    assert_eq(highlight_kind_at(tb, 3), TK_WHITESPACE, "[3] ' ' -> WHITESPACE");
+    assert_eq(highlight_kind_at(tb, 4), TK_IDENT,      "[4] 'x' -> IDENT");
+    assert_eq(highlight_kind_at(tb, 6), TK_OPERATOR,   "[6] '=' -> OPERATOR");
+    assert_eq(highlight_kind_at(tb, 8), TK_NUMBER,     "[8] '4' (in 42) -> NUMBER");
+    assert_eq(highlight_kind_at(tb, 9), TK_NUMBER,     "[9] '2' (in 42) -> NUMBER");
+
+    test_group("Cyrius source: 'fn main() { return 0; } # done'");
+    var b2 = buf_new();
+    buf_insert(b2, "fn main() { return 0; } # done\n", 31);
+    buf_move(b2, 0);
+    var tb2 = highlight_buf(b2, "cyrius");
+    assert_nonnull(tb2, "tokenbuf for fn fixture");
+    # Layout:
+    #   0..1  fn          KEYWORD
+    #   2     ' '         WHITESPACE
+    #   3..6  main        IDENT
+    #   7     '('         PUNCTUATION
+    #   8     ')'         PUNCTUATION
+    #   10    '{'         PUNCTUATION
+    #   12..17 return      KEYWORD
+    #   19    '0'         NUMBER
+    #   20    ';'         PUNCTUATION
+    #   24    '#' ...     COMMENT through end of line
+    assert_eq(highlight_kind_at(tb2, 0),  TK_KEYWORD,     "[0] 'f' of fn -> KEYWORD");
+    assert_eq(highlight_kind_at(tb2, 1),  TK_KEYWORD,     "[1] 'n' of fn -> KEYWORD");
+    assert_eq(highlight_kind_at(tb2, 3),  TK_IDENT,       "[3] 'm' of main -> IDENT");
+    assert_eq(highlight_kind_at(tb2, 7),  TK_PUNCTUATION, "[7] '(' -> PUNCTUATION");
+    assert_eq(highlight_kind_at(tb2, 8),  TK_PUNCTUATION, "[8] ')' -> PUNCTUATION");
+    assert_eq(highlight_kind_at(tb2, 10), TK_PUNCTUATION, "[10] '{' -> PUNCTUATION");
+    assert_eq(highlight_kind_at(tb2, 12), TK_KEYWORD,     "[12] 'r' of return -> KEYWORD");
+    assert_eq(highlight_kind_at(tb2, 19), TK_NUMBER,      "[19] '0' -> NUMBER");
+    assert_eq(highlight_kind_at(tb2, 20), TK_PUNCTUATION, "[20] ';' -> PUNCTUATION");
+    assert_eq(highlight_kind_at(tb2, 24), TK_COMMENT,     "[24] '#' -> COMMENT");
+    assert_eq(highlight_kind_at(tb2, 28), TK_COMMENT,     "[28] mid-comment 'o' -> COMMENT");
+
+    test_group("Cyrius source: double-quoted string literal");
+    var b3 = buf_new();
+    buf_insert(b3, "var s = \"hello\";\n", 17);
+    buf_move(b3, 0);
+    var tb3 = highlight_buf(b3, "cyrius");
+    # Layout: var = 0..2 (KEYWORD); s = 4 (IDENT); = at 6; "hello" = 8..14 (STRING)
+    assert_eq(highlight_kind_at(tb3, 8),  TK_STRING, "[8] '\"' (open) -> STRING");
+    assert_eq(highlight_kind_at(tb3, 11), TK_STRING, "[11] mid-string 'l' -> STRING");
+    assert_eq(highlight_kind_at(tb3, 14), TK_STRING, "[14] '\"' (close) -> STRING");
+    assert_eq(highlight_kind_at(tb3, 15), TK_PUNCTUATION, "[15] ';' -> PUNCTUATION");
+
+    test_group("Empty buffer tokenizes without error");
+    var b4 = buf_new();
+    var tb4 = highlight_buf(b4, "cyrius");
+    assert_nonnull(tb4, "empty buffer -> non-null tokenbuf");
+    assert_eq(tokenbuf_count(tb4), 0, "empty buffer -> zero tokens");
+    assert_eq(highlight_kind_at(tb4, 0), TK_WHITESPACE, "kind_at on empty -> WHITESPACE");
+
+    test_group("highlight_kind_at on null tokenbuf -> WHITESPACE");
+    assert_eq(highlight_kind_at(0, 0), TK_WHITESPACE, "null tb -> safe WHITESPACE");
+    assert_eq(highlight_kind_at(0, 100), TK_WHITESPACE, "null tb at any pos -> WHITESPACE");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

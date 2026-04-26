@@ -1,0 +1,206 @@
+# tests/render.tcyr — render_build_line and theme_token_color
+#
+# render_build_line writes into a caller buffer instead of stdout so we
+# can byte-check its output. Tests cover:
+#   - Plain mode (tb=0): bytes through unchanged + CRLF.
+#   - Highlighted mode: ANSI fg escapes at kind boundaries, resets when
+#     transitioning to a no-color kind, unconditional final reset before
+#     the CRLF when a color is still active.
+#   - Edge cases: empty buffer, empty interior line, cols truncation.
+#   - theme_token_color palette spot-checks.
+#
+# Test cwd is the project root, so vyakarana's lazy bootstrap finds
+# grammars/ — same setup as tests/highlight.tcyr.
+
+include "lib/vyakarana.cyr"
+include "src/buffer.cyr"
+include "src/highlight.cyr"
+include "src/cyimrc.cyr"
+include "src/mode.cyr"
+include "src/tty.cyr"
+include "src/render.cyr"
+
+# Compare the first `n` bytes of `out` against a NUL-terminated literal.
+# WARNING: Cyrius doesn't parse \xNN in string literals (the \ is dropped,
+# the rest stays as ASCII), so this helper is only safe for plain-ASCII
+# expected strings. ANSI-escape comparisons use bytes_eq + a manually
+# built byte buffer.
+fn out_eq(out, expected, n) {
+    var elen = strlen(expected);
+    if (elen != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (load8(out + i) != load8(expected + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Compare two raw byte arrays of length `n`.
+fn bytes_eq(a, b, n) {
+    var i = 0;
+    while (i < n) {
+        if (load8(a + i) != load8(b + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Append "ESC [ 3 8 ; 5 ; <code> m" to `buf` at `off`. Returns new offset.
+# Code is one of theme_token_color's outputs (3-digit max).
+fn put_fg(buf, off, code) {
+    store8(buf + off + 0, 0x1B);
+    store8(buf + off + 1, 91);
+    store8(buf + off + 2, 51);
+    store8(buf + off + 3, 56);
+    store8(buf + off + 4, 59);
+    store8(buf + off + 5, 53);
+    store8(buf + off + 6, 59);
+    var w = 7;
+    # Inline 1..3 digit decimal — only used with 0..999 in tests.
+    if (code >= 100) {
+        store8(buf + off + w, 48 + code / 100);
+        w = w + 1;
+        store8(buf + off + w, 48 + (code / 10) % 10);
+        w = w + 1;
+        store8(buf + off + w, 48 + code % 10);
+        w = w + 1;
+    } else {
+        if (code >= 10) {
+            store8(buf + off + w, 48 + code / 10);
+            w = w + 1;
+            store8(buf + off + w, 48 + code % 10);
+            w = w + 1;
+        } else {
+            store8(buf + off + w, 48 + code);
+            w = w + 1;
+        }
+    }
+    store8(buf + off + w, 109);  # 'm'
+    w = w + 1;
+    return off + w;
+}
+
+# Append "ESC [ 0 m" reset to `buf` at `off`. Returns new offset.
+fn put_reset(buf, off) {
+    store8(buf + off + 0, 0x1B);
+    store8(buf + off + 1, 91);
+    store8(buf + off + 2, 48);
+    store8(buf + off + 3, 109);
+    return off + 4;
+}
+
+# Append a NUL-terminated cstr to `buf` at `off`. Returns new offset.
+fn put_cstr(buf, off, s) {
+    var n = strlen(s);
+    var i = 0;
+    while (i < n) {
+        store8(buf + off + i, load8(s + i));
+        i = i + 1;
+    }
+    return off + n;
+}
+
+fn put_crlf(buf, off) {
+    store8(buf + off + 0, 13);
+    store8(buf + off + 1, 10);
+    return off + 2;
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("theme_token_color palette");
+    assert_eq(theme_token_color(TK_IDENT),        0 - 1, "ident -> -1");
+    assert_eq(theme_token_color(TK_KEYWORD),      141,   "keyword -> 141");
+    assert_eq(theme_token_color(TK_STRING),       113,   "string -> 113");
+    assert_eq(theme_token_color(TK_NUMBER),       215,   "number -> 215");
+    assert_eq(theme_token_color(TK_COMMENT),      245,   "comment -> 245");
+    assert_eq(theme_token_color(TK_OPERATOR),     110,   "operator -> 110");
+    assert_eq(theme_token_color(TK_PUNCTUATION),  0 - 1, "punctuation -> -1");
+    assert_eq(theme_token_color(TK_WHITESPACE),   0 - 1, "whitespace -> -1");
+    assert_eq(theme_token_color(TK_PREPROCESSOR), 221,   "preprocessor -> 221");
+    assert_eq(theme_token_color(TK_ERROR),        196,   "error -> 196");
+
+    test_group("render_build_line plain mode (tb=0)");
+    var b = buf_new();
+    buf_insert(b, "hi", 2);
+    var out[256];
+    var n = render_build_line(b, 0, 80, 0, &out, 256);
+    assert_eq(n, 4, "plain 'hi' is 4 bytes (h i \\r \\n)");
+    assert_eq(out_eq(&out, "hi\r\n", 4), 1, "bytes match 'hi\\r\\n'");
+
+    test_group("render_build_line plain on empty buffer");
+    var be = buf_new();
+    var n0 = render_build_line(be, 0, 80, 0, &out, 256);
+    assert_eq(n0, 2, "empty buffer plain is just \\r\\n");
+    assert_eq(load8(&out + 0), 13, "[0] == \\r");
+    assert_eq(load8(&out + 1), 10, "[1] == \\n");
+
+    test_group("render_build_line plain on empty interior line");
+    var b3 = buf_new();
+    buf_insert(b3, "a\n\nb", 4);
+    var n3 = render_build_line(b3, 1, 80, 0, &out, 256);  # the empty middle line
+    assert_eq(n3, 2, "empty interior line is just \\r\\n");
+
+    test_group("render_build_line plain truncation at cols");
+    var bt = buf_new();
+    buf_insert(bt, "abcdefghij", 10);
+    var nt = render_build_line(bt, 0, 4, 0, &out, 256);
+    # 4 bytes content + CRLF = 6
+    assert_eq(nt, 6, "trunc to 4 cols + CRLF = 6 bytes");
+    assert_eq(out_eq(&out, "abcd\r\n", 6), 1, "first 4 chars then CRLF");
+
+    test_group("render_build_line highlighted: 'var x'");
+    var b2 = buf_new();
+    buf_insert(b2, "var x", 5);
+    var tb = highlight_buf(b2, "cyrius");
+    assert_nonnull(tb, "tokenbuf for 'var x'");
+    var nh = render_build_line(b2, 0, 80, tb, &out, 256);
+    # Expected sequence (built byte-by-byte because Cyrius literals
+    # don't carry \xNN escapes):
+    #   ESC[38;5;141m  v a r  ESC[0m  ' ' x  CRLF
+    var exp1[64];
+    var ep = put_fg(&exp1, 0, 141);
+    ep = put_cstr(&exp1, ep, "var");
+    ep = put_reset(&exp1, ep);
+    ep = put_cstr(&exp1, ep, " x");
+    ep = put_crlf(&exp1, ep);
+    assert_eq(nh, ep, "highlighted 'var x' byte count matches expected");
+    assert_eq(bytes_eq(&out, &exp1, ep), 1, "exact ANSI sequence");
+
+    test_group("render_build_line highlighted: trailing comment (active color reset before CRLF)");
+    var b4 = buf_new();
+    buf_insert(b4, "x #c", 4);
+    var tb4 = highlight_buf(b4, "cyrius");
+    assert_nonnull(tb4, "tokenbuf for 'x #c'");
+    var nc = render_build_line(b4, 0, 80, tb4, &out, 256);
+    # Layout:
+    #   pos 0 'x' IDENT      -> first kind, color=-1, no fg, current=IDENT
+    #   pos 1 ' ' WHITESPACE -> color=-1, has_active=0, no emit
+    #   pos 2 '#' COMMENT    -> color=245, emit fg, has_active=1
+    #   pos 3 'c' COMMENT    -> same kind, no emit
+    #   end: has_active=1 -> emit reset
+    var exp2[64];
+    var ep2 = put_cstr(&exp2, 0, "x ");
+    ep2 = put_fg(&exp2, ep2, 245);
+    ep2 = put_cstr(&exp2, ep2, "#c");
+    ep2 = put_reset(&exp2, ep2);
+    ep2 = put_crlf(&exp2, ep2);
+    assert_eq(nc, ep2, "comment line byte count matches expected");
+    assert_eq(bytes_eq(&out, &exp2, ep2), 1, "exact ANSI for trailing comment");
+
+    test_group("render_build_line highlighted: empty line stays uncolored");
+    var b5 = buf_new();
+    buf_insert(b5, "var x\n\nfn", 9);
+    var tb5 = highlight_buf(b5, "cyrius");
+    var ne = render_build_line(b5, 1, 80, tb5, &out, 256);  # empty middle line
+    assert_eq(ne, 2, "empty middle line just \\r\\n");
+    assert_eq(load8(&out + 0), 13, "[0] CR");
+    assert_eq(load8(&out + 1), 10, "[1] LF");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

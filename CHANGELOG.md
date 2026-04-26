@@ -4,6 +4,90 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added (M2)
+- `[deps.vyakarana]` block in `cyrius.cyml` — pinned to vyakarana
+  1.0.2 via git tag; pulls `dist/vyakarana.cyr` into `lib/`.
+- `grammars/` directory bundled from vyakarana (11 languages: c,
+  cyrius, javascript, json, markdown, python, rust, shell, toml,
+  typescript, yaml). Resolved at runtime via `/proc/self/exe` so
+  the binary works regardless of cwd.
+- `src/highlight.cyr` — vyakarana wrapper: `highlight_init`
+  resolves grammars/ via /proc/self/exe and pre-loads bundled
+  grammars (suppressing vyakarana's lazy cwd-relative bootstrap
+  via `_grammars_bootstrapped = 1`). `highlight_buf(b, lang)`
+  copies the gap-buffer to a NUL-terminated heap cstr and calls
+  vyakarana's `tokenize_source`. `highlight_kind_at(tb, pos)`
+  linear-scans for the token covering `pos`, returning a TK_*
+  constant; falls back to `TK_WHITESPACE` on uncovered positions
+  or a null tokenbuf.
+- `tests/highlight.tcyr` — 31 assertions: unknown-lang returns 0,
+  Cyrius `var x = 42` token-kind layout (KEYWORD/IDENT/OPERATOR/
+  NUMBER/WHITESPACE), `fn main() { return 0; } # done` covering
+  PUNCTUATION + COMMENT-to-EOL, double-quoted STRING literal,
+  empty buffer is safe, null tokenbuf is safe.
+- `src/lang.cyr` — extension-based language detection.
+  `detect_language_from_path(path)` returns one of vyakarana's
+  bundled grammar names (cyrius/shell/python/javascript/typescript/
+  rust/c/toml/json/yaml) or `"plain"`. Case-insensitive on the
+  extension; suffix match (not contains) so `.rsync` doesn't match
+  `.rs`. NULL path safely returns `"plain"`.
+- `tests/lang.tcyr` — 37 assertions over 8 groups: index lookup,
+  cyim's own .cyr/.tcyr/.bcyr/.fcyr/.cyml mappings, every
+  language's primary extension, case-insensitivity, full directory
+  paths, no-extension misses, NULL path, suffix-vs-contains
+  edge cases.
+- `src/render.cyr` extended with the M2 highlighting layer:
+  `theme_token_color(kind)` (ten-kind palette → 256-color ANSI
+  index, -1 for "no color"); `render_build_line(b, line, cols, tb,
+  out, max)` materializes one rendered line into a caller buffer,
+  emitting fg-escape transitions and resets at kind boundaries with
+  an unconditional reset before the trailing CRLF when a color is
+  still active. `render_line` and `render_frame` gained a `tb`
+  parameter — `tb == 0` is the plain fallback.
+- `tests/render.tcyr` — 27 assertions: palette spot-checks, plain
+  rendering (incl. empty buffer, empty interior line, `cols`
+  truncation), highlighted `var x` byte-for-byte ANSI verification,
+  trailing-comment final-reset path, empty interior line stays
+  uncolored even with a tokenbuf.
+- `src/main.cyr` wired through M2: detects language from
+  `file_path` via `detect_language_from_path`, calls
+  `highlight_init` once at startup, retokenizes the buffer per
+  frame and threads the tokenbuf into `render_frame`. Per-frame
+  retokenize is the M2 cost note (incremental retokenize lands at
+  M5 perf if a real workload complains).
+- `tests/integration_smoke.py` extended with one new check:
+  opens `/tmp/cyim-smoke-fixture.cyr`, sends `:q!`, captures PTY
+  output, asserts both `ESC[38;5;141m` (keyword fg) and `ESC[0m`
+  (reset) appear in the render stream — proving end-to-end that
+  syntax highlighting is firing through the live render path.
+- `src/cyimrc.cyr` — flat-CYML config parser for palette
+  overrides. `cyimrc_load_path(path)` reads the file and applies
+  any `palette.<kind> = <code>` lines to a 10-slot table indexed
+  by TK_*. `cyimrc_load()` loads `./.cyimrc` (XDG search comes at
+  M4 when the config surface widens to keymaps + tab width + line
+  numbers). `cyimrc_palette(kind)` returns the override value or
+  -1; `theme_token_color` consults it before falling through to
+  the bundled palette. Comments (`#`), blank lines, and arbitrary
+  whitespace around `=` are tolerated; malformed values silently
+  preserve the previous slot value.
+- `tests/cyimrc.tcyr` — 22 assertions over 6 groups: missing-file
+  is a no-op, basic palette overrides apply, `theme_token_color`
+  honors them, comments/blank-lines/whitespace tolerance, malformed
+  lines don't poison earlier good values, ident + punctuation
+  overrides work too.
+
+### Status (M2)
+- All 6 M2 bites landed: vyakarana dep + grammars, highlight
+  module, lang detection, palette + ANSI render, main.cyr wiring
+  + integration smoke, `.cyimrc` palette overrides.
+- 467 .tcyr assertions across 12 suites + 7 PTY-driven end-to-end
+  checks; all green.
+- DCE binary: 162,184 B (M1 baseline 101,560 B; +60,624 B for
+  vyakarana + 11 grammars + render highlighting + cyimrc).
+- M2 success criterion: `cyim src/buffer.cyr` shows Cyrius
+  highlighting matching vyakarana's reference output. Verified
+  via the integration smoke's `ESC[38;5;141m` keyword-fg check.
+
 ### Added
 - `src/buffer.cyr` — gap-buffer primitive: `buf_new`, `buf_len`, `buf_cap`,
   `buf_gap`, `buf_cursor`, `buf_get`, `buf_move`, `buf_grow`,

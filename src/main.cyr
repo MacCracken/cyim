@@ -17,7 +17,11 @@
 # alt-screen off / cooked on at exit. EOF and quit both fall through to
 # the same teardown path.
 
+include "lib/vyakarana.cyr"
 include "src/buffer.cyr"
+include "src/highlight.cyr"
+include "src/lang.cyr"
+include "src/cyimrc.cyr"
 include "src/mode.cyr"
 include "src/motion.cyr"
 include "src/insert.cyr"
@@ -45,12 +49,22 @@ fn print_help() {
 
 fn run_editor(file_path) {
     var b = buf_new();
+    var lang = "plain";
     if (file_path != 0) {
         if (file_exists(file_path) == 1) {
             buf_load_file(b, file_path);
             buf_move(b, 0);
         }
+        lang = detect_language_from_path(file_path);
     }
+    # Pre-load grammars from <exe-dir>/grammars/ (or ../grammars/) so the
+    # tokenizer's lazy cwd-relative bootstrap doesn't depend on where the
+    # user invoked cyim from.
+    highlight_init();
+    # Load `./.cyimrc` if it exists. Missing or empty file is a silent
+    # no-op — bundled defaults apply.
+    cyimrc_load();
+
     var s = editor_new(b);
     if (file_path != 0) {
         editor_set_file_path(s, file_path);
@@ -65,7 +79,11 @@ fn run_editor(file_path) {
 
     var quit = 0;
     while (quit == 0) {
-        render_frame(s, DEFAULT_ROWS, DEFAULT_COLS);
+        # M2 cost note: full-buffer retokenize per frame. Acceptable for
+        # M2 per the roadmap; an incremental retokenize lands when the
+        # M5 perf pass surfaces a real workload that complains.
+        var tb = highlight_buf(b, lang);
+        render_frame(s, DEFAULT_ROWS, DEFAULT_COLS, tb);
         var key_buf[1];
         var n = file_read(0, &key_buf, 1);
         if (n <= 0) {

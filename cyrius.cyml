@@ -34,3 +34,12 @@ stdlib = [
     "hashmap",
     "assert",
 ]
+
+# vyakarana — token-level grammar/tokenizer library. M2 syntax-highlighting
+# pulls the bundled distlib (`dist/vyakarana.cyr`); grammar files
+# (`grammars/<lang>.cyml`) are bundled separately in cyim's repo and
+# resolved at runtime via /proc/self/exe (binary-relative).
+[deps.vyakarana]
+git = "https://github.com/MacCracken/vyakarana.git"
+tag = "1.0.2"
+modules = ["dist/vyakarana.cyr"]

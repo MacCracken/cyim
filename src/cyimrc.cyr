@@ -1,0 +1,196 @@
+# cyimrc.cyr — `.cyimrc` palette overrides (M2 surface)
+#
+# Parses a flat CYML file at `./.cyimrc` (cwd-relative for M2; XDG search
+# paths come at M4 when the config surface widens to keymaps + tab width
+# + line numbers per the roadmap).
+#
+# Recognised keys (one per line, `palette.<kind> = <ansi_code>`):
+#   palette.ident
+#   palette.keyword
+#   palette.string
+#   palette.number
+#   palette.comment
+#   palette.operator
+#   palette.punctuation
+#   palette.whitespace
+#   palette.preprocessor
+#   palette.error
+#
+# `<ansi_code>` is a 0..255 256-color index, or -1 to mean "no color"
+# (terminal default). Unknown keys and malformed values are silently
+# ignored (forward-compat). Comments start with `#`; blank lines OK.
+#
+# Lookup order in render.cyr:
+#   1. cyimrc_palette(kind) — returns user override if loaded, else -1.
+#   2. theme_token_color falls through to the bundled palette when (1)
+#      returns -1, EXCEPT it can't tell apart "no override" from
+#      "user explicitly set -1". Both surface as -1, which is the
+#      same behaviour as the default for unstyled kinds — fine.
+#
+# Requires: stdlib (file_open / file_read / file_close / strlen / load8 /
+#           store8 / store64 / alloc).
+
+# Per-kind override storage: 10 slots × 8 bytes = 80 bytes total.
+# All slots initialized to -1 (sentinel "not overridden") on first load.
+var _CYIMRC_PALETTE_SLOTS = 80;
+var _cyimrc_palette[80];
+var _cyimrc_loaded = 0;
+
+fn _cyimrc_init() {
+    if (_cyimrc_loaded == 1) { return 0; }
+    var i = 0;
+    while (i < 10) {
+        store64(&_cyimrc_palette + i * 8, 0 - 1);
+        i = i + 1;
+    }
+    _cyimrc_loaded = 1;
+    return 0;
+}
+
+fn _cyimrc_is_ws(c) {
+    if (c == 32) { return 1; }
+    if (c == 9)  { return 1; }
+    if (c == 13) { return 1; }
+    return 0;
+}
+
+# Parse a signed integer from buf[s..e). Sentinel return -99999 on bad input.
+fn _cyimrc_parse_int(buf, s, e) {
+    if (s >= e) { return 0 - 99999; }
+    var sign = 1;
+    var p = s;
+    if (load8(buf + p) == 45) { sign = 0 - 1; p = p + 1; }
+    if (p >= e) { return 0 - 99999; }
+    var v = 0;
+    while (p < e) {
+        var c = load8(buf + p);
+        if (c < 48) { return 0 - 99999; }
+        if (c > 57) { return 0 - 99999; }
+        v = v * 10 + (c - 48);
+        p = p + 1;
+    }
+    return v * sign;
+}
+
+# Compare buf[ks..ke) byte-for-byte against a NUL-terminated literal.
+fn _cyimrc_keyeq(buf, ks, ke, lit) {
+    var n = ke - ks;
+    var lit_len = strlen(lit);
+    if (n != lit_len) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (load8(buf + ks + i) != load8(lit + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Apply one parsed key=value pair into the palette slots. Unknown
+# keys are silently ignored; bad values too (we already returned
+# from _cyimrc_parse_int with the sentinel).
+fn _cyimrc_apply(buf, ks, ke, vs, ve) {
+    var v = _cyimrc_parse_int(buf, vs, ve);
+    if (v == 0 - 99999) { return 0; }
+
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.ident")        == 1) { store64(&_cyimrc_palette + 0 * 8, v); return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.keyword")      == 1) { store64(&_cyimrc_palette + 1 * 8, v); return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.string")       == 1) { store64(&_cyimrc_palette + 2 * 8, v); return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.number")       == 1) { store64(&_cyimrc_palette + 3 * 8, v); return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.comment")      == 1) { store64(&_cyimrc_palette + 4 * 8, v); return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.operator")     == 1) { store64(&_cyimrc_palette + 5 * 8, v); return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.punctuation")  == 1) { store64(&_cyimrc_palette + 6 * 8, v); return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.whitespace")   == 1) { store64(&_cyimrc_palette + 7 * 8, v); return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.preprocessor") == 1) { store64(&_cyimrc_palette + 8 * 8, v); return 0; }
+    if (_cyimrc_keyeq(buf, ks, ke, "palette.error")        == 1) { store64(&_cyimrc_palette + 9 * 8, v); return 0; }
+    return 0;
+}
+
+# Trim leading + trailing whitespace from buf[s..e), then split on the first
+# `=`. Comment lines (`#` after trim) and lines without `=` are ignored.
+fn _cyimrc_parse_line(buf, s, e) {
+    while (s < e) {
+        if (_cyimrc_is_ws(load8(buf + s)) == 0) { break; }
+        s = s + 1;
+    }
+    while (e > s) {
+        if (_cyimrc_is_ws(load8(buf + e - 1)) == 0) { break; }
+        e = e - 1;
+    }
+    if (s >= e) { return 0; }
+    if (load8(buf + s) == 35) { return 0; }   # '#' comment
+
+    var eq = s;
+    while (eq < e) {
+        if (load8(buf + eq) == 61) { break; }
+        eq = eq + 1;
+    }
+    if (eq >= e) { return 0; }
+
+    var ke = eq;
+    while (ke > s) {
+        if (_cyimrc_is_ws(load8(buf + ke - 1)) == 0) { break; }
+        ke = ke - 1;
+    }
+    if (ke <= s) { return 0; }
+
+    var vs = eq + 1;
+    while (vs < e) {
+        if (_cyimrc_is_ws(load8(buf + vs)) == 0) { break; }
+        vs = vs + 1;
+    }
+    if (vs >= e) { return 0; }
+
+    _cyimrc_apply(buf, s, ke, vs, e);
+    return 0;
+}
+
+# Load `.cyimrc` from `path`. Returns 1 on success (file existed and was
+# parsed), 0 if the file is missing or empty. Idempotent on the slot
+# table — re-loading just overwrites the previous values.
+fn cyimrc_load_path(path) {
+    _cyimrc_init();
+    var fd = file_open(path, O_RDONLY, 0);
+    if (fd < 0) { return 0; }
+    var cap = 8192;
+    var buf = alloc(cap);
+    var total = 0;
+    var go = 1;
+    while (go == 1) {
+        var got = file_read(fd, buf + total, cap - total);
+        if (got <= 0) { go = 0; }
+        if (got > 0) {
+            total = total + got;
+            if (total >= cap) { go = 0; }
+        }
+    }
+    file_close(fd);
+    if (total == 0) { return 0; }
+
+    var ls = 0;
+    var i = 0;
+    while (i < total) {
+        if (load8(buf + i) == 10) {
+            _cyimrc_parse_line(buf, ls, i);
+            ls = i + 1;
+        }
+        i = i + 1;
+    }
+    if (ls < total) { _cyimrc_parse_line(buf, ls, total); }
+    return 1;
+}
+
+# Convenience: try `./.cyimrc`. (XDG paths come at M4 when the
+# config surface broadens.)
+fn cyimrc_load() {
+    return cyimrc_load_path(".cyimrc");
+}
+
+# Look up the user-configured palette code for `kind`. Returns the
+# stored value (-1 sentinel == "not overridden"). Render.cyr consults
+# this first and falls back to the bundled default.
+fn cyimrc_palette(kind) {
+    if (_cyimrc_loaded == 0) { return 0 - 1; }
+    if (kind < 0)            { return 0 - 1; }
+    if (kind >= 10)          { return 0 - 1; }
+    return load64(&_cyimrc_palette + kind * 8);
+}

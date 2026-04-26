@@ -1,0 +1,188 @@
+# highlight.cyr — syntax highlighting for cyim via vyakarana
+#
+# Public API:
+#   highlight_init()            — resolve grammars/ from /proc/self/exe and
+#                                  pre-load. Idempotent. If resolution fails
+#                                  (no /proc, weird sandbox), the function is
+#                                  a no-op and vyakarana's lazy bootstrap will
+#                                  fall back to cwd-relative paths on first
+#                                  tokenize_source call. Tests rely on this
+#                                  fallback because the test runner's cwd is
+#                                  the project root, which has grammars/.
+#   highlight_buf(b, lang)      — copy gap-buffer content to a NUL-terminated
+#                                  heap cstr and tokenize. Returns a
+#                                  vyakarana tokenbuf or 0 if no grammar
+#                                  matches `lang`. Caller owns the result.
+#   highlight_kind_at(tb, pos)  — linear-scan token lookup for byte position
+#                                  `pos`. Returns a TK_* constant.
+#                                  Whitespace-default fallback for positions
+#                                  not covered by any token.
+#
+# vyakarana's `tokenize_source` calls `strlen(src)`, so the source MUST be
+# NUL-terminated. The gap-buffer's two-segment layout doesn't satisfy that
+# directly — `_buf_to_cstr` materializes a contiguous copy. Copy cost is
+# O(buf_len); acceptable for M2 (one full retokenize per render frame).
+#
+# Requires: src/buffer.cyr, plus dist/vyakarana.cyr from the
+#           [deps.vyakarana] block in cyrius.cyml. Test files include
+#           buffer.cyr first, then highlight.cyr.
+
+# ── Grammar dir resolution (binary-relative) ─────────────────────────
+
+# Probe `<dir>cyrius.cyml`. cyim ships the cyrius grammar in every
+# release, so its presence is a reliable witness for "this dir is the
+# grammars/ dir". Returns 1 if openable.
+fn _hl_dir_has_cyrius(dir) {
+    var dlen = strlen(dir);
+    if (dlen + 12 >= 512) { return 0; }
+    var probe[512];
+    var k = 0;
+    while (k < dlen) { store8(&probe + k, load8(dir + k)); k = k + 1; }
+    var name = "cyrius.cyml";
+    var nlen = strlen(name);
+    var j = 0;
+    while (j < nlen) { store8(&probe + dlen + j, load8(name + j)); j = j + 1; }
+    store8(&probe + dlen + nlen, 0);
+    var fd = file_open(&probe, O_RDONLY, 0);
+    if (fd < 0) { return 0; }
+    file_close(fd);
+    return 1;
+}
+
+# Build "<base[0..base_len]>grammars/" into a freshly-allocated NUL-terminated
+# heap cstr and return it.
+fn _hl_join_grammars(base, base_len) {
+    var suffix = "grammars/";
+    var slen = strlen(suffix);
+    var out = alloc(base_len + slen + 1);
+    var k = 0;
+    while (k < base_len) { store8(out + k, load8(base + k)); k = k + 1; }
+    var j = 0;
+    while (j < slen) { store8(out + base_len + j, load8(suffix + j)); j = j + 1; }
+    store8(out + base_len + slen, 0);
+    return out;
+}
+
+# Resolve grammars/ via /proc/self/exe (Linux SYS_readlink = 89). Tries:
+#   1. <exe-dir>/grammars/                      (installed-adjacent)
+#   2. <exe-dir>/../grammars/                   (dev: build/cyim + ./grammars/)
+# Returns absolute path cstr or 0 if neither candidate has cyrius.cyml.
+fn _hl_resolve_dir() {
+    var link[512];
+    var n = syscall(89, "/proc/self/exe", &link, 511);
+    if (n <= 0) { return 0; }
+    store8(&link + n, 0);
+
+    var slash = n;
+    while (slash > 0) {
+        if (load8(&link + slash - 1) == 47) { break; }
+        slash = slash - 1;
+    }
+
+    var c1 = _hl_join_grammars(&link, slash);
+    if (_hl_dir_has_cyrius(c1) == 1) { return c1; }
+
+    if (slash > 1) {
+        var parent_end = slash - 1;
+        while (parent_end > 0) {
+            if (load8(&link + parent_end - 1) == 47) { break; }
+            parent_end = parent_end - 1;
+        }
+        var c2 = _hl_join_grammars(&link, parent_end);
+        if (_hl_dir_has_cyrius(c2) == 1) { return c2; }
+    }
+    return 0;
+}
+
+# Concatenate "<dir><name>" into path_buf and call vyakarana's grammar_load;
+# push the result into the registry on success. path_buf is reused across
+# calls so we don't alloc per-language.
+fn _hl_load_one(dir, dir_len, name, path_buf) {
+    var nlen = strlen(name);
+    var i = 0;
+    while (i < dir_len) { store8(path_buf + i, load8(dir + i)); i = i + 1; }
+    var j = 0;
+    while (j < nlen) { store8(path_buf + dir_len + j, load8(name + j)); j = j + 1; }
+    store8(path_buf + dir_len + nlen, 0);
+    var g = grammar_load(path_buf);
+    if (g != 0) { registry_add(g); }
+    return 0;
+}
+
+var _hl_initialized = 0;
+
+# Pre-load every bundled grammar via an absolute path resolved from
+# /proc/self/exe, then suppress vyakarana's lazy cwd-relative bootstrap
+# by setting `_grammars_bootstrapped = 1`. Idempotent. Cheap on the
+# second call.
+#
+# When /proc/self/exe is unavailable (no /proc, hardened sandbox),
+# we leave vyakarana to its lazy bootstrap — the editor still works
+# from a cwd that has grammars/.
+fn highlight_init() {
+    if (_hl_initialized == 1) { return 0; }
+    _hl_initialized = 1;
+
+    var dir = _hl_resolve_dir();
+    if (dir == 0) { return 0; }
+
+    registry_init();
+    var path = alloc(1024);
+    var dlen = strlen(dir);
+
+    _hl_load_one(dir, dlen, "shell.cyml",      path);
+    _hl_load_one(dir, dlen, "toml.cyml",       path);
+    _hl_load_one(dir, dlen, "json.cyml",       path);
+    _hl_load_one(dir, dlen, "cyrius.cyml",     path);
+    _hl_load_one(dir, dlen, "rust.cyml",       path);
+    _hl_load_one(dir, dlen, "yaml.cyml",       path);
+    _hl_load_one(dir, dlen, "markdown.cyml",   path);
+    _hl_load_one(dir, dlen, "c.cyml",          path);
+    _hl_load_one(dir, dlen, "typescript.cyml", path);
+    _hl_load_one(dir, dlen, "javascript.cyml", path);
+    _hl_load_one(dir, dlen, "python.cyml",     path);
+
+    _grammars_bootstrapped = 1;
+    return 0;
+}
+
+# ── Buffer-to-cstr + tokenize ────────────────────────────────────────
+
+fn _hl_buf_to_cstr(b) {
+    var len = buf_len(b);
+    var s = alloc(len + 1);
+    var i = 0;
+    while (i < len) {
+        store8(s + i, buf_get(b, i));
+        i = i + 1;
+    }
+    store8(s + len, 0);
+    return s;
+}
+
+# Tokenize the buffer's content as `lang`. Returns the tokenbuf or 0
+# when no grammar matches (caller falls back to plain rendering).
+fn highlight_buf(b, lang) {
+    highlight_init();
+    var src = _hl_buf_to_cstr(b);
+    return tokenize_source(src, lang);
+}
+
+# Linear scan of `tb` for the token whose [start, start+len) covers
+# `pos`. Returns TK_WHITESPACE for positions outside any token —
+# both whitespace and "no-color default" map to the same render
+# behavior, so callers don't have to special-case the gap.
+fn highlight_kind_at(tb, pos) {
+    if (tb == 0) { return TK_WHITESPACE; }
+    var n = tokenbuf_count(tb);
+    var i = 0;
+    while (i < n) {
+        var s = tokenbuf_start(tb, i);
+        var l = tokenbuf_len(tb, i);
+        if (pos >= s) {
+            if (pos < s + l) { return tokenbuf_kind(tb, i); }
+        }
+        i = i + 1;
+    }
+    return TK_WHITESPACE;
+}

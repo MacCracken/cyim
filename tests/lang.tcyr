@@ -1,0 +1,67 @@
+# tests/lang.tcyr — language detection from file path
+
+include "src/lang.cyr"
+
+fn main() {
+    alloc_init();
+
+    test_group("lang_index / lang_is_valid");
+    assert_eq(lang_index("plain"),       0,  "plain @ 0");
+    assert_eq(lang_index("shell"),       1,  "shell @ 1");
+    assert_eq(lang_index("cyrius"),      6,  "cyrius @ 6");
+    assert_eq(lang_index("yaml"),       10,  "yaml @ 10");
+    assert_eq(lang_index("esperanto"), 0 - 1, "unknown -> -1");
+    assert_eq(lang_is_valid("rust"), 1, "rust valid");
+    assert_eq(lang_is_valid("nope"), 0, "nope invalid");
+
+    test_group("detect_language_from_path: cyim's own files");
+    assert_streq(detect_language_from_path("src/main.cyr"),         "cyrius", ".cyr -> cyrius");
+    assert_streq(detect_language_from_path("tests/buffer.tcyr"),    "cyrius", ".tcyr -> cyrius");
+    assert_streq(detect_language_from_path("tests/cyim.bcyr"),      "cyrius", ".bcyr -> cyrius");
+    assert_streq(detect_language_from_path("tests/cyim.fcyr"),      "cyrius", ".fcyr -> cyrius");
+    assert_streq(detect_language_from_path("cyrius.cyml"),          "toml",   ".cyml -> toml");
+
+    test_group("detect_language_from_path: common languages");
+    assert_streq(detect_language_from_path("foo.sh"),       "shell",      ".sh");
+    assert_streq(detect_language_from_path("foo.bash"),     "shell",      ".bash");
+    assert_streq(detect_language_from_path("foo.zsh"),      "shell",      ".zsh");
+    assert_streq(detect_language_from_path("foo.py"),       "python",     ".py");
+    assert_streq(detect_language_from_path("foo.js"),       "javascript", ".js");
+    assert_streq(detect_language_from_path("foo.mjs"),      "javascript", ".mjs");
+    assert_streq(detect_language_from_path("foo.ts"),       "typescript", ".ts");
+    assert_streq(detect_language_from_path("foo.rs"),       "rust",       ".rs");
+    assert_streq(detect_language_from_path("foo.c"),        "c",          ".c");
+    assert_streq(detect_language_from_path("foo.h"),        "c",          ".h");
+    assert_streq(detect_language_from_path("foo.toml"),     "toml",       ".toml");
+    assert_streq(detect_language_from_path("foo.json"),     "json",       ".json");
+    assert_streq(detect_language_from_path("foo.yaml"),     "yaml",       ".yaml");
+    assert_streq(detect_language_from_path("foo.yml"),      "yaml",       ".yml");
+
+    test_group("detect_language_from_path: case-insensitive on the extension");
+    assert_streq(detect_language_from_path("FOO.PY"), "python", ".PY uppercase");
+    assert_streq(detect_language_from_path("Bar.JsOn"), "json", "mixed-case .JsOn");
+
+    test_group("detect_language_from_path: full paths with directories");
+    assert_streq(detect_language_from_path("/usr/local/bin/foo.sh"), "shell", "absolute path .sh");
+    assert_streq(detect_language_from_path("./src/buffer.cyr"),      "cyrius", "relative path .cyr");
+    assert_streq(detect_language_from_path("a/b/c/d/main.rs"),       "rust",   "deep path .rs");
+
+    test_group("detect_language_from_path: misses fall back to plain");
+    assert_streq(detect_language_from_path("README"),         "plain", "no extension");
+    assert_streq(detect_language_from_path("foo.unknown"),    "plain", "unknown ext");
+    assert_streq(detect_language_from_path(""),               "plain", "empty path");
+
+    test_group("detect_language_from_path: NULL path -> plain");
+    assert_streq(detect_language_from_path(0), "plain", "null path -> plain");
+
+    test_group("detect_language_from_path: extension is part of name, not prefix");
+    # ".rsync" should NOT match ".rs" — we want suffix match, not contains.
+    assert_streq(detect_language_from_path("foo.rsync"),       "plain", ".rsync should not match .rs");
+    # But the trailing token in a multi-suffix path should still hit.
+    assert_streq(detect_language_from_path("backup.foo.json"), "json",  ".foo.json -> json");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

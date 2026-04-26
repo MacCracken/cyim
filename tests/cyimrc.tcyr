@@ -1,0 +1,94 @@
+# tests/cyimrc.tcyr — `.cyimrc` palette overrides
+#
+# Writes fixture configs under build/ (gitignored), loads them via
+# cyimrc_load_path, asserts that cyimrc_palette returns the user's
+# values and that theme_token_color picks them up.
+
+include "lib/vyakarana.cyr"
+include "src/buffer.cyr"
+include "src/highlight.cyr"
+include "src/cyimrc.cyr"
+include "src/mode.cyr"
+include "src/tty.cyr"
+include "src/render.cyr"
+
+var FIXTURE_BASIC   = "build/cyimrc-basic.txt";
+var FIXTURE_COMMENT = "build/cyimrc-comments.txt";
+var FIXTURE_BAD     = "build/cyimrc-bad.txt";
+var FIXTURE_MISSING = "build/cyimrc-not-here.txt";
+
+fn write_fixture(path, content) {
+    return file_write_all(path, content, strlen(content));
+}
+
+fn main() {
+    alloc_init();
+
+    test_group("missing .cyimrc -> palette returns -1 for all kinds");
+    var rc_missing = cyimrc_load_path(FIXTURE_MISSING);
+    assert_eq(rc_missing, 0, "missing file -> 0");
+    var i = 0;
+    var all_minus_one = 1;
+    while (i < 10) {
+        if (cyimrc_palette(i) != 0 - 1) { all_minus_one = 0; }
+        i = i + 1;
+    }
+    assert_eq(all_minus_one, 1, "every kind -> -1 (no overrides)");
+
+    test_group("basic palette overrides apply");
+    write_fixture(FIXTURE_BASIC,
+        "palette.keyword = 200\npalette.string = 50\npalette.number = 99\n");
+    var rc_basic = cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(rc_basic, 1, "load returns 1 on existing file");
+    assert_eq(cyimrc_palette(TK_KEYWORD), 200, "keyword override -> 200");
+    assert_eq(cyimrc_palette(TK_STRING),   50, "string override  -> 50");
+    assert_eq(cyimrc_palette(TK_NUMBER),   99, "number override  -> 99");
+    # Unmentioned kinds remain -1.
+    assert_eq(cyimrc_palette(TK_COMMENT), 0 - 1, "comment NOT overridden");
+    assert_eq(cyimrc_palette(TK_OPERATOR), 0 - 1, "operator NOT overridden");
+
+    test_group("theme_token_color uses overrides");
+    # keyword override 200 should win over the bundled 141.
+    assert_eq(theme_token_color(TK_KEYWORD), 200, "keyword -> 200 (override)");
+    assert_eq(theme_token_color(TK_STRING),   50, "string -> 50 (override)");
+    assert_eq(theme_token_color(TK_NUMBER),   99, "number -> 99 (override)");
+    # Unoverridden kinds fall through to bundled defaults.
+    assert_eq(theme_token_color(TK_COMMENT),  245, "comment -> 245 (bundled)");
+    assert_eq(theme_token_color(TK_OPERATOR), 110, "operator -> 110 (bundled)");
+    # User-set -1 should also fall through to bundled (we can't tell
+    # apart "explicitly -1" from "not overridden" — both are sentinel).
+    # That's an acceptable shortcut for M2; M4 can disambiguate.
+
+    test_group("comments, blank lines, and whitespace tolerated");
+    write_fixture(FIXTURE_COMMENT,
+        "# Purple keyword theme\n\n   palette.keyword   =   88\n# trailing comment\npalette.error=42\n");
+    var rc_c = cyimrc_load_path(FIXTURE_COMMENT);
+    assert_eq(rc_c, 1, "load returns 1");
+    assert_eq(cyimrc_palette(TK_KEYWORD), 88, "keyword respects whitespace around =");
+    assert_eq(cyimrc_palette(TK_ERROR),   42, "error key with no spaces");
+
+    test_group("malformed lines silently ignored");
+    # Tests forward-compat shape: bad lines don't poison good ones.
+    write_fixture(FIXTURE_BAD,
+        "palette.keyword = abc\nnotakey = 5\n=valuewithoutkey\npalette.string = 77\n");
+    cyimrc_load_path(FIXTURE_BAD);
+    # palette.keyword had a non-numeric value — should remain whatever the
+    # previous load left it (88 from the comment fixture above).
+    assert_eq(cyimrc_palette(TK_KEYWORD), 88, "bad value doesn't overwrite previous good value");
+    # palette.string was valid in this fixture.
+    assert_eq(cyimrc_palette(TK_STRING), 77, "good line after bad still applies");
+
+    test_group("palette.ident and palette.punctuation also accepted");
+    write_fixture(FIXTURE_BASIC,
+        "palette.ident = 150\npalette.punctuation = 160\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_IDENT),       150, "ident override");
+    assert_eq(cyimrc_palette(TK_PUNCTUATION), 160, "punctuation override");
+    assert_eq(theme_token_color(TK_IDENT),       150, "theme honors ident override");
+    assert_eq(theme_token_color(TK_PUNCTUATION), 160, "theme honors punctuation override");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

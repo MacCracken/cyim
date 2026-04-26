@@ -20,16 +20,17 @@ CYIM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "
 FIXTURE = "/tmp/cyim-smoke-fixture.txt"
 
 
-def drive(keys: bytes, fixture_initial: bytes, timeout: float = 3.0) -> bytes:
-    """Spawn cyim against FIXTURE under a PTY, send `keys`, wait for exit.
+def drive(keys: bytes, fixture_initial: bytes, timeout: float = 3.0,
+          fixture_path: str = FIXTURE) -> bytes:
+    """Spawn cyim against `fixture_path` under a PTY, send `keys`, wait for exit.
     Returns the post-run file content."""
-    with open(FIXTURE, "wb") as f:
+    with open(fixture_path, "wb") as f:
         f.write(fixture_initial)
 
     pid, fd = pty.fork()
     if pid == 0:
         # Child: exec cyim. PTY is wired to stdin/stdout/stderr.
-        os.execv(CYIM, [CYIM, FIXTURE])
+        os.execv(CYIM, [CYIM, fixture_path])
 
     # Parent: pump keys, drain output until child exits.
     deadline = time.time() + timeout
@@ -72,7 +73,8 @@ def drive(keys: bytes, fixture_initial: bytes, timeout: float = 3.0) -> bytes:
             sent += n
             time.sleep(0.01)  # let cyim consume the byte before sending the next
 
-    with open(FIXTURE, "rb") as f:
+    drive.last_pty_output = bytes(sink)
+    with open(fixture_path, "rb") as f:
         return f.read()
 
 
@@ -112,6 +114,26 @@ def main():
     print("=== :q on dirty buffer is refused; :q! quits without saving ===")
     out = drive(b"iJUNK\x1b:q\r:q!\r", b"original\n")
     ok &= assert_eq(out, b"original\n", "dirty :q refused, :q! discards")
+
+    print("=== Cyrius file: ANSI fg escapes appear in PTY output ===")
+    cyr_fixture = "/tmp/cyim-smoke-fixture.cyr"
+    drive(b":q!\r", b"var x = 42\n", fixture_path=cyr_fixture)
+    pty_out = drive.last_pty_output
+    # The keyword "var" should produce an ANSI fg escape ESC[38;5;141m
+    # (purple, per render.cyr's theme_token_color). Look for that exact
+    # sequence anywhere in the captured PTY output.
+    needle = b"\x1b[38;5;141m"
+    if needle in pty_out:
+        print("  PASS: ESC[38;5;141m (keyword fg) present in render output")
+    else:
+        print(f"  FAIL: keyword fg escape not found in {len(pty_out)} bytes of PTY output")
+        ok = False
+    # And the trailing reset.
+    if b"\x1b[0m" in pty_out:
+        print("  PASS: ESC[0m (reset) present in render output")
+    else:
+        print("  FAIL: reset escape not found in PTY output")
+        ok = False
 
     print()
     if ok:

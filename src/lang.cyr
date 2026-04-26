@@ -1,0 +1,145 @@
+# lang.cyr — language detection from file path
+#
+# Maps a path's file extension to one of vyakarana's bundled grammar
+# names. Extension table mirrors vyakarana's grammar coverage; order
+# matters because longer extensions are checked first (so `.cyml`
+# beats `.toml`'s superset, and `.cyr`/`.tcyr`/`.bcyr`/`.fcyr` all
+# route to "cyrius").
+#
+# `detect_language_from_path("foo.py")` → `"python"`.
+# Unknown / extension-less paths return `"plain"` — callers can pass
+# that to `highlight_buf` and get back 0 (no highlighting), which the
+# render path treats as "draw uncolored bytes".
+#
+# Future: shebang sniff (e.g. "#!/usr/bin/env python3" → python) and
+# content-based detection for JSON/YAML/Markdown openings. Owl has
+# both; we'll port them when extension detection's failure modes
+# start to bite.
+#
+# Requires: stdlib (strlen, load8) only.
+
+var LANG_COUNT = 11;
+
+# Indexed 0..LANG_COUNT-1. "plain" at index 0 is the no-grammar
+# fallback — its `lang_exts` is empty so the table-walk skips it.
+fn lang_name(i) {
+    if (i == 0)  { return "plain"; }
+    if (i == 1)  { return "shell"; }
+    if (i == 2)  { return "python"; }
+    if (i == 3)  { return "javascript"; }
+    if (i == 4)  { return "typescript"; }
+    if (i == 5)  { return "rust"; }
+    if (i == 6)  { return "cyrius"; }
+    if (i == 7)  { return "c"; }
+    if (i == 8)  { return "toml"; }
+    if (i == 9)  { return "json"; }
+    if (i == 10) { return "yaml"; }
+    return "plain";
+}
+
+# Space-separated lowercase extensions per language. Leading dot is
+# part of the token. cyim grew up with `.cyr`, so its grammar covers
+# `.cyr` (sources), `.tcyr` (tests), `.bcyr` (bench harnesses), and
+# `.fcyr` (fuzz harnesses). `.cyml` falls under "toml" for now —
+# vyakarana has no dedicated CYML grammar yet (an M2-future bite).
+fn lang_exts(i) {
+    if (i == 0)  { return ""; }
+    if (i == 1)  { return ".sh .bash .zsh"; }
+    if (i == 2)  { return ".py"; }
+    if (i == 3)  { return ".js .mjs .cjs"; }
+    if (i == 4)  { return ".ts"; }
+    if (i == 5)  { return ".rs"; }
+    if (i == 6)  { return ".cyr .tcyr .bcyr .fcyr"; }
+    if (i == 7)  { return ".c .h"; }
+    if (i == 8)  { return ".toml .cyml"; }
+    if (i == 9)  { return ".json"; }
+    if (i == 10) { return ".yaml .yml"; }
+    return "";
+}
+
+# Case-folded suffix check: does `path` end with `ext` (lowercase)?
+# Letter compare uses the add-32-if-A-to-Z trick — branchless lower-case.
+fn _lang_path_ends_with_lower(path, ext) {
+    var plen = strlen(path);
+    var elen = strlen(ext);
+    if (elen > plen) { return 0; }
+    var pi = plen - elen;
+    var ei = 0;
+    while (ei < elen) {
+        var pc = load8(path + pi + ei);
+        var ec = load8(ext + ei);
+        if (pc >= 65) { if (pc <= 90) { pc = pc + 32; } }
+        if (pc != ec) { return 0; }
+        ei = ei + 1;
+    }
+    return 1;
+}
+
+# Walk a space-separated extension list, return 1 if any extension
+# matches `path`. Extensions are tokenized inline rather than split
+# upfront — list strings are static lits, no allocation needed.
+fn _lang_path_has_any_ext(path, list) {
+    var llen = strlen(list);
+    var i = 0;
+    while (i < llen) {
+        # Skip leading spaces.
+        var skip = 1;
+        while (skip == 1) {
+            if (i >= llen) { skip = 0; }
+            if (skip == 1) {
+                if (load8(list + i) != 32) { skip = 0; }
+                if (skip == 1) { i = i + 1; }
+            }
+        }
+        if (i >= llen) { return 0; }
+
+        var ebuf[32];
+        var ei = 0;
+        var collecting = 1;
+        while (collecting == 1) {
+            if (i >= llen) { collecting = 0; }
+            if (collecting == 1) {
+                if (load8(list + i) == 32) { collecting = 0; }
+                if (collecting == 1) {
+                    if (ei < 31) {
+                        store8(&ebuf + ei, load8(list + i));
+                        ei = ei + 1;
+                    }
+                    i = i + 1;
+                }
+            }
+        }
+        store8(&ebuf + ei, 0);
+        if (_lang_path_ends_with_lower(path, &ebuf) == 1) { return 1; }
+    }
+    return 0;
+}
+
+# Look up a language by name. Returns the table index or -1.
+fn lang_index(name) {
+    var i = 0;
+    while (i < LANG_COUNT) {
+        if (streq(lang_name(i), name) == 1) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn lang_is_valid(name) {
+    if (lang_index(name) >= 0) { return 1; }
+    return 0;
+}
+
+# Map path → language name (by extension). Returns "plain" on no match.
+# Index 0 is "plain" with an empty exts list, so we start the walk at 1.
+fn detect_language_from_path(path) {
+    if (path == 0) { return "plain"; }
+    var i = 1;
+    while (i < LANG_COUNT) {
+        if (_lang_path_has_any_ext(path, lang_exts(i)) == 1) {
+            return lang_name(i);
+        }
+        i = i + 1;
+    }
+    return "plain";
+}
