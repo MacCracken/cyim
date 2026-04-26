@@ -169,10 +169,26 @@ fn _cmd_arg_uint(cb, start, len) {
     return v;
 }
 
+# Match a `key=` prefix in cmdbuf bytes [start..start+len). Returns 1
+# if the bytes start with `prefix` and there is at least one byte
+# after the `=` (so the value is non-empty). Used by `:set tabstop=N`
+# / `:set maxfilesize=N` etc.
+fn _cmd_match_kv(cb, start, len, prefix) {
+    var plen = strlen(prefix);
+    if (len <= plen) { return 0; }
+    var i = 0;
+    while (i < plen) {
+        if (buf_get(cb, start + i) != load8(prefix + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
 # `:set <option>` — runtime config toggle. Recognised tokens:
 #   ic / noic              ignorecase on/off (search case-fold)
 #   number / nonumber      line_numbers on/off
 #   tabstop=N              integer width
+#   maxfilesize=N          `:e` size cap (bytes; default 100 MB)
 # Unknown options return ERR_UNKNOWN_CMD without changing state.
 fn _cmd_set(s, cb, arg_start, arg_len) {
     if (arg_len <= 0) {
@@ -184,31 +200,25 @@ fn _cmd_set(s, cb, arg_start, arg_len) {
     if (_cmd_arg_eq(cb, arg_start, arg_len, "number")    == 1) { editor_set_cfg_line_numbers(s, 1); return 0; }
     if (_cmd_arg_eq(cb, arg_start, arg_len, "nonumber")  == 1) { editor_set_cfg_line_numbers(s, 0); return 0; }
 
-    # tabstop=N
-    if (arg_len >= 9) {
-        if (buf_get(cb, arg_start + 0) == 116) {  # 't'
-            if (buf_get(cb, arg_start + 1) == 97) {   # 'a'
-                if (buf_get(cb, arg_start + 2) == 98) {   # 'b'
-                    if (buf_get(cb, arg_start + 3) == 115) { # 's'
-                        if (buf_get(cb, arg_start + 4) == 116) { # 't'
-                            if (buf_get(cb, arg_start + 5) == 111) { # 'o'
-                                if (buf_get(cb, arg_start + 6) == 112) { # 'p'
-                                    if (buf_get(cb, arg_start + 7) == 61) {  # '='
-                                        var n = _cmd_arg_uint(cb, arg_start + 8, arg_len - 8);
-                                        if (n < 0) {
-                                            editor_set_last_error(s, ERR_UNKNOWN_CMD);
-                                            return 0 - 1;
-                                        }
-                                        editor_set_cfg_tabstop(s, n);
-                                        return 0;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    # tabstop=N — recognized via the prefix-match helper below.
+    if (_cmd_match_kv(cb, arg_start, arg_len, "tabstop=") == 1) {
+        var n = _cmd_arg_uint(cb, arg_start + 8, arg_len - 8);
+        if (n < 0) {
+            editor_set_last_error(s, ERR_UNKNOWN_CMD);
+            return 0 - 1;
         }
+        editor_set_cfg_tabstop(s, n);
+        return 0;
+    }
+    # maxfilesize=N — same pattern, M7 F-2 fix.
+    if (_cmd_match_kv(cb, arg_start, arg_len, "maxfilesize=") == 1) {
+        var n = _cmd_arg_uint(cb, arg_start + 12, arg_len - 12);
+        if (n < 0) {
+            editor_set_last_error(s, ERR_UNKNOWN_CMD);
+            return 0 - 1;
+        }
+        editor_set_cfg_max_filesize(s, n);
+        return 0;
     }
 
     editor_set_last_error(s, ERR_UNKNOWN_CMD);
@@ -331,10 +341,26 @@ fn _cmd_find_path(s, path) {
     return 0 - 1;
 }
 
+# Stat a file's size by open + lseek(0, SEEK_END) + close. Returns
+# the byte size on success, -1 on open failure. Used by `:e` to
+# refuse over-cap files BEFORE allocating a buffer.
+# SYS_LSEEK = 8 on x86_64 Linux. SEEK_END = 2.
+fn _cmd_file_size(path) {
+    var fd = file_open(path, O_RDONLY, 0);
+    if (fd < 0) { return 0 - 1; }
+    var size = syscall(8, fd, 0, 2);
+    file_close(fd);
+    return size;
+}
+
 # `:e <path>` — load `<path>` as a new buffer entry and switch the
 # active window to it. Previous buffers stay in the registry; their
 # modified state is preserved in their slot. If `<path>` is already
 # open, switches to that slot without re-reading.
+#
+# M7 audit F-2 — size pre-check: refuse files larger than
+# `editor_cfg_max_filesize(s)` with `ERR_FILE_TOO_LARGE`. The cap
+# is configurable via `:set maxfilesize=N` (bytes); default 100 MB.
 fn _cmd_e(s, cb, arg_start, arg_len) {
     if (arg_len <= 0) {
         editor_set_last_error(s, ERR_NO_FILE_NAME);
@@ -349,6 +375,16 @@ fn _cmd_e(s, cb, arg_start, arg_len) {
         var leaf_a = editor_active_leaf(s);
         if (leaf_a != 0) { window_set_buf_idx(leaf_a, existing); }
         return 0;
+    }
+
+    var size = _cmd_file_size(path);
+    if (size < 0) {
+        editor_set_last_error(s, ERR_FILE_NOT_FOUND);
+        return 0 - 1;
+    }
+    if (size > editor_cfg_max_filesize(s)) {
+        editor_set_last_error(s, ERR_FILE_TOO_LARGE);
+        return 0 - 1;
     }
 
     var nb = buf_new();

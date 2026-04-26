@@ -106,12 +106,13 @@ var KEY_CTRL_W    = 23;
 var KEY_CTRL_R    = 18;
 
 # ──── Error codes (set into state.last_error) ────────────────────────
-var ERR_NONE           = 0;
-var ERR_DIRTY          = 1;  # E37 — no write since last change
-var ERR_NO_FILE_NAME   = 2;  # E32 — :w with no path and no current file
-var ERR_FILE_NOT_FOUND = 3;
-var ERR_SAVE_FAILED    = 4;
-var ERR_UNKNOWN_CMD    = 5;
+var ERR_NONE            = 0;
+var ERR_DIRTY           = 1;  # E37 — no write since last change
+var ERR_NO_FILE_NAME    = 2;  # E32 — :w with no path and no current file
+var ERR_FILE_NOT_FOUND  = 3;
+var ERR_SAVE_FAILED     = 4;
+var ERR_UNKNOWN_CMD     = 5;
+var ERR_FILE_TOO_LARGE  = 6;  # M7 audit F-2 — :e refused because file > maxfilesize
 
 # ──── EditorState layout (128 bytes) ──────────────────────────────────
 #   off   0  mode             i64  current mode (MODE_*)
@@ -156,9 +157,11 @@ var ERR_UNKNOWN_CMD    = 5;
 #                                   perf pass; the config slot exists so
 #                                   `:set number` and `.cyimrc` agree.
 #   off 192  cfg_tabstop      i64  display width of TAB (default 4).
+#   off 200  cfg_max_filesize i64  M7 F-2 fix — `:e` refuses files
+#                                   larger than this. Default 100 MB.
 
 fn editor_new(buf) {
-    var s = alloc(200);
+    var s = alloc(208);
     store64(s, MODE_NORMAL);
     store64(s + 8, buf);
     var nmap = map_u64_new();
@@ -186,6 +189,7 @@ fn editor_new(buf) {
     store64(s + 176, 0);   # cfg_ignorecase
     store64(s + 184, 0);   # cfg_line_numbers
     store64(s + 192, 4);   # cfg_tabstop (vim default)
+    store64(s + 200, 104857600);  # cfg_max_filesize (100 MB default)
     return s;
 }
 
@@ -231,6 +235,8 @@ fn editor_cfg_line_numbers(s)      { return load64(s + 184); }
 fn editor_set_cfg_line_numbers(s, v) { store64(s + 184, v); return 0; }
 fn editor_cfg_tabstop(s)           { return load64(s + 192); }
 fn editor_set_cfg_tabstop(s, v)    { store64(s + 192, v); return 0; }
+fn editor_cfg_max_filesize(s)      { return load64(s + 200); }
+fn editor_set_cfg_max_filesize(s, v) { store64(s + 200, v); return 0; }
 
 # Seed NORMAL-mode keymap with the canonical single-byte vi mappings.
 fn _seed_normal_keymap(m) {

@@ -431,6 +431,75 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   error message cost ~10 minutes of debugging time across two
   hits in M5.
 
+### Added (M7)
+- `docs/security/2026-04-25-0day-corpus.md` — external CVE
+  corpus survey, organized into 13 attack classes (modeline RCE,
+  regex backtracking, terminal escape injection, integer
+  overflow, scripting sandbox escapes, plugin supply chain,
+  large-input DoS, TOCTOU, format strings, paste-as-command,
+  path traversal, memory corruption, Unicode parsing). Each
+  class maps to cyim's posture — *refused-by-design*, *closed*,
+  *open*, or *documented*. Includes a top-of-doc note: specific
+  CVE references are pending external verification (M7.5
+  WebFetch pass against NVD / MITRE / vim CHANGELOG); class
+  taxonomy and cyim-posture mapping are independent and stand
+  on their own.
+- `docs/audit/2026-04-25-m7-audit.md` — second-pass audit re-walks
+  CLAUDE.md's security-hardening checklist with the corpus's 13
+  classes in hand. Triages M5 carryover findings and files five
+  new findings (M7-1 through M7-5). All M5 audit findings now
+  closed or documented; **0 CRITICAL / 0 HIGH / 0 MEDIUM**
+  remaining.
+- `docs/adr/0001-trust-model.md` — Architecture Decision Record
+  documenting cyim's threat model: interactive editor for a
+  single local user; not a privilege boundary. Fixes the
+  long-running ambiguity around F-5 / M7-3 / M7-4. Future
+  setuid mode, restricted mode, or daimon-driven sandbox would
+  need follow-up ADRs to widen / narrow the trust model.
+- `src/mode.cyr` — editor state grew 200 → 208 bytes for
+  `cfg_max_filesize` (default 100 MB). New error
+  `ERR_FILE_TOO_LARGE` (6) for `:e` size-cap rejections.
+- `src/command.cyr` — `_cmd_file_size(path)` opens-lseeks-closes
+  to get a file's byte size before allocating any buffer.
+  `_cmd_e` now pre-checks against `editor_cfg_max_filesize(s)`
+  and refuses with `ERR_FILE_TOO_LARGE` if the file exceeds the
+  cap. Closes M5 audit F-2 (corpus Class 7).
+- `src/command.cyr` — `:set maxfilesize=N` runtime toggle. The
+  `_cmd_match_kv(cb, start, len, prefix)` helper consolidates
+  the prefix-match logic for both `:set tabstop=N` and
+  `:set maxfilesize=N` (refactor: ~20 lines of nested-if
+  duplication removed).
+- `tests/command.tcyr` — 9 new assertions covering F-2: `:e`
+  refuses files larger than the cap with `ERR_FILE_TOO_LARGE`,
+  raising the cap allows the same file, `:set maxfilesize=N`
+  updates the cap at runtime.
+- `docs/guides/usage.md` — troubleshooting note added for the
+  M7-5 byte-vs-glyph column-counting distinction (cursor
+  positions are byte offsets, not glyph offsets — matches vim's
+  `:set encoding=latin1`).
+
+### Status (M7)
+- All 4 M7 bites landed (corpus survey, checklist re-walk,
+  remaining-findings closure, closeout) plus M7.5 (WebFetch CVE
+  verification) queued as a follow-up.
+- 847 .tcyr assertions across 18 suites + 14 PTY end-to-end
+  checks + 3 fuzz harnesses + 9 perf benches; all green.
+- DCE binary: 274,656 B (M6 was 273,912 B; +744 B for F-2 fix).
+- **Security audit triage at end of M7:**
+  - **0 CRITICAL / 0 HIGH / 0 MEDIUM** findings.
+  - 8 LOW findings, all triaged: F-2 fixed in M7; F-3 / F-4 /
+    M5 F-1 closed in M6; F-5 / M7-3 / M7-4 documented per ADR
+    0001 (interactive-local-user trust model); M7-1 deferred
+    (tabstop overflow surfaces only when the consumer exists);
+    M7-2 deferred (user-grammar overlay supply chain — feature
+    not yet shipped); M7-5 documented in usage.md (byte-vs-glyph
+    column counting).
+- **v1.0 gate clear:** CLAUDE.md's "CRITICAL/HIGH must close
+  before v1.0" rule satisfied. M7.5 WebFetch pass is a
+  document-quality follow-up, not a v1.0 blocker — class
+  taxonomy and findings stand independent of specific CVE
+  references.
+
 ### Status (M6)
 - All 6 M6 bites landed: tokenbuf cache, F-1 escape-injection
   fix, F-3/F-4 caps, cleanliness gate, refactor pass, closeout.

@@ -204,6 +204,13 @@ instead — they're faster anyway.
 **`:q!` quits, but my edits weren't saved.** That's intentional — `:q!`
 is "discard and quit". Use `:wq` to save before quitting.
 
+**Cursor positions don't line up with multi-byte glyphs.** cyim is
+byte-oriented — a line with a 3-byte UTF-8 character has column 3
+at byte 3, even though the user sees one glyph. This matches vim
+with `:set encoding=latin1`. Proper Unicode-aware column counting
+is post-v1.0 demand-gated. For ASCII / single-byte content (most
+code), the distinction is invisible.
+
 **Highlighting is missing for my file.** cyim ships grammars for c,
 cyrius, javascript, json, markdown, python, rust, shell, toml,
 typescript, yaml. If your file's extension isn't in the

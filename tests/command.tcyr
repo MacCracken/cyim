@@ -386,6 +386,59 @@ fn main() {
     assert_eq(command_execute(s_set), 0, ":set tabstop=8 returns 0");
     assert_eq(editor_cfg_tabstop(s_set), 8, "tabstop now 8");
 
+    test_group("F-2 — :e refuses files larger than cfg_max_filesize");
+    var f2_path = "build/test-cmd-f2-large.txt";
+    # Write a 100-byte fixture file.
+    var f2_content = "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ";
+    file_write_all(f2_path, f2_content, 100);
+
+    var b_f2 = buf_new();
+    var s_f2 = editor_new(b_f2);
+    bl_init(s_f2, b_f2);
+
+    # Set cap below file size, attempt :e — should refuse.
+    editor_set_cfg_max_filesize(s_f2, 50);
+    command_reset(s_f2);
+    command_append(s_f2, 101); # e
+    command_append(s_f2, 32);
+    var f2pi = 0;
+    var f2pn = strlen(f2_path);
+    while (f2pi < f2pn) {
+        command_append(s_f2, load8(f2_path + f2pi));
+        f2pi = f2pi + 1;
+    }
+    assert_eq(command_execute(s_f2), 0 - 1, ":e returns -1 when file > cap");
+    assert_eq(editor_last_error(s_f2), ERR_FILE_TOO_LARGE, "ERR_FILE_TOO_LARGE set");
+    assert_eq(bl_count(s_f2), 1, "no new buffer added when refused");
+
+    # Raise cap above file size, retry — should succeed.
+    editor_set_cfg_max_filesize(s_f2, 1000);
+    command_reset(s_f2);
+    command_append(s_f2, 101);
+    command_append(s_f2, 32);
+    var f2pi2 = 0;
+    while (f2pi2 < f2pn) {
+        command_append(s_f2, load8(f2_path + f2pi2));
+        f2pi2 = f2pi2 + 1;
+    }
+    assert_eq(command_execute(s_f2), 0, ":e succeeds when cap is raised");
+    assert_eq(bl_count(s_f2), 2, "new buffer added");
+    assert_eq(buf_len(editor_buf(s_f2)), 100, "loaded 100 bytes");
+
+    test_group("F-2 — :set maxfilesize=N updates the cap at runtime");
+    var b_f2b = buf_new();
+    var s_f2b = editor_new(b_f2b);
+    bl_init(s_f2b, b_f2b);
+    assert_eq(editor_cfg_max_filesize(s_f2b), 104857600, "default 100 MB");
+    command_reset(s_f2b);
+    command_append(s_f2b, 115); command_append(s_f2b, 101); command_append(s_f2b, 116);
+    command_append(s_f2b, 32);
+    var mfs = "maxfilesize=42";
+    var mfsi = 0;
+    while (mfsi < 14) { command_append(s_f2b, load8(mfs + mfsi)); mfsi = mfsi + 1; }
+    assert_eq(command_execute(s_f2b), 0, ":set maxfilesize=42 returns 0");
+    assert_eq(editor_cfg_max_filesize(s_f2b), 42, "cap now 42");
+
     test_group("F-3 — command_append caps cmdbuf at COMMAND_MAX_LEN");
     var s_cap = editor_new(buf_new());
     bl_init(s_cap, editor_buf(s_cap));
