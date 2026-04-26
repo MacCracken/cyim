@@ -4,10 +4,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.0.2] — 2026-04-25
+## [1.0.2] — 2026-04-26
 
-`--wc` modifier on the agent-drive CLI ops, so callers can collapse
-`cyim --write file < input && wc -l file` into a single process.
+`--wc` modifier on the agent-drive CLI ops + BUG-001 fix
+(silent truncation of `cyim --replace` for `<new>` ≥ ~4 KB).
 
 ### Added
 
@@ -35,6 +35,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   parameter (`0` silent, `1` full, `2` lines). Silent (`0`) is the
   pre-1.0.2 behaviour, so existing callers and the `cyim-edit` wrapper
   one-liners need no changes.
+
+### Fixed
+
+- **BUG-001 (P1):** `cyim --replace OLD NEW FILE` no longer falls
+  through to a misleading "usage" error (exit 2) when the cmdline
+  exceeds 4 KB. Root cause is in `cyrius/lib/args.cyr` —
+  `args_init()` reads `/proc/self/cmdline` into a 4096 B stack buffer,
+  so any cmdline beyond that gets truncated and `argc` undercounts.
+  The upstream stdlib fix lands in cyrius/agnosticos and is re-vendored
+  when ready (CLAUDE.md: `lib/` is vendored, never edited from this repo).
+
+  Until then, `src/cli.cyr` ships `_cli_args_reload_big()` — a 2 MB
+  heap buffer (Linux ARG_MAX, the kernel's hard cap on argv+envp
+  combined) that re-reads `/proc/self/cmdline` and rebinds the
+  `args.cyr` globals at startup. Verified at 8 KB and 64 KB NEW args;
+  256 KB hits the kernel's per-arg `MAX_ARG_STRLEN` cap before cyim
+  runs (out of our control). The workaround is additive (one syscall
+  + one `alloc(2 MB)` per invocation) and is retired automatically
+  once upstream cyrius lifts the 4096 B cap and we re-vendor.
+
+- `tests/integration_smoke.py` — BUG-001 regression: `--replace`
+  with an 8 KB NEW arg and a 64 KB NEW arg both succeed and produce
+  the expected substituted file.
 
 ## [1.0.1] — 2026-04-25
 

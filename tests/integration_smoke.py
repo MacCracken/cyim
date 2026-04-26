@@ -278,6 +278,46 @@ def main():
         with open(repl_fixture, "rb") as f:
             ok &= assert_eq(f.read(), b"BAR and BAR and BAR\n", "--replace-all hits every match")
 
+    print("=== BUG-001 — --replace handles NEW arg larger than 4 KB ===")
+    # Pre-1.0.2, cyrius's lib/args.cyr read /proc/self/cmdline into a
+    # 4096 B stack buffer; total cmdline >4 KB silently truncated argv,
+    # so --replace fell through to "usage" error (exit 2). Workaround
+    # in src/cli.cyr re-reads cmdline into a 2 MB heap buffer.
+    bug001_fixture = "/tmp/cyim-bug001-fixture.txt"
+    with open(bug001_fixture, "wb") as f:
+        f.write(b"line1\nMARKER\nline3\n")
+    big_new_8k = b"X" * 8192
+    proc = subprocess.run(
+        [CYIM, "--replace", b"MARKER", big_new_8k, bug001_fixture],
+        timeout=5,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --replace 8 KB NEW exited {proc.returncode}; stderr: {proc.stderr!r}")
+        ok = False
+    else:
+        with open(bug001_fixture, "rb") as f:
+            content = f.read()
+        ok &= assert_eq(content, b"line1\n" + big_new_8k + b"\nline3\n",
+                        "--replace handled 8 KB NEW arg correctly")
+
+    with open(bug001_fixture, "wb") as f:
+        f.write(b"line1\nMARKER\nline3\n")
+    big_new_64k = b"Y" * 65536
+    proc = subprocess.run(
+        [CYIM, "--replace", b"MARKER", big_new_64k, bug001_fixture],
+        timeout=5,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        print(f"  FAIL: --replace 64 KB NEW exited {proc.returncode}; stderr: {proc.stderr!r}")
+        ok = False
+    else:
+        with open(bug001_fixture, "rb") as f:
+            content = f.read()
+        ok &= assert_eq(content, b"line1\n" + big_new_64k + b"\nline3\n",
+                        "--replace handled 64 KB NEW arg correctly")
+
     print("=== --headless: read keystrokes from stdin, no PTY required ===")
     # The headless drive doesn't need pty.fork — it reads stdin directly
     # and never touches termios. Agent-friendly: just pipe bytes.

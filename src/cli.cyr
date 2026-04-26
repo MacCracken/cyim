@@ -26,6 +26,39 @@
 var REPLACE_FIRST_UNIQUE = 0;
 var REPLACE_ALL          = 1;
 
+# BUG-001 workaround for cyrius/lib/args.cyr.
+#
+# `args_init()` reads `/proc/self/cmdline` into a 4096-byte stack buffer.
+# When the cmdline (cyim + flags + OLD + NEW + FILE, null-separated)
+# exceeds 4 KB, the read truncates and argc undercounts — `cyim --replace
+# OLD NEW FILE` with a NEW arg ≥ ~4 KB falls through to the "usage"
+# branch with a misleading exit 2. Per CLAUDE.md the stdlib in `lib/` is
+# vendored and not edited from this repo; the upstream fix lands in
+# cyrius/agnosticos and is re-vendored when ready.
+#
+# Until then, re-read the cmdline into a 2 MB heap buffer (Linux
+# ARG_MAX, the kernel's hard cap on argv+envp combined) and rebind the
+# args.cyr globals. Always run at startup — overhead is one syscall +
+# one `alloc(2 MB)`, and avoids the silent-truncation failure mode.
+#
+# Returns the new `_args_len`, or 0 on failure (the original
+# args_init() state is left intact, so callers still see the
+# truncated-but-functional view).
+var _CLI_ARGS_BIG_CAP = 2097152;
+
+fn _cli_args_reload_big() {
+    var bigbuf = alloc(_CLI_ARGS_BIG_CAP);
+    if (bigbuf == 0) { return 0; }
+    var fd = syscall(2, "/proc/self/cmdline", 0, 0);
+    if (fd < 0) { return 0; }
+    var n = syscall(0, fd, bigbuf, _CLI_ARGS_BIG_CAP);
+    syscall(3, fd);
+    if (n <= 0) { return 0; }
+    _args_base = bigbuf;
+    _args_len = n;
+    return n;
+}
+
 # Read all of stdin into `b`. Returns total bytes read.
 fn _cli_drain_stdin(b) {
     var chunk[4096];
