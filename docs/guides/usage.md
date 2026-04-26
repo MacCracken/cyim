@@ -21,6 +21,7 @@ cyim --headless [<file>]                   # read keystrokes from stdin; no TTY
 cyim --write <file>                        # replace <file> with stdin content
 cyim --replace <old> <new> <file>          # substitute first occurrence; OLD must be unique
 cyim --replace-all <old> <new> <file>      # substitute every occurrence
+cyim --grep <pattern> <file>               # read-only; emit FILE:N:LINE per matching line
 ```
 
 `cyim --probe` is the smoke test for "does my terminal cooperate?" — it
@@ -55,7 +56,7 @@ multi-window / multi-buffer all available. This is the low-level
 surface for shell scripts, CI checks, and `daimon`-orchestrated
 agents per the roadmap.
 
-For higher-level operations the binary ships two more flags that
+For higher-level operations the binary ships four more flags that
 skip the dispatch chain entirely (no edit-history / mode-state to
 model — they're tools, not user edits):
 
@@ -83,16 +84,95 @@ the command refuses with exit 5 — pick a more specific OLD or use
 `cyim --replace-all <old> <new> <file>` does the same without the
 uniqueness check; substitutes every occurrence.
 
-Exit codes:
+### `cyim --grep <pattern> <file>` — read-only line scan
+
+```sh
+cyim --grep 'TS_LEX_JSX_SKIP' src/frontend/ts/lex.cyr
+# src/frontend/ts/lex.cyr:142:    TS_LEX_JSX_SKIP,
+# src/frontend/ts/lex.cyr:418:    case TS_LEX_JSX_SKIP:
+```
+
+Scans `<file>` line by line and emits `FILE:N:LINE` (matching `grep -n`
+exactly: no spaces around the second colon) for every line containing
+`<pattern>` as a literal substring — same matching semantics as
+`--replace`'s `OLD` (no regex, byte-wise compare).
+
+Why ship grep when `rg`/`grep` exist on every box: it keeps
+agent-driven flows inside one binary. No `rg` in `PATH`, no shell
+escaping for special characters in `<pattern>`, no tool-boundary
+jump between an edit and the check that follows it.
+
+Exit codes follow `grep(1)`: **0** if any line matched, **1** if
+none, **2** on usage error, **3** if `<file>` is missing.
+
+### Modifiers — `--wc`, `--expect`, `--expect-N`
+
+Modifiers sit between the verb and its positional args, in any order
+(pre-1.1 callers that placed `--wc` immediately after the verb still
+work — the new behavior is a strict superset).
+
+**`--wc[=l|=long]`** — print `wc(1)` output for the resulting file on
+successful `--write`/`--replace[-all]`:
+
+```sh
+cyim --write --wc      foo.txt < new.txt   # 3 12 84 foo.txt
+cyim --write --wc=l    foo.txt < new.txt   # 3 foo.txt
+cyim --write --wc=long foo.txt < new.txt   # alias for --wc=l
+cyim --replace --wc 'old' 'new' foo.txt
+```
+
+**`--expect=<pat>` / `--expect-not=<pat>`** (`--write` only) — after the
+file is saved, the resulting buffer is scanned for `<pat>`. Mismatch
+returns **exit 6** with a message on stderr; the file is saved either
+way (the assertion is a contract on the *result*, not a save gate):
+
+```sh
+# "After this rewrite, TS_LEX_JSX_SKIP MUST NOT appear":
+cyim --write --expect-not='TS_LEX_JSX_SKIP' src/lex.cyr < new.txt
+echo $?    # 0 if clean, 6 if the dead symbol came back
+
+# "After this rewrite, the new ROUTE_TABLE marker MUST appear":
+cyim --write --expect='ROUTE_TABLE' src/router.cyr < new.txt
+```
+
+Composes with `--wc`:
+
+```sh
+cyim --write --wc=l --expect='ROUTE_TABLE' src/router.cyr < new.txt
+```
+
+**`--expect-N=<n>` / `--expect-1`** (`--replace`/`--replace-all` only) —
+asserts `OLD` occurs *exactly* `<n>` times in the file *before*
+substitution. Mismatch returns **exit 6** without writing.
+`--expect-1` is sugar for `--expect-N=1`.
+
+```sh
+# "Replace the unique occurrence of OLD; fail loudly if there isn't one":
+cyim --replace --expect-1 'fn old_name(' 'fn new_name(' src/foo.cyr
+
+# "Substitute every OLD; fail if the count surprises us":
+cyim --replace-all --expect-N=3 'TODO_v1' 'TODO_v2' src/foo.cyr
+
+# "Defensive no-op: assert OLD is absent (--expect-N=0)":
+cyim --replace --expect-N=0 'DEAD_SYMBOL' '' src/foo.cyr
+echo $?    # 0 if absent (clean no-op), 6 if it crept back in
+```
+
+Closes the silent-no-op gap: `--replace OLD NEW FILE` exits 4 when
+`OLD` is missing, but exit 4 is easy to miss in scripts. Pair with
+`--expect-1` and the assertion is explicit.
+
+Exit codes (verb-disambiguated where noted):
 
 | Code | Meaning |
 |------|---------|
-| 0    | Success |
-| 1    | Save failed |
-| 2    | Bad CLI args |
+| 0    | Success (or, for `--grep`, ≥1 match) |
+| 1    | Save failed (`--write`/`--replace[-all]`) \| no match (`--grep`) |
+| 2    | Bad CLI args (missing positional, empty pattern, malformed `--expect-N`) |
 | 3    | File not found |
-| 4    | OLD not found in FILE |
+| 4    | OLD not found in FILE (`--replace[-all]`; suppressed when `--expect-N=0`) |
 | 5    | OLD occurs more than once and `--replace-all` not used |
+| 6    | Assertion failed (`--expect`/`--expect-not`/`--expect-N` mismatch) |
 
 ---
 

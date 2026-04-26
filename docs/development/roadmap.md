@@ -319,11 +319,24 @@ without surfacing root cause. Editor edits over 4 KB are common
 **Workaround until fixed:** for `<new>` over 4 KB, use
 `cyim --write <file> < input.txt` (stdin, no arg-size constraint).
 
----## Post-v1.0 — Demand-Gated
+---
+
+## v1.0.x / v1.1.x — Shipped
+
+| Version | Date | Scope |
+|---------|------|-------|
+| **v1.0.1** | 2026-04-25 | Agent-drive CLI surface in-binary: `--headless`, `--write`, `--replace`, `--replace-all` (`src/cli.cyr` lands). |
+| **v1.0.2** | 2026-04-26 | `--wc[=l|=long]` modifier on agent-drive ops + BUG-001 fix (cyrius `args_init` 4 KB stack-buffer truncation, worked around with a 2 MB heap re-read of `/proc/self/cmdline`). |
+| **v1.1.0** | 2026-04-26 | Structural-invariant primitives: `cyim --grep <pattern> <file>` (read-only line scan, `FILE:N:LINE` per `grep -n`); `--expect=<pat>` / `--expect-not=<pat>` modifiers on `--write` (post-save shape assertion, exit 6); `--expect-N=<n>` / `--expect-1` modifiers on `--replace[-all]` (pre-substitution count assertion, exit 6). Closes the "tool boundary jump" — agent-driven flows assert shape and count without leaving the binary. |
+
+---
+
+## Post-v1.0 — Demand-Gated
 
 | Feature | Trigger | Notes |
 |---------|---------|-------|
-| **Headless / agent-drive mode** | daimon agent first calls cyim non-interactively | Same keymap dispatch, no TTY harness. The AI-agent edit loop. Possibly earlier than post-v1.0 if daimon needs it sooner. |
+| **Headless / agent-drive mode** | daimon agent first calls cyim non-interactively | *Shipped in v1.0.1.* Same keymap dispatch, no TTY harness. |
+| **Agent-drive ergonomics** | Workflow surfaces a missing primitive | *Shipped iteratively:* `--write`/`--replace`/`--replace-all` (1.0.1), `--wc` + BUG-001 (1.0.2), `--grep` + `--expect[-not]` + `--expect-N` (1.1.0). Continue per-need. |
 | **System clipboard** | Wayland integration via `aethersafha` | Belongs in compositor layer, not editor |
 | **LSP client** | Cyrius LSP becomes a real consumer | `cyrius lsp` already exists; wire when it stabilizes |
 | **Terminal emulator embed** | Third user asks for `:term` | Until then, `Ctrl-z` + shell is fine |
@@ -354,4 +367,4 @@ in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-04-25 (v1.0.0 released — all of M0–M7 landed in one go).*
+*Last updated: 2026-04-26 (v1.1.0 released — `--grep` + `--expect[-not]` + `--expect-N` agent-drive primitives).*
