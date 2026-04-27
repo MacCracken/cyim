@@ -337,6 +337,7 @@ without surfacing root cause. Editor edits over 4 KB are common
 |---------|---------|-------|
 | **Headless / agent-drive mode** | daimon agent first calls cyim non-interactively | *Shipped in v1.0.1.* Same keymap dispatch, no TTY harness. |
 | **Agent-drive ergonomics** | Workflow surfaces a missing primitive | *Shipped iteratively:* `--write`/`--replace`/`--replace-all` (1.0.1), `--wc` + BUG-001 (1.0.2), `--grep` + `--expect[-not]` + `--expect-N` (1.1.0). Continue per-need. |
+| **Regex on `--grep` / `--replace[-all]`** | **Upstream-gated:** cyrius stdlib ships a `lib/regex.cyr` module (math/yukti-shaped — small ABI: `re_compile` → handle, `re_match`, `re_free`; single flavor at first cut, likely POSIX ERE). | Design agreed 2026-04-26 in cyrius-bb tooling-pain-points dogfood loop. Shape: `--regex=<flavor>` **modifier** (not a new `--find` verb), default stays literal substring (back-compat), parity across `--grep` + `--replace` + `--replace-all` is mandatory. **Holding all cyim regex work** until the cyrius stdlib module lands — not implementing in-tree, not pulling an external Cyrius dep (auditable-in-one-head + reuse across owl / agnoshi / etc.). When the stdlib lands, the cyim side is mechanical: thread the modifier through three verbs, mirror the v1.1.3 duplicate-flag-guard pattern, extend `tests/cli_smoke.sh`, update `--help`. Patch-shaped (1.1.x), not minor. |
 | **System clipboard** | Wayland integration via `aethersafha` | Belongs in compositor layer, not editor |
 | **LSP client** | Cyrius LSP becomes a real consumer | `cyrius lsp` already exists; wire when it stabilizes |
 | **Terminal emulator embed** | Third user asks for `:term` | Until then, `Ctrl-z` + shell is fine |
@@ -367,4 +368,4 @@ in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-04-26 (v1.1.0 released — `--grep` + `--expect[-not]` + `--expect-N` agent-drive primitives).*
+*Last updated: 2026-04-26 (v1.1.0 released — `--grep` + `--expect[-not]` + `--expect-N` agent-drive primitives; demand-gated row added for regex on `--grep` / `--replace[-all]`, held on cyrius stdlib `lib/regex.cyr`).*
