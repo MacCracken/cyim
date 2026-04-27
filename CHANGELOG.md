@@ -4,6 +4,126 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.4] — 2026-04-27
+
+Patch release — grep-surface expansion (split out of the v1.1.x bundle
+ahead of the still-upstream-gated regex piece) plus a dogfood-driven
+ergonomics addition. Three new agent-drive primitives:
+
+- **`--grepfiles <pattern> <file...>`** — multi-file grep variant.
+- **`--context=N`** modifier on `--grep` / `--grepfiles` — `grep -C N`-shaped
+  context windows with overlap-merge and `--` group separators.
+- **`--replace-files OLD_FILE NEW_FILE FILE`** (and `--replace-files-all`) —
+  read OLD and NEW from file contents instead of argv. Closes the
+  shell-escape friction surfaced in the v1.1.4 dogfood loop when
+  splicing multi-line edits through `cyim --batch`.
+
+Also: cyrius toolchain pin bumped 5.7.7 → 5.7.13.
+
+### Added
+
+- `cyim --grepfiles [--context=<n>] <pattern> <file...>` — multi-file
+  variant of `--grep`. Output stays `FILE:N:LINE` (`grep -n` shape
+  already disambiguates by filename, so multi-file is a natural
+  extension). Exit 0 if any file matched, 1 if none, 2 on usage error,
+  3 if any FILE is missing (fail-fast on first miss so callers learn
+  about typos before partial output diverges). Implemented in
+  `src/cli.cyr` as `run_grepfiles`, sharing `_cli_grep_one` with
+  `run_grep`.
+- `--context=<n>` modifier on `--grep` and `--grepfiles` — emits N
+  lines before+after each match in `grep -C N` shape. Match lines stay
+  `FILE:N:LINE`; context lines emit as `FILE-N-LINE` (matching
+  `grep -n -C` exactly). Overlapping windows merge (no double-emit);
+  non-adjacent groups within a file get a `--` separator; multi-file
+  output gets a `--` between files. `--context=0` (or omitting the
+  flag) preserves v1.1.0–v1.1.3 single-line-per-match output
+  bytes-for-bytes. Symmetric only at first cut — asymmetric
+  `--before` / `--after` deferred until demand surfaces.
+- `cyim --replace-files OLD_FILE NEW_FILE FILE` (mode = REPLACE_FIRST_UNIQUE)
+  and `cyim --replace-files-all OLD_FILE NEW_FILE FILE` (mode =
+  REPLACE_ALL) — OLD and NEW are read from the named files (not argv).
+  Modifier surface mirrors `--replace[-all]` exactly (`--wc[=l|=long]`,
+  `--expect-N=<n>`, `--expect-1`); exit codes match too. Implemented
+  via the new `_cli_slurp_file` helper plus a thin `run_replace_files`
+  wrapper that delegates to the existing `run_replace`. Naming note:
+  "files" refers to the I/O source for OLD/NEW (their content lives in
+  files), **not** "replace across multiple files" — that shape can
+  ship later if demand surfaces.
+
+### Changed
+
+- `cyim --grep` dispatch in `src/main.cyr` is now a modifier-parsing
+  walk-all-argv loop (was: positional-only, no modifiers). The only
+  modifier supported today is `--context=<n>`, but the parser uses the
+  same duplicate-flag-guard pattern from v1.1.3 so future modifiers
+  (e.g. `--regex=<flavor>` once the upstream NFA module lands) thread
+  in mechanically.
+- `run_grep` in `src/cli.cyr` gains a `context_n` parameter and now
+  delegates to a shared `_cli_grep_one` core. `--context=0` produces
+  output identical to the v1.1.3 `run_grep` byte-for-byte
+  (regression-guarded by `cli_smoke.sh` case 39).
+- Cyrius toolchain pin bumped `5.7.7 → 5.7.13` in
+  `cyrius.cyml [package].cyrius`. 5.7.13 ships `lib/regex.cyr`, but
+  the file's own header self-describes as *"Simple glob-style matching
+  + literal search. Not full regex."* — this is **not** the NFA
+  `re_compile` / `re_match` / `re_free` ABI the cyim plan referenced.
+  The upstream gate for `--regex=<flavor>` is still in place. Roadmap
+  escalates the regex piece from soft demand-gate to **hard
+  pre-cyrius-5.7.x-EOL target** as a result.
+
+### Tests
+
+- `tests/cli_smoke.sh` extended from 35 → 58 cases (cases 33–49). New
+  cases:
+  - 33: `--grepfiles` two-file match (per-file `FILE:N:LINE` shape).
+  - 34: `--grepfiles` no match anywhere → exit 1.
+  - 35: `--grepfiles` missing FILE → exit 3 (fail-fast).
+  - 36: `--grep --context=1` emits pre/match/post with `-` / `:`
+    separators per `grep -n -C` shape.
+  - 37: `--context=2` overlapping-window merge — no `--` between
+    adjacent matches.
+  - 38: `--context=1` non-adjacent groups → `--` separator present.
+  - 39: `--context=0` produces output identical to no-flag (back-compat
+    regression guard).
+  - 40: `--context=<non-int>` → exit 2.
+  - 41: duplicate `--context=` refused (mirrors v1.1.3 dup-flag pattern).
+  - 42: `--grepfiles --context=N` → `--` between files (matches
+    `grep -n -C N` cross-file behavior).
+  - 43: `--replace-files` round-trips multi-line OLD/NEW through file
+    paths.
+  - 44: `--replace-files` empty OLD_FILE → exit 2.
+  - 45: `--replace-files` missing OLD_FILE → exit 3.
+  - 46: `--replace-files` non-unique OLD without `-all` → exit 5
+    (delegates to `run_replace`).
+  - 47: `--replace-files-all` succeeds where 46 fails.
+  - 48: `--replace-files --expect-1` count mismatch → exit 6, FILE
+    untouched (atomicity guard).
+  - 49: `--replace-files --wc=l` prints `<lines> <file>` to stdout.
+- All 92 `.tcyr` test assertions still pass (no source-of-truth
+  changes; the `_cli_grep_one` refactor is behavior-preserving when
+  `context_n=0`).
+- `tests/integration_smoke.py` unchanged (PTY-driven path doesn't
+  touch the new verbs); 45 PASS assertions still green.
+
+### Roadmap
+
+- The `--regex=<flavor>` modifier (the third leg of the original
+  bundled grep-surface expansion) escalated from soft demand-gate to
+  **hard pre-cyrius-5.7.x-EOL target** after the 5.7.13 review. The
+  cyrius stdlib must ship the NFA `re_compile` / `re_match` /
+  `re_free` ABI inside the 5.7.x series, not slip to 5.8.x or 6.x.
+  When it lands, the cyim consumer side is mechanical — the v1.1.4
+  parser already threads `--context=N` through the duplicate-flag-guard
+  machinery, so adding `--regex=` on top is one more arm.
+
+### Binary
+
+- `build/cyim` (DCE): **312,088 B** (v1.1.3 was 300,640 B; +11,448 B
+  for the line-index + ring-merge context implementation, the
+  `--grepfiles` dispatch + `run_grepfiles`, the `--replace-files[-all]`
+  dispatch + `_cli_slurp_file` + `run_replace_files`, and the
+  associated `--help` text).
+
 ## [1.1.3] — 2026-04-26
 
 Patch release — agent-drive paper cuts: silent last-wins on duplicate

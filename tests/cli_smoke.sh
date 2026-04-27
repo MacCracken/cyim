@@ -1,7 +1,8 @@
 #!/bin/sh
 # tests/cli_smoke.sh — interspersed-modifier smoke test for the
 # agent-drive CLI surface (v1.1.1 walk-all-argv parser; v1.1.2 --batch;
-# v1.1.3 duplicate-flag refusal + --grep literal regression).
+# v1.1.3 duplicate-flag refusal + --grep literal regression; v1.1.4
+# --grepfiles + --context=N + --replace-files[-all]).
 #
 # v1.1.0 had a front-only modifier loop that bailed at the first
 # non-flag argv slot, so flags appearing AFTER positionals were
@@ -249,9 +250,232 @@ else
 fi
 rm -f "$GREP_FIX"
 
+# ── v1.1.4 — --grepfiles, --context=N, --replace-files[-all] ────────
+# v1.1.4 splits the bundled grep-surface expansion: --grepfiles (multi-
+# file grep) + --context=N (grep -C-shaped context windows) ship ahead
+# of the upstream-gated --regex= modifier (still gated on the cyrius
+# stdlib NFA module before 5.7.x EOL). --replace-files[-all] ships
+# alongside as a dogfood-driven addition that closes the friction of
+# constructing multi-line OLD/NEW through argv or NUL-separated stdin.
+GF1=/tmp/cyim-cli-smoke-gf1.txt
+GF2=/tmp/cyim-cli-smoke-gf2.txt
+GREPFIX=/tmp/cyim-cli-smoke-gctx.txt
+
+# Case 33 — --grepfiles match across two files (exit 0, FILE:N:LINE
+# disambiguates per file).
+printf 'a\nfoo here\nb\n' > "$GF1"
+printf 'c\nd\nfoo there\n' > "$GF2"
+GF_OUT=$("$BIN" --grepfiles foo "$GF1" "$GF2" 2>&1)
+GF_RC=$?
+assert_rc '--grepfiles PAT FILE1 FILE2 (matches in both)' 0 $GF_RC
+HIT_F1=0; HIT_F2=0
+case "$GF_OUT" in *"$GF1:2:foo here"*) HIT_F1=1 ;; esac
+case "$GF_OUT" in *"$GF2:3:foo there"*) HIT_F2=1 ;; esac
+if [ "$HIT_F1" = "1" ] && [ "$HIT_F2" = "1" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --grepfiles output missing per-file FILE:N:LINE; got:"
+    echo "$GF_OUT"
+fi
+
+# Case 34 — --grepfiles no match anywhere (exit 1, grep convention).
+printf 'a\nb\nc\n' > "$GF1"
+printf 'd\ne\nf\n' > "$GF2"
+"$BIN" --grepfiles XYZNONESUCH "$GF1" "$GF2" >/dev/null 2>&1
+assert_rc '--grepfiles PAT FILE1 FILE2 (no matches)' 1 $?
+
+# Case 35 — --grepfiles missing FILE (exit 3, fail-fast on first miss).
+"$BIN" --grepfiles foo "$GF1" /tmp/cyim-cli-smoke-NONEXISTENT 2>/dev/null
+assert_rc '--grepfiles FILE missing (exit 3)' 3 $?
+
+# Case 36 — --grep --context=1 emits before+after lines with `-`
+# separators (FILE-N-LINE for context, FILE:N:LINE for match).
+printf 'one\ntwo\nMATCH\nthree\nfour\n' > "$GREPFIX"
+CTX_OUT=$("$BIN" --grep --context=1 MATCH "$GREPFIX" 2>&1)
+assert_rc '--grep --context=1 MATCH FILE' 0 $?
+HIT_CTX_PRE=0; HIT_CTX_MATCH=0; HIT_CTX_POST=0
+case "$CTX_OUT" in *"$GREPFIX-2-two"*) HIT_CTX_PRE=1 ;; esac
+case "$CTX_OUT" in *"$GREPFIX:3:MATCH"*) HIT_CTX_MATCH=1 ;; esac
+case "$CTX_OUT" in *"$GREPFIX-4-three"*) HIT_CTX_POST=1 ;; esac
+if [ "$HIT_CTX_PRE" = "1" ] && [ "$HIT_CTX_MATCH" = "1" ] && [ "$HIT_CTX_POST" = "1" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --grep --context=1 missing pre/match/post; got:"
+    echo "$CTX_OUT"
+fi
+
+# Case 37 — overlapping windows merge: matches at lines 2,4 with N=2
+# emit one continuous run, no `--` separator between them.
+printf 'a\nMATCH\nb\nMATCH\nc\nd\n' > "$GREPFIX"
+OVERLAP_OUT=$("$BIN" --grep --context=2 MATCH "$GREPFIX" 2>&1)
+HAS_SEP=0
+case "$OVERLAP_OUT" in *"--"*) HAS_SEP=1 ;; esac
+if [ "$HAS_SEP" = "0" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --context=2 overlapping windows should merge (no -- separator); got:"
+    echo "$OVERLAP_OUT"
+fi
+
+# Case 38 — non-adjacent groups get a `--` separator between them.
+printf 'a\nMATCH\nb\nc\nd\nMATCH\ne\n' > "$GREPFIX"
+SEP_OUT=$("$BIN" --grep --context=1 MATCH "$GREPFIX" 2>&1)
+HAS_SEP=0
+case "$SEP_OUT" in *"
+--
+"*) HAS_SEP=1 ;; esac
+if [ "$HAS_SEP" = "1" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --context=1 non-adjacent groups should emit -- separator; got:"
+    echo "$SEP_OUT"
+fi
+
+# Case 39 — --context=0 must produce identical output to omitting the
+# flag (back-compat regression guard).
+printf 'a\nMATCH\nb\nMATCH\nc\n' > "$GREPFIX"
+PLAIN_OUT=$("$BIN" --grep MATCH "$GREPFIX" 2>&1)
+ZERO_OUT=$("$BIN" --grep --context=0 MATCH "$GREPFIX" 2>&1)
+if [ "$PLAIN_OUT" = "$ZERO_OUT" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --context=0 should match no-flag output bytes-for-bytes"
+    echo "  no-flag: $PLAIN_OUT"
+    echo "  ctx=0:   $ZERO_OUT"
+fi
+
+# Case 40 — --context=<non-int> usage error (exit 2).
+"$BIN" --grep --context=abc MATCH "$GREPFIX" 2>/dev/null
+assert_rc '--grep --context=abc (bad N)' 2 $?
+
+# Case 41 — duplicate --context refused (mirrors v1.1.3 dup-flag pattern).
+"$BIN" --grep --context=1 --context=2 MATCH "$GREPFIX" 2>/dev/null
+assert_rc '--grep --context=1 --context=2 (duplicate)' 2 $?
+
+# Case 42 — --grepfiles --context=N puts a `--` separator between files
+# (matches `grep -n -C N`'s cross-file behavior).
+printf 'a\nMATCH\nb\n' > "$GF1"
+printf 'c\nMATCH\nd\n' > "$GF2"
+GF_CTX_OUT=$("$BIN" --grepfiles --context=1 MATCH "$GF1" "$GF2" 2>&1)
+HAS_SEP=0
+case "$GF_CTX_OUT" in *"
+--
+"*) HAS_SEP=1 ;; esac
+if [ "$HAS_SEP" = "1" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --grepfiles --context=1 should emit -- between files; got:"
+    echo "$GF_CTX_OUT"
+fi
+
+rm -f "$GF1" "$GF2" "$GREPFIX"
+
+# ── v1.1.4 — --replace-files / --replace-files-all ──────────────────
+# Dogfood-driven: closes the friction of constructing multi-line OLD/NEW
+# through argv (shell-escape pain) or NUL-separated stdin (--batch
+# stream construction). Same modifier surface as --replace[-all]; reads
+# OLD and NEW from named files.
+RF_TARGET=/tmp/cyim-cli-smoke-rftgt.txt
+RF_OLD=/tmp/cyim-cli-smoke-rfold.txt
+RF_NEW=/tmp/cyim-cli-smoke-rfnew.txt
+
+# Case 43 — multi-line OLD/NEW round-trip through file paths.
+printf 'header\nblock A\nblock B\nblock C\nfooter\n' > "$RF_TARGET"
+printf 'block A\nblock B\nblock C' > "$RF_OLD"
+printf 'NEW1\nNEW2\nNEW3\nNEW4' > "$RF_NEW"
+"$BIN" --replace-files "$RF_OLD" "$RF_NEW" "$RF_TARGET" >/dev/null 2>&1
+assert_rc '--replace-files OLD_FILE NEW_FILE FILE (multi-line)' 0 $?
+EXPECTED='header
+NEW1
+NEW2
+NEW3
+NEW4
+footer'
+ACTUAL=$(cat "$RF_TARGET")
+if [ "$EXPECTED" = "$ACTUAL" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --replace-files content mismatch"
+    echo "  expected:"; printf '%s\n' "$EXPECTED"
+    echo "  actual:"; printf '%s\n' "$ACTUAL"
+fi
+
+# Case 44 — --replace-files OLD_FILE empty (exit 2).
+: > "$RF_OLD"
+"$BIN" --replace-files "$RF_OLD" "$RF_NEW" "$RF_TARGET" 2>/dev/null
+assert_rc '--replace-files OLD_FILE empty' 2 $?
+
+# Case 45 — --replace-files OLD_FILE missing (exit 3).
+"$BIN" --replace-files /tmp/cyim-cli-smoke-NONEXISTENT-OLD "$RF_NEW" "$RF_TARGET" 2>/dev/null
+assert_rc '--replace-files OLD_FILE missing' 3 $?
+
+# Case 46 — --replace-files OLD not unique without -all (exit 5).
+printf 'foo\nbar\nfoo\n' > "$RF_TARGET"
+printf 'foo' > "$RF_OLD"
+printf 'BAR' > "$RF_NEW"
+"$BIN" --replace-files "$RF_OLD" "$RF_NEW" "$RF_TARGET" 2>/dev/null
+assert_rc '--replace-files OLD non-unique (without -all)' 5 $?
+
+# Case 47 — --replace-files-all succeeds where --replace-files exits 5.
+"$BIN" --replace-files-all "$RF_OLD" "$RF_NEW" "$RF_TARGET" >/dev/null 2>&1
+assert_rc '--replace-files-all OLD non-unique' 0 $?
+ACTUAL=$(cat "$RF_TARGET")
+EXPECTED='BAR
+bar
+BAR'
+if [ "$EXPECTED" = "$ACTUAL" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --replace-files-all all-occurrence substitution"
+fi
+
+# Case 48 — --replace-files --expect-1 mismatch returns 6 before
+# touching FILE (delegates to run_replace's pre-substitution check).
+printf 'a\nb\na\n' > "$RF_TARGET"
+printf 'a' > "$RF_OLD"
+printf 'A' > "$RF_NEW"
+"$BIN" --replace-files --expect-1 "$RF_OLD" "$RF_NEW" "$RF_TARGET" 2>/dev/null
+assert_rc '--replace-files --expect-1 (count mismatch)' 6 $?
+ACTUAL=$(cat "$RF_TARGET")
+EXPECTED='a
+b
+a'
+if [ "$EXPECTED" = "$ACTUAL" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --replace-files atomicity (file changed despite exit 6)"
+fi
+
+# Case 49 — --replace-files --wc=l prints `<lines> <file>` to stdout.
+printf 'one\ntwo\nthree\n' > "$RF_TARGET"
+printf 'two' > "$RF_OLD"
+printf 'TWO' > "$RF_NEW"
+WC_OUT=$("$BIN" --replace-files --wc=l "$RF_OLD" "$RF_NEW" "$RF_TARGET" 2>&1)
+assert_rc '--replace-files --wc=l' 0 $?
+case "$WC_OUT" in
+    "3 $RF_TARGET")
+        PASS=$((PASS + 1))
+        ;;
+    *)
+        FAIL=$((FAIL + 1))
+        echo "FAIL: --replace-files --wc=l output: expected '3 $RF_TARGET', got '$WC_OUT'"
+        ;;
+esac
+
+rm -f "$RF_TARGET" "$RF_OLD" "$RF_NEW"
+
 rm -f "$BATCH_FIX"
 
 rm -f "$FIX" "$WRITE_FIX" "$BATCH_FIX"
 
-echo "$PASS passed, $FAIL failed (35 total)"
+echo "$PASS passed, $FAIL failed (58 total)"
 [ "$FAIL" = "0" ] || exit 1

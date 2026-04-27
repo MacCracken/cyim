@@ -310,11 +310,256 @@ fn _cli_write_buf_range(b, start, end, chunk, cap) {
     return 0;
 }
 
-# `cyim --grep PATTERN FILE` — emit `FILE:LINENO:LINE` for every line in
-# FILE containing PATTERN as a literal substring. Matches grep(1)
-# exit conventions: 0 if any line matched, 1 if none, 2 on usage error,
-# 3 if FILE is missing.
-fn run_grep(pattern, file_path) {
+# Build a per-line byte-offset index for buffer `b`.
+# Returns: pointer to an array of (L+1) i64 entries where:
+#   arr[k-1] = byte offset of the start of line k (1-indexed)
+#   arr[L]   = blen (sentinel: byte just past the end of the last line)
+# Stores the line count L into *count_out. Returns 0 on alloc failure.
+#
+# Trailing-\n convention matches grep(1): a file ending in \n has its
+# `\n` count == line count; a file not ending in \n still counts the
+# final partial line. An empty file has 0 lines.
+fn _cli_build_line_index(b, count_out) {
+    var blen = buf_len(b);
+    var L = 0;
+    if (blen > 0) {
+        var nl = 0;
+        var ic = 0;
+        while (ic < blen) {
+            if (buf_get(b, ic) == 10) { nl = nl + 1; }
+            ic = ic + 1;
+        }
+        if (buf_get(b, blen - 1) == 10) {
+            L = nl;
+        } else {
+            L = nl + 1;
+        }
+    }
+    var alloc_n = (L + 1) * 8;
+    if (alloc_n < 8) { alloc_n = 8; }
+    var arr = alloc(alloc_n);
+    if (arr == 0) { store64(count_out, 0); return 0; }
+    if (L > 0) {
+        store64(arr, 0);
+        var line_idx = 1;
+        var ix = 0;
+        while (ix < blen) {
+            if (buf_get(b, ix) == 10) {
+                if (line_idx <= L) {
+                    store64(arr + line_idx * 8, ix + 1);
+                }
+                line_idx = line_idx + 1;
+            }
+            ix = ix + 1;
+        }
+        store64(arr + L * 8, blen);
+    }
+    store64(count_out, L);
+    return arr;
+}
+
+# Emit one grep result line. `is_match=1` uses ":" separators (canonical
+# `FILE:N:LINE` match form); `is_match=0` uses "-" (`FILE-N-LINE`,
+# context-line form per grep -C). Trailing \n in line content is
+# stripped before emit (we add our own).
+fn _cli_print_grep_line(b, file_path, fp_len, arr, lineno, is_match, chunk, chunk_cap) {
+    var s = load64(arr + (lineno - 1) * 8);
+    var e = load64(arr + lineno * 8);
+    if (e > s) {
+        if (buf_get(b, e - 1) == 10) { e = e - 1; }
+    }
+    syscall(1, 1, file_path, fp_len);
+    if (is_match == 1) {
+        syscall(1, 1, ":", 1);
+    } else {
+        syscall(1, 1, "-", 1);
+    }
+    fmt_int(lineno);
+    if (is_match == 1) {
+        syscall(1, 1, ":", 1);
+    } else {
+        syscall(1, 1, "-", 1);
+    }
+    _cli_write_buf_range(b, s, e, chunk, chunk_cap);
+    syscall(1, 1, "\n", 1);
+    return 0;
+}
+
+# Run a single-file grep with optional context. Used by both run_grep
+# (single FILE) and run_grepfiles (multi-FILE).
+#
+# `context_n`: 0 = no context (just match lines, no `--` separators);
+#              N>0 = N lines before+after each match, overlapping
+#              windows merged, `--` between non-adjacent groups.
+# `emitted_inout` (i64*): cross-file "did any prior file emit?" flag.
+#   Used to emit a leading `--` separator between files when context_n>0
+#   and a prior file already emitted. _cli_grep_one sets *emitted_inout
+#   = 1 the first time it emits anything itself.
+#
+# Returns: 1 if any line matched, 0 if none, -1 on alloc failure.
+fn _cli_grep_one(b, file_path, pattern, context_n, emitted_inout) {
+    var plen = strlen(pattern);
+    var fp_len = strlen(file_path);
+    var L_slot[8];
+    store64(&L_slot, 0);
+    var arr = _cli_build_line_index(b, &L_slot);
+    if (arr == 0) { return 0 - 1; }
+    var L = load64(&L_slot);
+
+    var chunk_cap = 4096;
+    var chunk = alloc(chunk_cap);
+    if (chunk == 0) { return 0 - 1; }
+
+    var any_hit = 0;
+    var last_emitted = 0;
+    var pending_post = 0;
+    var k = 1;
+    while (k <= L) {
+        var s = load64(arr + (k - 1) * 8);
+        var e = load64(arr + k * 8);
+        var ce = e;
+        if (ce > s) {
+            if (buf_get(b, ce - 1) == 10) { ce = ce - 1; }
+        }
+        var line_len = ce - s;
+        var hit = 0;
+        if (line_len >= plen) {
+            var pos = s;
+            var stop = ce - plen;
+            while (pos <= stop) {
+                if (_cli_match_at(b, pos, pattern, plen) == 1) {
+                    hit = 1;
+                    pos = stop + 1;
+                } else {
+                    pos = pos + 1;
+                }
+            }
+        }
+        if (hit == 1) {
+            var first_pre = k - context_n;
+            if (first_pre < 1) { first_pre = 1; }
+            if (last_emitted >= first_pre) { first_pre = last_emitted + 1; }
+
+            var need_sep = 0;
+            if (context_n > 0) {
+                if (load64(emitted_inout) == 1) {
+                    if (last_emitted == 0) {
+                        need_sep = 1;
+                    } else {
+                        if (last_emitted + 1 < first_pre) { need_sep = 1; }
+                    }
+                }
+            }
+            if (need_sep == 1) { syscall(1, 1, "--\n", 3); }
+
+            var ctx = first_pre;
+            while (ctx < k) {
+                _cli_print_grep_line(b, file_path, fp_len, arr, ctx, 0, chunk, chunk_cap);
+                ctx = ctx + 1;
+            }
+            _cli_print_grep_line(b, file_path, fp_len, arr, k, 1, chunk, chunk_cap);
+            last_emitted = k;
+            pending_post = context_n;
+            store64(emitted_inout, 1);
+            any_hit = 1;
+        } else {
+            if (pending_post > 0) {
+                _cli_print_grep_line(b, file_path, fp_len, arr, k, 0, chunk, chunk_cap);
+                last_emitted = k;
+                pending_post = pending_post - 1;
+            }
+        }
+        k = k + 1;
+    }
+    return any_hit;
+}
+
+# Slurp FILE_PATH into a freshly-allocated, NUL-terminated heap
+# buffer. Returns ptr (length stored at len_out) on success, 0 on
+# any failure (file missing or alloc fail). Used by run_replace_files
+# to read OLD and NEW contents from disk instead of taking them as
+# argv strings — the agent-drive surface friction surfaced in the
+# v1.1.4 dogfood loop (multi-line / large OLD/NEW are awkward through
+# argv, especially via shell). Treats content as a NUL-terminated C
+# string, consistent with the rest of the CLI surface; embedded NULs
+# in source files (rare for cyim's text-editor scope) would terminate
+# strlen early.
+fn _cli_slurp_file(file_path, len_out) {
+    var b = buf_new();
+    var loaded = buf_load_file(b, file_path);
+    if (loaded < 0) {
+        store64(len_out, 0);
+        return 0;
+    }
+    var n = buf_len(b);
+    var out = alloc(n + 1);
+    if (out == 0) {
+        store64(len_out, 0);
+        return 0;
+    }
+    var i = 0;
+    while (i < n) {
+        store8(out + i, buf_get(b, i));
+        i = i + 1;
+    }
+    store8(out + n, 0);
+    store64(len_out, n);
+    return out;
+}
+
+# `cyim --replace-files OLD_FILE NEW_FILE FILE` (mode = REPLACE_FIRST_UNIQUE) or
+# `cyim --replace-files-all OLD_FILE NEW_FILE FILE` (mode = REPLACE_ALL).
+# OLD and NEW are read from the named files (not argv); FILE is the
+# target. Modifier surface and exit codes match --replace[-all] —
+# this is run_replace with the I/O source for OLD/NEW swapped from
+# argv to disk. Naming note: "files" means OLD/NEW come from file
+# contents, NOT "replace across multiple files" (use a shell loop or
+# wait for that to land if demand surfaces).
+#
+# Exit codes:
+#   0 — success
+#   1 — save failed
+#   2 — bad CLI args (missing OLD_FILE/NEW_FILE/FILE)
+#   3 — OLD_FILE / NEW_FILE / FILE not found (read or load failure;
+#       same code as --replace's missing-FILE)
+#   4 — OLD content not found in FILE
+#   5 — OLD content occurs more than once and not --replace-files-all
+#   6 — --expect-N / --expect-1 mismatch
+fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n) {
+    if (old_file == 0)  { syscall(1, 2, "cyim --replace-files: missing OLD_FILE\n", 39); return 2; }
+    if (new_file == 0)  { syscall(1, 2, "cyim --replace-files: missing NEW_FILE\n", 39); return 2; }
+    if (file_path == 0) { syscall(1, 2, "cyim --replace-files: missing FILE\n",     35); return 2; }
+
+    var olen[8];
+    store64(&olen, 0);
+    var old_str = _cli_slurp_file(old_file, &olen);
+    if (old_str == 0) {
+        syscall(1, 2, "cyim --replace-files: cannot read OLD_FILE\n", 43);
+        return 3;
+    }
+    if (load64(&olen) == 0) {
+        syscall(1, 2, "cyim --replace-files: OLD_FILE is empty\n", 40);
+        return 2;
+    }
+
+    var nlen[8];
+    store64(&nlen, 0);
+    var new_str = _cli_slurp_file(new_file, &nlen);
+    if (new_str == 0) {
+        syscall(1, 2, "cyim --replace-files: cannot read NEW_FILE\n", 43);
+        return 3;
+    }
+
+    return run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n);
+}
+
+# `cyim --grep [--context=N] PATTERN FILE` — emit `FILE:N:LINE` for
+# every matching line in FILE (literal substring). With --context=N,
+# also emit N lines before+after each match as `FILE-N-LINE`, with
+# `--` separators between non-adjacent groups (grep -C N shape).
+# Matches grep(1) exit conventions: 0 if any match, 1 if none, 2 on
+# usage error, 3 if FILE is missing.
+fn run_grep(pattern, file_path, context_n) {
     if (pattern == 0)   { syscall(1, 2, "cyim --grep: missing PATTERN\n", 29); return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --grep: missing FILE\n",    26); return 2; }
     if (strlen(pattern) == 0) {
@@ -329,53 +574,60 @@ fn run_grep(pattern, file_path) {
         return 3;
     }
 
-    var blen = buf_len(b);
-    var plen = strlen(pattern);
-    var fp_len = strlen(file_path);
-    var chunk_cap = 4096;
-    var chunk = alloc(chunk_cap);
-    if (chunk == 0) {
+    var emitted[8];
+    store64(&emitted, 0);
+    var rc = _cli_grep_one(b, file_path, pattern, context_n, &emitted);
+    if (rc < 0) {
         syscall(1, 2, "cyim --grep: alloc failed\n", 26);
         return 1;
     }
+    if (rc == 0) { return 1; }
+    return 0;
+}
 
-    var line_no = 1;
-    var line_start = 0;
-    var i = 0;
+# `cyim --grepfiles [--context=N] PATTERN FILE [FILE...]` — multi-file
+# grep variant. `files_arr` is an array of `file_count` C-string ptrs
+# to file paths. Output stays `FILE:N:LINE` per-match (`grep -n` shape
+# already disambiguates by filename). With --context=N, `--` separators
+# appear both within a file (between non-adjacent groups) and between
+# files (matches `grep -n -C N` cross-file behavior).
+#
+# Exit codes: 0 = at least one match across all files, 1 = no matches
+# in any file, 2 = bad args, 3 = first missing FILE (early-exit so the
+# caller learns about typos before partial output diverges).
+fn run_grepfiles(pattern, files_arr, file_count, context_n) {
+    if (pattern == 0) {
+        syscall(1, 2, "cyim --grepfiles: missing PATTERN\n", 35);
+        return 2;
+    }
+    if (file_count <= 0) {
+        syscall(1, 2, "cyim --grepfiles: missing FILE\n", 32);
+        return 2;
+    }
+    if (strlen(pattern) == 0) {
+        syscall(1, 2, "cyim --grepfiles: PATTERN must be non-empty\n", 45);
+        return 2;
+    }
+    var emitted[8];
+    store64(&emitted, 0);
     var any_hit = 0;
-    while (i <= blen) {
-        var at_eol = 0;
-        if (i == blen) { at_eol = 1; }
-        if (i < blen) {
-            if (buf_get(b, i) == 10) { at_eol = 1; }
+    var i = 0;
+    while (i < file_count) {
+        var fp = load64(files_arr + i * 8);
+        var b = buf_new();
+        var loaded = buf_load_file(b, fp);
+        if (loaded < 0) {
+            syscall(1, 2, "cyim --grepfiles: file not found: ", 34);
+            syscall(1, 2, fp, strlen(fp));
+            syscall(1, 2, "\n", 1);
+            return 3;
         }
-        if (at_eol == 1) {
-            var line_len = i - line_start;
-            var hit = 0;
-            if (line_len >= plen) {
-                var k = line_start;
-                var stop = i - plen;
-                while (k <= stop) {
-                    if (_cli_match_at(b, k, pattern, plen) == 1) {
-                        hit = 1;
-                        k = stop + 1;
-                    } else {
-                        k = k + 1;
-                    }
-                }
-            }
-            if (hit == 1) {
-                any_hit = 1;
-                syscall(1, 1, file_path, fp_len);
-                syscall(1, 1, ":", 1);
-                fmt_int(line_no);
-                syscall(1, 1, ":", 1);
-                _cli_write_buf_range(b, line_start, i, chunk, chunk_cap);
-                syscall(1, 1, "\n", 1);
-            }
-            line_no = line_no + 1;
-            line_start = i + 1;
+        var rc = _cli_grep_one(b, fp, pattern, context_n, &emitted);
+        if (rc < 0) {
+            syscall(1, 2, "cyim --grepfiles: alloc failed\n", 32);
+            return 1;
         }
+        if (rc == 1) { any_hit = 1; }
         i = i + 1;
     }
     if (any_hit == 0) { return 1; }
