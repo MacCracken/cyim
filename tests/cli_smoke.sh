@@ -2,7 +2,8 @@
 # tests/cli_smoke.sh — interspersed-modifier smoke test for the
 # agent-drive CLI surface (v1.1.1 walk-all-argv parser; v1.1.2 --batch;
 # v1.1.3 duplicate-flag refusal + --grep literal regression; v1.1.4
-# --grepfiles + --context=N + --replace-files[-all]).
+# --grepfiles + --context=N + --replace-files[-all]; v1.2.0 --regex=
+# on the four pattern verbs and --replace-files[-all]).
 #
 # v1.1.0 had a front-only modifier loop that bailed at the first
 # non-flag argv slot, so flags appearing AFTER positionals were
@@ -475,7 +476,143 @@ rm -f "$RF_TARGET" "$RF_OLD" "$RF_NEW"
 
 rm -f "$BATCH_FIX"
 
+# === v1.2.0 — --regex=<flavor> coverage ==============================
+# `ere` is the only flavor in 1.2.0 (cyrius stdlib lib/regex.cyr Pike NFA);
+# additional flavors (bre, re2, pcre, fuzzy, vim) ship via niyama and add
+# more --regex= values to the parser arm without changing the surface.
+
+REGEX_FIX=/tmp/cyim-cli-smoke-regex.txt
+printf 'foo bar\nbaz qux\nfoobar123\nabc456def\n' > "$REGEX_FIX"
+
+# Case 59 — --grep --regex=ere digit class.
+OUT=$("$BIN" --grep --regex=ere '[0-9]+' "$REGEX_FIX" 2>&1)
+assert_rc '--grep --regex=ere [0-9]+' 0 $?
+case "$OUT" in
+    *"$REGEX_FIX:3:foobar123"*"$REGEX_FIX:4:abc456def"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=ere [0-9]+ output: '$OUT'" ;;
+esac
+
+# Case 60 — --grep --regex=ere alternation.
+OUT=$("$BIN" --grep --regex=ere 'foo|qux' "$REGEX_FIX" 2>&1)
+assert_rc '--grep --regex=ere foo|qux' 0 $?
+case "$OUT" in
+    *"foo bar"*"baz qux"*"foobar123"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=ere foo|qux output: '$OUT'" ;;
+esac
+
+# Case 61 — --grep --regex=ere ^ anchor.
+OUT=$("$BIN" --grep --regex=ere '^baz' "$REGEX_FIX" 2>&1)
+assert_rc '--grep --regex=ere ^baz' 0 $?
+case "$OUT" in
+    *"$REGEX_FIX:2:baz qux"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=ere ^baz output: '$OUT'" ;;
+esac
+
+# Case 62 — --grep WITHOUT --regex= treats `[0-9]+` as literal substring
+# (regression guard against accidental regex-default flip).
+"$BIN" --grep '[0-9]+' "$REGEX_FIX" >/dev/null 2>&1
+assert_rc '--grep no --regex (literal default back-compat)' 1 $?
+
+# Case 63 — --grep --regex=ere invalid pattern → exit 2.
+"$BIN" --grep --regex=ere '[' "$REGEX_FIX" >/dev/null 2>&1
+assert_rc '--grep --regex=ere invalid pattern' 2 $?
+
+# Case 64 — --grep --regex=pcre unknown flavor → exit 2.
+"$BIN" --grep --regex=pcre 'foo' "$REGEX_FIX" >/dev/null 2>&1
+assert_rc '--grep --regex=pcre unknown flavor' 2 $?
+
+# Case 65 — --grep --regex= (missing flavor) → exit 2.
+"$BIN" --grep --regex= 'foo' "$REGEX_FIX" >/dev/null 2>&1
+assert_rc '--grep --regex= missing flavor' 2 $?
+
+# Case 66 — duplicate --regex= → exit 2.
+"$BIN" --grep --regex=ere --regex=ere 'foo' "$REGEX_FIX" >/dev/null 2>&1
+assert_rc '--grep duplicate --regex' 2 $?
+
+# Case 67 — --grepfiles --regex=ere over multiple files.
+REGEX_FIX2=/tmp/cyim-cli-smoke-regex2.txt
+printf 'apple\norange456\n' > "$REGEX_FIX2"
+OUT=$("$BIN" --grepfiles --regex=ere '[0-9]+' "$REGEX_FIX" "$REGEX_FIX2" 2>&1)
+assert_rc '--grepfiles --regex=ere multi-file' 0 $?
+case "$OUT" in
+    *"$REGEX_FIX:3:foobar123"*"$REGEX_FIX2:2:orange456"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grepfiles --regex=ere multi-file output: '$OUT'" ;;
+esac
+
+# Case 68 — --replace --regex=ere unique digit-class match.
+REGEX_REPLACE=/tmp/cyim-cli-smoke-regex-replace.txt
+printf 'value=42\n' > "$REGEX_REPLACE"
+"$BIN" --replace --regex=ere '[0-9]+' 'XXX' "$REGEX_REPLACE" >/dev/null 2>&1
+assert_rc '--replace --regex=ere unique' 0 $?
+ACTUAL=$(cat "$REGEX_REPLACE")
+if [ "$ACTUAL" = 'value=XXX' ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1)); echo "FAIL: --replace --regex=ere result: '$ACTUAL'"
+fi
+
+# Case 69 — --replace-all --regex=ere multi-occurrence.
+printf 'a1 b22 c333\n' > "$REGEX_REPLACE"
+"$BIN" --replace-all --regex=ere '[0-9]+' 'N' "$REGEX_REPLACE" >/dev/null 2>&1
+assert_rc '--replace-all --regex=ere multi' 0 $?
+ACTUAL=$(cat "$REGEX_REPLACE")
+if [ "$ACTUAL" = 'aN bN cN' ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1)); echo "FAIL: --replace-all --regex=ere result: '$ACTUAL'"
+fi
+
+# Case 70 — --replace --regex=ere --expect-1 (composition).
+printf 'one=1\ntwo=2\n' > "$REGEX_REPLACE"
+"$BIN" --replace --regex=ere '^one=' 'first=' --expect-1 "$REGEX_REPLACE" >/dev/null 2>&1
+assert_rc '--replace --regex=ere --expect-1' 0 $?
+
+# Case 71 — --replace-files --regex=ere — file-sourced OLD pattern.
+REGEX_OLD=/tmp/cyim-cli-smoke-regex-old.txt
+REGEX_NEW=/tmp/cyim-cli-smoke-regex-new.txt
+printf '[0-9]+' > "$REGEX_OLD"
+printf 'NUM' > "$REGEX_NEW"
+printf 'count=42\n' > "$REGEX_REPLACE"
+"$BIN" --replace-files --regex=ere "$REGEX_OLD" "$REGEX_NEW" "$REGEX_REPLACE" >/dev/null 2>&1
+assert_rc '--replace-files --regex=ere file-sourced pattern' 0 $?
+ACTUAL=$(cat "$REGEX_REPLACE")
+if [ "$ACTUAL" = 'count=NUM' ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1)); echo "FAIL: --replace-files --regex=ere result: '$ACTUAL'"
+fi
+
+# Case 72 — --replace-files-all --regex=ere — file-sourced + multi-occurrence.
+printf 'a1 b2 c3\n' > "$REGEX_REPLACE"
+"$BIN" --replace-files-all --regex=ere "$REGEX_OLD" "$REGEX_NEW" "$REGEX_REPLACE" >/dev/null 2>&1
+assert_rc '--replace-files-all --regex=ere multi' 0 $?
+ACTUAL=$(cat "$REGEX_REPLACE")
+if [ "$ACTUAL" = 'aNUM bNUM cNUM' ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1)); echo "FAIL: --replace-files-all --regex=ere result: '$ACTUAL'"
+fi
+
+# Case 73 — --grep --regex=ere --context=1 (composition with --context).
+OUT=$("$BIN" --grep --regex=ere --context=1 '^baz' "$REGEX_FIX" 2>&1)
+assert_rc '--grep --regex=ere --context=1' 0 $?
+case "$OUT" in
+    *"$REGEX_FIX-1-foo bar"*"$REGEX_FIX:2:baz qux"*"$REGEX_FIX-3-foobar123"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=ere --context=1 output: '$OUT'" ;;
+esac
+
+# Case 74 — --replace-all --regex=ere --wc=l (composition with --wc).
+printf 'a1\nb22\nc333\n' > "$REGEX_REPLACE"
+WC_OUT=$("$BIN" --replace-all --regex=ere '[0-9]+' 'N' --wc=l "$REGEX_REPLACE" 2>&1)
+assert_rc '--replace-all --regex=ere --wc=l' 0 $?
+case "$WC_OUT" in
+    "3 $REGEX_REPLACE") PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --replace-all --regex=ere --wc=l output: expected '3 $REGEX_REPLACE', got '$WC_OUT'" ;;
+esac
+
+rm -f "$REGEX_FIX" "$REGEX_FIX2" "$REGEX_REPLACE" "$REGEX_OLD" "$REGEX_NEW"
+
 rm -f "$FIX" "$WRITE_FIX" "$BATCH_FIX"
 
-echo "$PASS passed, $FAIL failed (58 total)"
+echo "$PASS passed, $FAIL failed (84 total)"
 [ "$FAIL" = "0" ] || exit 1

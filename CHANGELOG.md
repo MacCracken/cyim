@@ -4,6 +4,173 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-04-28
+
+Minor release — closes the v1.1.x grep-surface bundle by landing the
+`--regex=<flavor>` modifier on the four pattern verbs (`--grep`,
+`--grepfiles`, `--replace`, `--replace-all`) and the two file-sourced
+variants (`--replace-files`, `--replace-files-all`). The upstream gate
+lifted: cyrius 5.7.23 ships a Thompson NFA / Pike matcher in
+`lib/regex.cyr` (engine landed at v5.7.18) alongside the original glob
+helpers. cyim consumes the `regex_*` ABI directly.
+
+Default behavior is unchanged — pattern verbs without `--regex=` still
+treat the pattern as a literal substring (back-compat regression-guarded
+by case 62 in `tests/cli_smoke.sh`). Adding `--regex=ere` switches to
+the engine.
+
+The internal shape is set up for future engines and future per-engine
+options without rewrite — see ADR 0002 for the extensibility decision.
+Additional engines (`bre`, `re2`, `pcre`, `fuzzy`, `vim`) will ship via
+the [`niyama`](https://github.com/MacCracken/niyama) standalone Cyrius
+lib (sandhi-pattern lifecycle: out-of-tree → 1.0.0 → foldable into
+cyrius stdlib once consumer count earns it).
+
+Also: cyrius toolchain pin bumped 5.7.13 → 5.7.23.
+
+### Added
+
+- `--regex=<flavor>` modifier on `--grep`, `--grepfiles`, `--replace`,
+  `--replace-all`, `--replace-files`, and `--replace-files-all`.
+  Today's only valid flavor: `ere` (cyrius stdlib `lib/regex.cyr`
+  Pike NFA — POSIX-ERE-ish: char classes `\d`/`\w`/`\s`/`\b`,
+  alternation `|`, groups `()`, quantifiers `* + ? {n,m}`, lazy
+  quantifiers, anchors `^ $`). Default stays literal substring
+  (no `--regex=` = back-compat byte-for-byte).
+- Cyrius stdlib `regex` added to `cyrius.cyml [deps].stdlib`. DCE
+  trims unreferenced regex symbols when `--regex=` is unused.
+- `RegexOpts` struct (`src/cli.cyr`) — heap-allocated, 24 B, with
+  reserved 8-byte slots for future per-engine flags (icase,
+  multiline, dotall, ungreedy, etc.). Threaded through all six
+  affected verbs so adding options later is a struct-field add,
+  not a signature-change rewrite. See ADR 0002.
+- `Matcher` struct (`src/cli.cyr`) — 24 B abstraction over
+  literal-vs-regex hit detection. `_matcher_literal()` /
+  `_matcher_regex()` constructors, `_matcher_kind()` /
+  `_matcher_needle()` / `_matcher_nfa()` / `_matcher_nlen()`
+  accessors. Per-call dispatch is a one-bit branch on kind;
+  engine selection happens at compile time in `_matcher_regex()`.
+- `_cli_count_matches_m(b, m)` and `_cli_substitute_m(src, m, new, mode)`
+  matcher-dispatching variants of the existing literal helpers.
+  Literal path delegates byte-for-byte to the v1.1.x functions —
+  zero-regression guarantee for callers without `--regex=`.
+  Regex path materializes the buffer once and walks
+  `regex_search_at` iteratively (zero-width matches advance by 1
+  byte per the standard regex idiom).
+- `_cli_substitute_regex(src, nfa, new, mode)` — the regex
+  substitution kernel, separate from the literal byte-by-byte
+  loop so each can stay readable in isolation.
+- ADR `docs/adr/0002-regex-extensibility-shape.md` — records the
+  three load-bearing choices: surface form (`--regex=<flavor>`,
+  not bare `--regex`), internal threading (`RegexOpts` struct, not
+  primitive `flavor_id`), and naming convention (`FLAVOR_LITERAL =
+  0`, flavors `>= 1`).
+
+### Changed
+
+- `_cli_grep_one` signature: `pattern` parameter replaced with
+  `m` (Matcher). Matcher kind is hoisted before the per-line loop
+  so the per-iteration cost is a single indexed compare, not a
+  struct re-load. Literal path keeps the v1.1.x byte-by-byte scan
+  unchanged; regex path materializes the line into a NUL-terminated
+  scratch buffer per-line and calls `regex_search`. Per-line alloc
+  is cheap at cyim's single-file CLI scale.
+- `run_grep`, `run_grepfiles`, `run_replace`, `run_replace_files`
+  signatures gain a `regex_flavor` trailing parameter (caller
+  passes `FLAVOR_LITERAL` for back-compat literal path).
+  `run_batch` and `run_write` are unchanged — `--batch` does not
+  take `--regex=` in 1.2.0 (each pair is its own OLD/NEW;
+  flavor-per-pair semantics deferred until demand surfaces).
+- Six per-verb dispatch helpers extracted from `main.cyr`'s `main()`
+  into `src/cli.cyr` as `_dispatch_grep` / `_dispatch_grepfiles` /
+  `_dispatch_replace` / `_dispatch_replace_all` /
+  `_dispatch_replace_files` / `_dispatch_replace_files_all`.
+  Forced by Cyrius's per-function 64-return cap once each arm
+  gained the `--regex=` parsing branches (six new returns per arm).
+  No logic change — pure code motion. main.cyr now reads as a
+  thin verb dispatcher.
+- `cyim --help` output gains one line documenting `--regex=<flavor>`
+  across the affected verbs.
+- Cyrius toolchain pin bumped `5.7.13 → 5.7.23` in
+  `cyrius.cyml [package].cyrius`. 5.7.23 is the first release that
+  exposes the Pike NFA engine (added at v5.7.18) through the
+  `regex_*` ABI: `regex_compile`, `regex_match`, `regex_search`,
+  `regex_search_at`, `regex_group_start`/`_end`. No `regex_free` —
+  the engine uses lazy bump-init via `_re_m_lazy_init` (compile
+  once per process invocation; cyim's CLI shape suits that
+  perfectly — one compile per verb call).
+
+### Tests
+
+- `tests/cli_smoke.sh` extended from 58 → 84 PASS assertions
+  (cases 59–74 are the new v1.2.0 `--regex=` matrix):
+  - 59: `--grep --regex=ere [0-9]+` digit class match.
+  - 60: `--grep --regex=ere foo|qux` alternation.
+  - 61: `--grep --regex=ere ^baz` anchor match.
+  - 62: `--grep '[0-9]+'` (no `--regex=`) — literal-substring
+    back-compat regression guard. Special chars must NOT be
+    interpreted as regex when `--regex=` is absent. Exit 1
+    (no match) confirms the literal path was taken.
+  - 63: `--grep --regex=ere '['` invalid pattern → exit 2.
+  - 64: `--grep --regex=pcre 'foo'` unknown flavor → exit 2
+    (with the supported-flavor list in the error).
+  - 65: `--grep --regex= 'foo'` empty flavor → exit 2.
+  - 66: `--grep --regex=ere --regex=ere 'foo'` duplicate flag
+    → exit 2 (mirrors the v1.1.3 dup-flag pattern).
+  - 67: `--grepfiles --regex=ere '[0-9]+' f1 f2` multi-file
+    regex match — `FILE:N:LINE` shape preserved.
+  - 68: `--replace --regex=ere '[0-9]+' XXX FILE` unique
+    digit-class substitution.
+  - 69: `--replace-all --regex=ere '[0-9]+' N FILE` multi-
+    occurrence digit substitution (proves the regex
+    `regex_search_at` iteration loop advances correctly).
+  - 70: `--replace --regex=ere '^one=' first= --expect-1 FILE`
+    composes regex pattern with the count assertion (proves
+    `_cli_count_matches_m` returns the regex-aware count).
+  - 71: `--replace-files --regex=ere OLD_FILE NEW_FILE FILE`
+    proves `--regex=` flows through the file-sourced OLD/NEW
+    path. OLD file contents = `[0-9]+`; substitutes to `NUM`.
+  - 72: `--replace-files-all --regex=ere` same shape, multi-
+    occurrence.
+  - 73: `--grep --regex=ere --context=1 ^baz FILE` composes
+    `--regex` with the v1.1.4 `--context=N` modifier — pre/match/
+    post emit shape unchanged.
+  - 74: `--replace-all --regex=ere [0-9]+ N --wc=l FILE` composes
+    `--regex` with the `--wc=l` modifier — `<lines> <file>`
+    output unchanged.
+- All 92 `.tcyr` test assertions still pass (no source-of-truth
+  changes touched the editor-mode code paths).
+- `tests/integration_smoke.py` unchanged — PTY-driven path
+  doesn't touch the agent-drive verbs; 45 PASS assertions still
+  green.
+
+### Roadmap
+
+- Additional regex engines (`bre`, `re2`, `pcre`, `fuzzy`, `vim`)
+  ship via the niyama standalone Cyrius lib, foldable into stdlib
+  per the sandhi v5.7.0 lifecycle once ≥2 long-horizon AGNOS-lineage
+  consumers earn it. cyim's `--regex=<flavor>` parser-side
+  automatically picks them up — extend the flavor-name switch in
+  `_regex_flavor_id` and add a dispatch arm in `_matcher_regex`.
+  No changes to the run_* signatures or the per-verb dispatch
+  helpers. See `project_regex_engine_placement.md` (cross-repo
+  placement decision) and ADR 0002 (cyim-side extensibility shape).
+- Per-engine options (icase, multiline, dotall, ungreedy, backref
+  in `--replace` NEW) extend `RegexOpts.reserved_flags` plus parser
+  spelling additions. The exact spelling — separate `--regex-<name>`
+  flags vs. comma-extended value `--regex=ere,icase` — is deferred
+  until the second engine lands and use cases sharpen.
+
+### Binary
+
+- `build/cyim` — DCE build size: **354,832 B** (v1.2.0 added the
+  Matcher + RegexOpts abstractions in `src/cli.cyr` plus six
+  `_dispatch_<verb>` extraction functions plus the Pike NFA engine
+  consumed from cyrius stdlib `lib/regex.cyr`; v1.1.4 was 312,088 B,
+  so +42,744 B — the bulk is the engine itself, the cyim consumer
+  code adds ~4 KB. The dispatch extraction is byte-neutral; it
+  moves code, doesn't add it).
+
 ## [1.1.4] — 2026-04-27
 
 Patch release — grep-surface expansion (split out of the v1.1.x bundle

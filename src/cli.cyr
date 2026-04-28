@@ -52,6 +52,231 @@
 var REPLACE_FIRST_UNIQUE = 0;
 var REPLACE_ALL          = 1;
 
+# === regex / matcher dispatch (v1.2.0) =============================
+# Unified literal-or-regex matcher abstraction for the four pattern
+# verbs (--grep, --grepfiles, --replace, --replace-all) and the two
+# file-sourced variants (--replace-files[-all]). All six route through
+# a Matcher; the matcher kind selects literal byte-scan or compiled
+# engine.
+#
+# Two flat heap structs keep the dispatch / option surfaces separate:
+#
+#   Matcher (24 B):
+#     +0   kind            0=literal, 1=regex
+#     +8   needle / nfa    literal: NUL-term ptr; regex: regex_compile handle
+#     +16  needle_len      literal: byte count; regex: 0
+#
+#   RegexOpts (24 B):
+#     +0   flavor_id       FLAVOR_ERE today; future: BRE/RE2/PCRE/fuzzy/vim
+#     +8   reserved_flags  future bit field (icase, multiline, dotall, ungreedy)
+#     +16  reserved_aux    future ptr (kv pairs, named-flavor data)
+#
+# Why two structs: Matcher abstracts the per-call dispatch; RegexOpts
+# holds engine-config slots that grow without changing Matcher. New
+# options land in RegexOpts; new flavors land in `_regex_flavor_id`
+# and the `_matcher_regex` dispatch arm. See ADR 0002.
+
+var MATCHER_LITERAL = 0;
+var MATCHER_REGEX   = 1;
+
+# FLAVOR_LITERAL is the parser sentinel meaning "no --regex= seen on
+# cmdline" — distinct from any real flavor_id (>= 0) so the parser
+# code reads cleanly.
+var FLAVOR_LITERAL = 0;
+var FLAVOR_ERE     = 1;
+
+# Resolve a flavor name to its FLAVOR_* id. Unknown flavor returns
+# FLAVOR_LITERAL — the parser turns that into exit-2 with the
+# supported-flavor list.
+fn _regex_flavor_id(name) {
+    if (streq(name, "ere") == 1) { return FLAVOR_ERE; }
+    return FLAVOR_LITERAL;
+}
+
+# Allocate a RegexOpts with `flavor_id` and zeroed reserved slots.
+# Reserved slots are the load-bearing extensibility seam — future
+# icase / multiline / etc. set bits in reserved_flags without
+# changing the Matcher signature or the run_* shape.
+fn _regex_opts_new(flavor_id) {
+    var opts = alloc(24);
+    if (opts == 0) { return 0; }
+    store64(opts,      flavor_id);
+    store64(opts + 8,  0);
+    store64(opts + 16, 0);
+    return opts;
+}
+
+fn _matcher_kind(m)   { return load64(m); }
+fn _matcher_needle(m) { return load64(m + 8); }
+fn _matcher_nfa(m)    { return load64(m + 8); }
+fn _matcher_nlen(m)   { return load64(m + 16); }
+
+# Build a literal Matcher around a NUL-terminated `needle`.
+fn _matcher_literal(needle) {
+    var m = alloc(24);
+    if (m == 0) { return 0; }
+    store64(m,      MATCHER_LITERAL);
+    store64(m + 8,  needle);
+    store64(m + 16, strlen(needle));
+    return m;
+}
+
+# Build a regex Matcher by compiling `pattern` per `opts`. Returns 0
+# on engine compile failure (caller emits exit-2 + a parse-error
+# message) or alloc failure.
+fn _matcher_regex(pattern, opts) {
+    var flavor = load64(opts);
+    var nfa = 0;
+    if (flavor == FLAVOR_ERE) { nfa = regex_compile(pattern); }
+    # Future flavors (BRE/RE2/PCRE/fuzzy/vim via niyama) dispatch here.
+    if (nfa == 0) { return 0; }
+    var m = alloc(24);
+    if (m == 0) { return 0; }
+    store64(m,      MATCHER_REGEX);
+    store64(m + 8,  nfa);
+    store64(m + 16, 0);
+    return m;
+}
+
+# Materialize gap-buffer `b` as a NUL-terminated heap C-string.
+# Returns ptr (caller owns; lives until process exit per cyim's
+# bump-alloc model) and writes byte-length to `len_out`. Returns 0
+# on alloc failure.
+fn _matcher_buf_to_cstr(b, len_out) {
+    var blen = buf_len(b);
+    var s = alloc(blen + 1);
+    if (s == 0) { store64(len_out, 0); return 0; }
+    var i = 0;
+    while (i < blen) {
+        store8(s + i, buf_get(b, i));
+        i = i + 1;
+    }
+    store8(s + blen, 0);
+    store64(len_out, blen);
+    return s;
+}
+
+# Count non-overlapping matches of `m` in gap-buffer `b`. Used by
+# run_replace's --expect-N pre-substitution count assertion and the
+# REPLACE_FIRST_UNIQUE uniqueness check. Literal path delegates to
+# the existing _cli_count_matches; regex path materializes once and
+# walks regex_search_at.
+fn _cli_count_matches_m(b, m) {
+    if (_matcher_kind(m) == MATCHER_LITERAL) {
+        return _cli_count_matches(b, _matcher_needle(m));
+    }
+    var len_slot[8];
+    store64(&len_slot, 0);
+    var s = _matcher_buf_to_cstr(b, &len_slot);
+    if (s == 0) { return 0; }
+    var slen = load64(&len_slot);
+    var nfa = _matcher_nfa(m);
+    var count = 0;
+    var from = 0;
+    var go = 1;
+    while (go == 1) {
+        if (from > slen) { go = 0; }
+        if (go == 1) {
+            var hit = regex_search_at(nfa, s, slen, from);
+            if (hit < 0) {
+                go = 0;
+            } else {
+                count = count + 1;
+                var span_end = regex_group_end(nfa, 0);
+                if (span_end == hit) {
+                    from = hit + 1;
+                } else {
+                    from = span_end;
+                }
+            }
+        }
+    }
+    return count;
+}
+
+# Build a fresh gap-buffer copy of `src` with regex matches of `nfa`
+# replaced by NUL-terminated `new`. mode == REPLACE_ALL substitutes
+# every occurrence; otherwise just the first.
+fn _cli_substitute_regex(src, nfa, new, mode) {
+    var nlen = strlen(new);
+    var len_slot[8];
+    store64(&len_slot, 0);
+    var s = _matcher_buf_to_cstr(src, &len_slot);
+    var out = buf_new();
+    if (s == 0) { return out; }
+    var slen = load64(&len_slot);
+    var from = 0;
+    var done_first = 0;
+    var go = 1;
+    while (go == 1) {
+        if (from > slen) { go = 0; }
+        if (go == 1) {
+            var hit = regex_search_at(nfa, s, slen, from);
+            if (hit < 0) {
+                # Emit tail [from..slen) and finish.
+                var t = from;
+                while (t < slen) {
+                    buf_insert_byte(out, load8(s + t));
+                    t = t + 1;
+                }
+                go = 0;
+            } else {
+                # Emit pre-match [from..hit).
+                var p = from;
+                while (p < hit) {
+                    buf_insert_byte(out, load8(s + p));
+                    p = p + 1;
+                }
+                var span_end = regex_group_end(nfa, 0);
+                var span_len = span_end - hit;
+                var emit_replace = 1;
+                if (mode == REPLACE_FIRST_UNIQUE) {
+                    if (done_first == 1) { emit_replace = 0; }
+                }
+                if (emit_replace == 1) {
+                    var j = 0;
+                    while (j < nlen) {
+                        buf_insert_byte(out, load8(new + j));
+                        j = j + 1;
+                    }
+                    done_first = 1;
+                } else {
+                    # FIRST_UNIQUE mode, already replaced — emit the
+                    # source bytes the matcher hit verbatim so output
+                    # preserves remaining occurrences.
+                    var k = hit;
+                    while (k < span_end) {
+                        buf_insert_byte(out, load8(s + k));
+                        k = k + 1;
+                    }
+                }
+                # Zero-width match: advance by 1 source byte (and
+                # pass it through) so the loop terminates. This is
+                # the standard regex idiom for empty-match patterns.
+                if (span_len == 0) {
+                    if (hit < slen) { buf_insert_byte(out, load8(s + hit)); }
+                    from = hit + 1;
+                } else {
+                    from = span_end;
+                }
+            }
+        }
+    }
+    return out;
+}
+
+# Matcher-dispatching variant of _cli_substitute. Literal path
+# delegates to the v1.1.x byte-by-byte loop unchanged (no regression
+# risk for the literal case); regex path materializes once and walks
+# regex_search_at.
+fn _cli_substitute_m(src, m, new, mode) {
+    if (_matcher_kind(m) == MATCHER_LITERAL) {
+        return _cli_substitute(src, _matcher_needle(m), new, mode);
+    }
+    return _cli_substitute_regex(src, _matcher_nfa(m), new, mode);
+}
+
+
 # BUG-001 workaround for cyrius/lib/args.cyr.
 #
 # `args_init()` reads `/proc/self/cmdline` into a 4096-byte stack buffer.
@@ -397,8 +622,7 @@ fn _cli_print_grep_line(b, file_path, fp_len, arr, lineno, is_match, chunk, chun
 #   = 1 the first time it emits anything itself.
 #
 # Returns: 1 if any line matched, 0 if none, -1 on alloc failure.
-fn _cli_grep_one(b, file_path, pattern, context_n, emitted_inout) {
-    var plen = strlen(pattern);
+fn _cli_grep_one(b, file_path, m, context_n, emitted_inout) {
     var fp_len = strlen(file_path);
     var L_slot[8];
     store64(&L_slot, 0);
@@ -409,6 +633,19 @@ fn _cli_grep_one(b, file_path, pattern, context_n, emitted_inout) {
     var chunk_cap = 4096;
     var chunk = alloc(chunk_cap);
     if (chunk == 0) { return 0 - 1; }
+
+    # Hoist matcher kind + per-flavor handles so the per-line branch
+    # is a single indexed compare, not a struct re-load per iter.
+    var m_kind = _matcher_kind(m);
+    var lit_needle = 0;
+    var lit_nlen = 0;
+    var nfa = 0;
+    if (m_kind == MATCHER_LITERAL) {
+        lit_needle = _matcher_needle(m);
+        lit_nlen = _matcher_nlen(m);
+    } else {
+        nfa = _matcher_nfa(m);
+    }
 
     var any_hit = 0;
     var last_emitted = 0;
@@ -423,16 +660,32 @@ fn _cli_grep_one(b, file_path, pattern, context_n, emitted_inout) {
         }
         var line_len = ce - s;
         var hit = 0;
-        if (line_len >= plen) {
-            var pos = s;
-            var stop = ce - plen;
-            while (pos <= stop) {
-                if (_cli_match_at(b, pos, pattern, plen) == 1) {
-                    hit = 1;
-                    pos = stop + 1;
-                } else {
-                    pos = pos + 1;
+        if (m_kind == MATCHER_LITERAL) {
+            if (line_len >= lit_nlen) {
+                var pos = s;
+                var stop = ce - lit_nlen;
+                while (pos <= stop) {
+                    if (_cli_match_at(b, pos, lit_needle, lit_nlen) == 1) {
+                        hit = 1;
+                        pos = stop + 1;
+                    } else {
+                        pos = pos + 1;
+                    }
                 }
+            }
+        } else {
+            # Regex: materialize the line bytes into a NUL-terminated
+            # scratch buffer and call regex_search. Per-line alloc is
+            # cheap at cyim's single-file CLI scale.
+            var line_buf = alloc(line_len + 1);
+            if (line_buf != 0) {
+                var c = 0;
+                while (c < line_len) {
+                    store8(line_buf + c, buf_get(b, s + c));
+                    c = c + 1;
+                }
+                store8(line_buf + line_len, 0);
+                if (regex_search(nfa, line_buf) >= 0) { hit = 1; }
             }
         }
         if (hit == 1) {
@@ -525,7 +778,7 @@ fn _cli_slurp_file(file_path, len_out) {
 #   4 — OLD content not found in FILE
 #   5 — OLD content occurs more than once and not --replace-files-all
 #   6 — --expect-N / --expect-1 mismatch
-fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n) {
+fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, regex_flavor) {
     if (old_file == 0)  { syscall(1, 2, "cyim --replace-files: missing OLD_FILE\n", 39); return 2; }
     if (new_file == 0)  { syscall(1, 2, "cyim --replace-files: missing NEW_FILE\n", 39); return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace-files: missing FILE\n",     35); return 2; }
@@ -550,7 +803,7 @@ fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n) {
         return 3;
     }
 
-    return run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n);
+    return run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor);
 }
 
 # `cyim --grep [--context=N] PATTERN FILE` — emit `FILE:N:LINE` for
@@ -559,7 +812,7 @@ fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n) {
 # `--` separators between non-adjacent groups (grep -C N shape).
 # Matches grep(1) exit conventions: 0 if any match, 1 if none, 2 on
 # usage error, 3 if FILE is missing.
-fn run_grep(pattern, file_path, context_n) {
+fn run_grep(pattern, file_path, context_n, regex_flavor) {
     if (pattern == 0)   { syscall(1, 2, "cyim --grep: missing PATTERN\n", 29); return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --grep: missing FILE\n",    26); return 2; }
     if (strlen(pattern) == 0) {
@@ -574,9 +827,23 @@ fn run_grep(pattern, file_path, context_n) {
         return 3;
     }
 
+    var m = 0;
+    if (regex_flavor == FLAVOR_LITERAL) {
+        m = _matcher_literal(pattern);
+    } else {
+        var opts = _regex_opts_new(regex_flavor);
+        if (opts == 0) { syscall(1, 2, "cyim --grep: alloc failed\n", 26); return 1; }
+        m = _matcher_regex(pattern, opts);
+        if (m == 0) {
+            syscall(1, 2, "cyim --grep: invalid regex pattern\n", 35);
+            return 2;
+        }
+    }
+    if (m == 0) { syscall(1, 2, "cyim --grep: alloc failed\n", 26); return 1; }
+
     var emitted[8];
     store64(&emitted, 0);
-    var rc = _cli_grep_one(b, file_path, pattern, context_n, &emitted);
+    var rc = _cli_grep_one(b, file_path, m, context_n, &emitted);
     if (rc < 0) {
         syscall(1, 2, "cyim --grep: alloc failed\n", 26);
         return 1;
@@ -595,7 +862,7 @@ fn run_grep(pattern, file_path, context_n) {
 # Exit codes: 0 = at least one match across all files, 1 = no matches
 # in any file, 2 = bad args, 3 = first missing FILE (early-exit so the
 # caller learns about typos before partial output diverges).
-fn run_grepfiles(pattern, files_arr, file_count, context_n) {
+fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor) {
     if (pattern == 0) {
         syscall(1, 2, "cyim --grepfiles: missing PATTERN\n", 35);
         return 2;
@@ -608,6 +875,22 @@ fn run_grepfiles(pattern, files_arr, file_count, context_n) {
         syscall(1, 2, "cyim --grepfiles: PATTERN must be non-empty\n", 45);
         return 2;
     }
+
+    # Build the matcher once; same pattern applies to every FILE.
+    var m = 0;
+    if (regex_flavor == FLAVOR_LITERAL) {
+        m = _matcher_literal(pattern);
+    } else {
+        var opts = _regex_opts_new(regex_flavor);
+        if (opts == 0) { syscall(1, 2, "cyim --grepfiles: alloc failed\n", 32); return 1; }
+        m = _matcher_regex(pattern, opts);
+        if (m == 0) {
+            syscall(1, 2, "cyim --grepfiles: invalid regex pattern\n", 40);
+            return 2;
+        }
+    }
+    if (m == 0) { syscall(1, 2, "cyim --grepfiles: alloc failed\n", 32); return 1; }
+
     var emitted[8];
     store64(&emitted, 0);
     var any_hit = 0;
@@ -622,7 +905,7 @@ fn run_grepfiles(pattern, files_arr, file_count, context_n) {
             syscall(1, 2, "\n", 1);
             return 3;
         }
-        var rc = _cli_grep_one(b, fp, pattern, context_n, &emitted);
+        var rc = _cli_grep_one(b, fp, m, context_n, &emitted);
         if (rc < 0) {
             syscall(1, 2, "cyim --grepfiles: alloc failed\n", 32);
             return 1;
@@ -680,7 +963,7 @@ fn run_write(file_path, wc_mode, expect_pat, expect_pol) {
 #             return 6 *before* touching the file. --expect-N=0 is the
 #             "must be a no-op" idiom: success without writing, with
 #             --wc still honored if requested.
-fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n) {
+fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor) {
     if (old_str == 0)   { syscall(1, 2, "cyim --replace: missing OLD\n", 28);  return 2; }
     if (new_str == 0)   { syscall(1, 2, "cyim --replace: missing NEW\n", 28);  return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace: missing FILE\n", 29); return 2; }
@@ -696,7 +979,21 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n) {
         return 3;
     }
 
-    var count = _cli_count_matches(b, old_str);
+    var m = 0;
+    if (regex_flavor == FLAVOR_LITERAL) {
+        m = _matcher_literal(old_str);
+    } else {
+        var opts = _regex_opts_new(regex_flavor);
+        if (opts == 0) { syscall(1, 2, "cyim --replace: alloc failed\n", 29); return 1; }
+        m = _matcher_regex(old_str, opts);
+        if (m == 0) {
+            syscall(1, 2, "cyim --replace: invalid regex pattern\n", 38);
+            return 2;
+        }
+    }
+    if (m == 0) { syscall(1, 2, "cyim --replace: alloc failed\n", 29); return 1; }
+
+    var count = _cli_count_matches_m(b, m);
 
     # --expect-N comes first: an explicit count assertion is the
     # strongest contract the caller can express, and a mismatch is a
@@ -726,7 +1023,7 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n) {
         }
     }
 
-    var out = _cli_substitute(b, old_str, new_str, mode);
+    var out = _cli_substitute_m(b, m, new_str, mode);
     var rc = buf_save_file(out, file_path);
     if (rc < 0) {
         syscall(1, 2, "cyim --replace: save failed\n", 28);
@@ -891,3 +1188,488 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
     _cli_print_wc(b, file_path, wc_mode);
     return 0;
 }
+
+# === per-verb dispatch helpers (v1.2.0) =========================
+# Extracted from main.cyr to keep main()'s return-statement count
+# under Cyrius's 64-per-function cap. Each helper takes argc as `ac`
+# and returns the process exit code, threading the new --regex=
+# modifier where applicable.
+
+fn _dispatch_grep(ac) {
+        # Modifier-parsing dispatch (v1.1.4): --context=<n> is the
+        # only modifier today; default 0 (no context) preserves the
+        # v1.1.0–v1.1.3 single-line-per-match output bytes-for-bytes.
+        var g_ctx = 0;
+        var g_p0 = 0;
+        var g_p1 = 0;
+        var g_npos = 0;
+        var g_ctx_seen = 0;
+        var g_regex_flavor = FLAVOR_LITERAL;
+        var g_regex_seen = 0;
+        var g_idx = 2;
+        while (g_idx < ac) {
+            var arg = argv(g_idx);
+            var consumed = 0;
+            if (consumed == 0) {
+                var sf = _cli_argprefix(arg, "--regex=");
+                if (sf != 0) {
+                    if (strlen(sf) == 0) {
+                        syscall(1, 2, "cyim --grep: --regex requires a flavor (e.g. --regex=ere)\n", 58);
+                        return 2;
+                    }
+                    if (g_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                    var fid = _regex_flavor_id(sf);
+                    if (fid == FLAVOR_LITERAL) {
+                        syscall(1, 2, "cyim --grep: unknown --regex flavor (supported: ere)\n", 53);
+                        return 2;
+                    }
+                    g_regex_flavor = fid;
+                    g_regex_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                var sc = _cli_argprefix(arg, "--context=");
+                if (sc != 0) {
+                    var nc = _cli_atoi_nn(sc);
+                    if (nc < 0) {
+                        syscall(1, 2, "cyim --grep: --context requires a non-negative integer\n", 56);
+                        return 2;
+                    }
+                    if (g_ctx_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --context\n", 32); return 2; }
+                    g_ctx = nc;
+                    g_ctx_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                if (g_npos == 0) { g_p0 = arg; }
+                if (g_npos == 1) { g_p1 = arg; }
+                if (g_npos >= 2) {
+                    syscall(1, 2, "cyim --grep: unexpected extra argument\n", 40);
+                    return 2;
+                }
+                g_npos = g_npos + 1;
+            }
+            g_idx = g_idx + 1;
+        }
+        if (g_npos < 2) {
+            syscall(1, 2, "usage: cyim --grep [--context=<n>] <pattern> <file>\n", 53);
+            return 2;
+        }
+        return run_grep(g_p0, g_p1, g_ctx, g_regex_flavor);
+}
+
+fn _dispatch_grepfiles(ac) {
+        # Multi-file grep. PATTERN is the first non-flag positional;
+        # every subsequent non-flag arg is a FILE. --context=<n>
+        # threads through to _cli_grep_one with cross-file separator
+        # handling (matches `grep -n -C N` output for two+ files).
+        var gf_ctx = 0;
+        var gf_pat = 0;
+        var gf_pat_seen = 0;
+        var gf_ctx_seen = 0;
+        var gf_regex_flavor = FLAVOR_LITERAL;
+        var gf_regex_seen = 0;
+        var gf_alloc_n = (ac - 2) * 8;
+        if (gf_alloc_n < 8) { gf_alloc_n = 8; }
+        var gf_files = alloc(gf_alloc_n);
+        var gf_fcount = 0;
+        var gf_idx = 2;
+        while (gf_idx < ac) {
+            var arg = argv(gf_idx);
+            var consumed = 0;
+            if (consumed == 0) {
+                var sf = _cli_argprefix(arg, "--regex=");
+                if (sf != 0) {
+                    if (strlen(sf) == 0) {
+                        syscall(1, 2, "cyim --grepfiles: --regex requires a flavor (e.g. --regex=ere)\n", 63);
+                        return 2;
+                    }
+                    if (gf_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                    var fid = _regex_flavor_id(sf);
+                    if (fid == FLAVOR_LITERAL) {
+                        syscall(1, 2, "cyim --grepfiles: unknown --regex flavor (supported: ere)\n", 58);
+                        return 2;
+                    }
+                    gf_regex_flavor = fid;
+                    gf_regex_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                var sc = _cli_argprefix(arg, "--context=");
+                if (sc != 0) {
+                    var nc = _cli_atoi_nn(sc);
+                    if (nc < 0) {
+                        syscall(1, 2, "cyim --grepfiles: --context requires a non-negative integer\n", 61);
+                        return 2;
+                    }
+                    if (gf_ctx_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --context\n", 32); return 2; }
+                    gf_ctx = nc;
+                    gf_ctx_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                if (gf_pat_seen == 0) {
+                    gf_pat = arg;
+                    gf_pat_seen = 1;
+                } else {
+                    store64(gf_files + gf_fcount * 8, arg);
+                    gf_fcount = gf_fcount + 1;
+                }
+            }
+            gf_idx = gf_idx + 1;
+        }
+        if (gf_pat_seen == 0) {
+            syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 61);
+            return 2;
+        }
+        if (gf_fcount == 0) {
+            syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 61);
+            return 2;
+        }
+        return run_grepfiles(gf_pat, gf_files, gf_fcount, gf_ctx, gf_regex_flavor);
+}
+
+fn _dispatch_replace(ac) {
+        # Modifiers and the OLD/NEW/FILE positionals may interleave in
+        # any order after the verb. v1.1.0 bailed at the first non-flag
+        # arg, so a trailing modifier (e.g. `--replace OLD NEW
+        # --expect-1 FILE`) was misread as FILE, and the actual FILE
+        # was dropped — surfacing as exit-3 "file not found".
+        var r_wc = 0;
+        var r_expect_n = 0 - 1;
+        var r_p0 = 0;
+        var r_p1 = 0;
+        var r_p2 = 0;
+        var r_npos = 0;
+        var r_wc_seen = 0;
+        var r_expect_seen = 0;
+        var r_regex_flavor = FLAVOR_LITERAL;
+        var r_regex_seen = 0;
+        var r_idx = 2;
+        while (r_idx < ac) {
+            var arg = argv(r_idx);
+            var consumed = 0;
+            if (streq(arg, "--wc")        == 1) {
+                if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                r_wc = 1; r_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--wc=l")      == 1) {
+                if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                r_wc = 2; r_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--wc=long")   == 1) {
+                if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                r_wc = 2; r_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--expect-1")  == 1) {
+                if (r_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+                r_expect_n = 1; r_expect_seen = 1; consumed = 1;
+            }
+            if (consumed == 0) {
+                var sf = _cli_argprefix(arg, "--regex=");
+                if (sf != 0) {
+                    if (strlen(sf) == 0) {
+                        syscall(1, 2, "cyim --replace: --regex requires a flavor (e.g. --regex=ere)\n", 61);
+                        return 2;
+                    }
+                    if (r_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                    var fid = _regex_flavor_id(sf);
+                    if (fid == FLAVOR_LITERAL) {
+                        syscall(1, 2, "cyim --replace: unknown --regex flavor (supported: ere)\n", 56);
+                        return 2;
+                    }
+                    r_regex_flavor = fid;
+                    r_regex_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                var s = _cli_argprefix(arg, "--expect-N=");
+                if (s != 0) {
+                    var n = _cli_atoi_nn(s);
+                    if (n < 0) {
+                        syscall(1, 2, "cyim --replace: --expect-N requires a non-negative integer\n", 59);
+                        return 2;
+                    }
+                    if (r_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
+                    r_expect_n = n;
+                    r_expect_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                if (r_npos == 0) { r_p0 = arg; }
+                if (r_npos == 1) { r_p1 = arg; }
+                if (r_npos == 2) { r_p2 = arg; }
+                if (r_npos >= 3) {
+                    syscall(1, 2, "cyim --replace: unexpected extra argument\n", 42);
+                    return 2;
+                }
+                r_npos = r_npos + 1;
+            }
+            r_idx = r_idx + 1;
+        }
+        if (r_npos < 3) {
+            syscall(1, 2, "usage: cyim --replace [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 80);
+            return 2;
+        }
+        return run_replace(r_p0, r_p1, r_p2, 0, r_wc, r_expect_n, r_regex_flavor);
+}
+
+fn _dispatch_replace_all(ac) {
+        # Same interspersed-modifier semantics as --replace.
+        var ra_wc = 0;
+        var ra_expect_n = 0 - 1;
+        var ra_p0 = 0;
+        var ra_p1 = 0;
+        var ra_p2 = 0;
+        var ra_npos = 0;
+        var ra_wc_seen = 0;
+        var ra_expect_seen = 0;
+        var ra_regex_flavor = FLAVOR_LITERAL;
+        var ra_regex_seen = 0;
+        var ra_idx = 2;
+        while (ra_idx < ac) {
+            var arg = argv(ra_idx);
+            var consumed = 0;
+            if (streq(arg, "--wc")        == 1) {
+                if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                ra_wc = 1; ra_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--wc=l")      == 1) {
+                if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                ra_wc = 2; ra_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--wc=long")   == 1) {
+                if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                ra_wc = 2; ra_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--expect-1")  == 1) {
+                if (ra_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+                ra_expect_n = 1; ra_expect_seen = 1; consumed = 1;
+            }
+            if (consumed == 0) {
+                var sf = _cli_argprefix(arg, "--regex=");
+                if (sf != 0) {
+                    if (strlen(sf) == 0) {
+                        syscall(1, 2, "cyim --replace-all: --regex requires a flavor (e.g. --regex=ere)\n", 65);
+                        return 2;
+                    }
+                    if (ra_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                    var fid = _regex_flavor_id(sf);
+                    if (fid == FLAVOR_LITERAL) {
+                        syscall(1, 2, "cyim --replace-all: unknown --regex flavor (supported: ere)\n", 60);
+                        return 2;
+                    }
+                    ra_regex_flavor = fid;
+                    ra_regex_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                var s = _cli_argprefix(arg, "--expect-N=");
+                if (s != 0) {
+                    var n = _cli_atoi_nn(s);
+                    if (n < 0) {
+                        syscall(1, 2, "cyim --replace-all: --expect-N requires a non-negative integer\n", 63);
+                        return 2;
+                    }
+                    if (ra_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
+                    ra_expect_n = n;
+                    ra_expect_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                if (ra_npos == 0) { ra_p0 = arg; }
+                if (ra_npos == 1) { ra_p1 = arg; }
+                if (ra_npos == 2) { ra_p2 = arg; }
+                if (ra_npos >= 3) {
+                    syscall(1, 2, "cyim --replace-all: unexpected extra argument\n", 46);
+                    return 2;
+                }
+                ra_npos = ra_npos + 1;
+            }
+            ra_idx = ra_idx + 1;
+        }
+        if (ra_npos < 3) {
+            syscall(1, 2, "usage: cyim --replace-all [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 84);
+            return 2;
+        }
+        return run_replace(ra_p0, ra_p1, ra_p2, 1, ra_wc, ra_expect_n, ra_regex_flavor);
+}
+
+fn _dispatch_replace_files(ac) {
+        # OLD/NEW are FILE PATHS, not byte strings — content is
+        # slurped by run_replace_files. Modifier shape and
+        # positional order match --replace exactly so callers can
+        # one-line port a `--replace OLD NEW FILE` invocation by
+        # writing OLD/NEW to disk and switching the verb.
+        var rf_wc = 0;
+        var rf_expect_n = 0 - 1;
+        var rf_p0 = 0;
+        var rf_p1 = 0;
+        var rf_p2 = 0;
+        var rf_npos = 0;
+        var rf_wc_seen = 0;
+        var rf_expect_seen = 0;
+        var rf_regex_flavor = FLAVOR_LITERAL;
+        var rf_regex_seen = 0;
+        var rf_idx = 2;
+        while (rf_idx < ac) {
+            var arg = argv(rf_idx);
+            var consumed = 0;
+            if (streq(arg, "--wc")        == 1) {
+                if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                rf_wc = 1; rf_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--wc=l")      == 1) {
+                if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                rf_wc = 2; rf_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--wc=long")   == 1) {
+                if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                rf_wc = 2; rf_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--expect-1")  == 1) {
+                if (rf_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+                rf_expect_n = 1; rf_expect_seen = 1; consumed = 1;
+            }
+            if (consumed == 0) {
+                var sf = _cli_argprefix(arg, "--regex=");
+                if (sf != 0) {
+                    if (strlen(sf) == 0) {
+                        syscall(1, 2, "cyim --replace-files: --regex requires a flavor (e.g. --regex=ere)\n", 67);
+                        return 2;
+                    }
+                    if (rf_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                    var fid = _regex_flavor_id(sf);
+                    if (fid == FLAVOR_LITERAL) {
+                        syscall(1, 2, "cyim --replace-files: unknown --regex flavor (supported: ere)\n", 62);
+                        return 2;
+                    }
+                    rf_regex_flavor = fid;
+                    rf_regex_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                var s = _cli_argprefix(arg, "--expect-N=");
+                if (s != 0) {
+                    var n = _cli_atoi_nn(s);
+                    if (n < 0) {
+                        syscall(1, 2, "cyim --replace-files: --expect-N requires a non-negative integer\n", 65);
+                        return 2;
+                    }
+                    if (rf_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
+                    rf_expect_n = n;
+                    rf_expect_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                if (rf_npos == 0) { rf_p0 = arg; }
+                if (rf_npos == 1) { rf_p1 = arg; }
+                if (rf_npos == 2) { rf_p2 = arg; }
+                if (rf_npos >= 3) {
+                    syscall(1, 2, "cyim --replace-files: unexpected extra argument\n", 48);
+                    return 2;
+                }
+                rf_npos = rf_npos + 1;
+            }
+            rf_idx = rf_idx + 1;
+        }
+        if (rf_npos < 3) {
+            syscall(1, 2, "usage: cyim --replace-files [--wc[=l]] [--expect-N=<n>|--expect-1] <old-file> <new-file> <file>\n", 96);
+            return 2;
+        }
+        return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor);
+}
+
+fn _dispatch_replace_files_all(ac) {
+        # Same shape as --replace-files, mode = REPLACE_ALL.
+        var rfa_wc = 0;
+        var rfa_expect_n = 0 - 1;
+        var rfa_p0 = 0;
+        var rfa_p1 = 0;
+        var rfa_p2 = 0;
+        var rfa_npos = 0;
+        var rfa_wc_seen = 0;
+        var rfa_expect_seen = 0;
+        var rfa_regex_flavor = FLAVOR_LITERAL;
+        var rfa_regex_seen = 0;
+        var rfa_idx = 2;
+        while (rfa_idx < ac) {
+            var arg = argv(rfa_idx);
+            var consumed = 0;
+            if (streq(arg, "--wc")        == 1) {
+                if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                rfa_wc = 1; rfa_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--wc=l")      == 1) {
+                if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                rfa_wc = 2; rfa_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--wc=long")   == 1) {
+                if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+                rfa_wc = 2; rfa_wc_seen = 1; consumed = 1;
+            }
+            if (streq(arg, "--expect-1")  == 1) {
+                if (rfa_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+                rfa_expect_n = 1; rfa_expect_seen = 1; consumed = 1;
+            }
+            if (consumed == 0) {
+                var sf = _cli_argprefix(arg, "--regex=");
+                if (sf != 0) {
+                    if (strlen(sf) == 0) {
+                        syscall(1, 2, "cyim --replace-files-all: --regex requires a flavor (e.g. --regex=ere)\n", 71);
+                        return 2;
+                    }
+                    if (rfa_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                    var fid = _regex_flavor_id(sf);
+                    if (fid == FLAVOR_LITERAL) {
+                        syscall(1, 2, "cyim --replace-files-all: unknown --regex flavor (supported: ere)\n", 66);
+                        return 2;
+                    }
+                    rfa_regex_flavor = fid;
+                    rfa_regex_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                var s = _cli_argprefix(arg, "--expect-N=");
+                if (s != 0) {
+                    var n = _cli_atoi_nn(s);
+                    if (n < 0) {
+                        syscall(1, 2, "cyim --replace-files-all: --expect-N requires a non-negative integer\n", 69);
+                        return 2;
+                    }
+                    if (rfa_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
+                    rfa_expect_n = n;
+                    rfa_expect_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                if (rfa_npos == 0) { rfa_p0 = arg; }
+                if (rfa_npos == 1) { rfa_p1 = arg; }
+                if (rfa_npos == 2) { rfa_p2 = arg; }
+                if (rfa_npos >= 3) {
+                    syscall(1, 2, "cyim --replace-files-all: unexpected extra argument\n", 52);
+                    return 2;
+                }
+                rfa_npos = rfa_npos + 1;
+            }
+            rfa_idx = rfa_idx + 1;
+        }
+        if (rfa_npos < 3) {
+            syscall(1, 2, "usage: cyim --replace-files-all [--wc[=l]] [--expect-N=<n>|--expect-1] <old-file> <new-file> <file>\n", 100);
+            return 2;
+        }
+        return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor);
+}
+

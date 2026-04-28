@@ -5,7 +5,7 @@ description = "Sovereign Cyrius-native text editor — VIM-inspired, zero attack
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/cyim"
 language = "cyrius"
-cyrius = "5.7.13"
+cyrius = "5.7.23"
 
 [build]
 entry = "src/main.cyr"
@@ -19,6 +19,8 @@ output = "cyim"
 #   fs                    — file read/write
 #   hashmap               — keymap tables, mode dispatch
 #   assert                — tests/cyim.tcyr
+#   regex                 — Pike NFA / POSIX-ERE engine for v1.2.0
+#                           --regex=<flavor> on agent-drive verbs
 # vyakarana grammar/tokenizer dep added when M2 highlighting lands.
 [deps]
 stdlib = [
@@ -34,6 +36,7 @@ stdlib = [
     "hashmap",
     "assert",
     "bench",
+    "regex",
 ]
 
 # vyakarana — token-level grammar/tokenizer library. M2 syntax-highlighting
