@@ -276,7 +276,6 @@ fn _cli_substitute_m(src, m, new, mode) {
     return _cli_substitute_regex(src, _matcher_nfa(m), new, mode);
 }
 
-
 # BUG-001 workaround for cyrius/lib/args.cyr.
 #
 # `args_init()` reads `/proc/self/cmdline` into a 4096-byte stack buffer.
@@ -1018,7 +1017,8 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavo
     }
     if (mode == 0) {
         if (count > 1) {
-            syscall(1, 2, "cyim --replace: OLD occurs more than once — not unique. Use --replace-all or pick a more specific OLD.\n", 105);
+            syscall(1, 2, "cyim --replace: OLD occurs more than once — ", 46);
+            syscall(1, 2, "not unique. Use --replace-all or pick a more specific OLD.\n", 59);
             return 5;
         }
     }
@@ -1584,7 +1584,8 @@ fn _dispatch_replace_files(ac) {
             rf_idx = rf_idx + 1;
         }
         if (rf_npos < 3) {
-            syscall(1, 2, "usage: cyim --replace-files [--wc[=l]] [--expect-N=<n>|--expect-1] <old-file> <new-file> <file>\n", 96);
+            syscall(1, 2, "usage: cyim --replace-files [--wc[=l]] [--expect-N=<n>|--expect-1] ", 67);
+            syscall(1, 2, "<old-file> <new-file> <file>\n", 29);
             return 2;
         }
         return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor);
@@ -1667,7 +1668,8 @@ fn _dispatch_replace_files_all(ac) {
             rfa_idx = rfa_idx + 1;
         }
         if (rfa_npos < 3) {
-            syscall(1, 2, "usage: cyim --replace-files-all [--wc[=l]] [--expect-N=<n>|--expect-1] <old-file> <new-file> <file>\n", 100);
+            syscall(1, 2, "usage: cyim --replace-files-all [--wc[=l]] ", 43);
+            syscall(1, 2, "[--expect-N=<n>|--expect-1] <old-file> <new-file> <file>\n", 57);
             return 2;
         }
         return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor);

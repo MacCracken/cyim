@@ -21,7 +21,7 @@
 # stream; deferred to a later bite. This module does single-byte mappings
 # and the three mode-state defaults (literal-insert, cmdline-append).
 
-# ──── Modes ────────────────────────────────────────────────────────────
+# ──── Modes
 var MODE_NORMAL      = 0;
 var MODE_INSERT      = 1;
 var MODE_COMMAND     = 2;
@@ -30,7 +30,7 @@ var MODE_SEARCH_BACK = 4;   # `?pattern` — backward
 var MODE_VISUAL      = 5;   # `v` — character-wise selection
 var MODE_VISUAL_LINE = 6;   # `V` — line-wise selection
 
-# ──── Action IDs ──────────────────────────────────────────────────────
+# ──── Action IDs
 # 0 is reserved for "no-op / unmapped". Numeric gaps left between groups
 # so future actions can land without renumbering.
 var ACT_NONE              = 0;
@@ -96,7 +96,7 @@ var ACT_WIN_DOWN          = 401;
 var ACT_WIN_UP            = 402;
 var ACT_WIN_RIGHT         = 403;
 
-# ──── Key codes (ASCII / control) ─────────────────────────────────────
+# ──── Key codes (ASCII / control)
 var KEY_ESC       = 27;
 var KEY_ENTER     = 13;
 var KEY_LF        = 10;
@@ -105,7 +105,7 @@ var KEY_DEL       = 127;
 var KEY_CTRL_W    = 23;
 var KEY_CTRL_R    = 18;
 
-# ──── Error codes (set into state.last_error) ────────────────────────
+# ──── Error codes (set into state.last_error)
 var ERR_NONE            = 0;
 var ERR_DIRTY           = 1;  # E37 — no write since last change
 var ERR_NO_FILE_NAME    = 2;  # E32 — :w with no path and no current file
@@ -114,7 +114,7 @@ var ERR_SAVE_FAILED     = 4;
 var ERR_UNKNOWN_CMD     = 5;
 var ERR_FILE_TOO_LARGE  = 6;  # M7 audit F-2 — :e refused because file > maxfilesize
 
-# ──── EditorState layout (128 bytes) ──────────────────────────────────
+# ──── EditorState layout (128 bytes)
 #   off   0  mode             i64  current mode (MODE_*)
 #   off   8  buf              i64  ACTIVE buffer's gap-buffer (mirror of
 #                                   buf-list slot; updated by bl_set_active)

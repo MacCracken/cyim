@@ -29,7 +29,7 @@ var WIN_SPLIT_V = 2;
 
 var WIN_RATIO_FULL = 1000;     # denominator for split ratios
 
-# ── Allocation ───────────────────────────────────────────────────────
+# ── Allocation
 
 fn window_new_leaf(buf_idx) {
     var w = alloc(80);
@@ -67,7 +67,7 @@ fn window_new_split(type, a, b, ratio_a) {
     return w;
 }
 
-# ── Accessors ────────────────────────────────────────────────────────
+# ── Accessors
 
 fn window_type(w)     { return load64(w + 0); }
 fn window_buf_idx(w)  { return load64(w + 8); }
@@ -105,7 +105,7 @@ fn window_replace_child(parent, old, new) {
     return 0 - 1;
 }
 
-# ── Layout pass ──────────────────────────────────────────────────────
+# ── Layout pass
 
 fn _window_set_rect(w, row, col, h, wd) {
     store64(w + 40, row);
@@ -151,7 +151,7 @@ fn window_layout(w, row, col, h, wd) {
     return 0;
 }
 
-# ── Leaf iteration ───────────────────────────────────────────────────
+# ── Leaf iteration
 # `out_leaves` is a vec to push leaf pointers into in left-to-right /
 # top-to-bottom order (the natural depth-first traversal). Callers walk
 # the result with vec_get / vec_len.
@@ -190,7 +190,7 @@ fn window_leaf_at(w, row, col) {
     return window_leaf_at(window_child_b(w), row, col);
 }
 
-# ── Editor-state integration ────────────────────────────────────────
+# ── Editor-state integration
 # window_root and active_leaf live at editor offsets 88 / 96. These
 # helpers keep the surface tidy and let buflist / command / render
 # treat the tree as opaque.

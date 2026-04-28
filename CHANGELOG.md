@@ -161,15 +161,40 @@ Also: cyrius toolchain pin bumped 5.7.13 → 5.7.23.
   flags vs. comma-extended value `--regex=ere,icase` — is deferred
   until the second engine lands and use cases sharpen.
 
+### Internal
+
+- **Lint cleanup sweep across all 20 src files** to take CI from 42
+  warnings to 0. Three categories of fix landed in 1.2.0:
+  - **Section-header comments**: cyrius lint counts UTF-8 bytes, not
+    visible characters. Box-drawing `─` (U+2500) is 3 bytes each, so
+    section headers like `# ── Allocation ─────...` ran 130–200 bytes
+    despite being only ~70 visible chars. Fix: trim the trailing
+    `─` run, keep the leading `# ── <name>` marker. Visual section
+    delineation preserved. Affects 27 lines across 12 files.
+  - **Long syscall strings** (help text, error messages, usage
+    strings >120 bytes): split into multiple `syscall(1, fd, "chunk", N)`
+    writes at logical phrase boundaries. Cyrius has no string-
+    continuation operator, so this is the canonical split shape.
+    Affects 12 lines across `src/main.cyr` and `src/cli.cyr`.
+  - **Multiple consecutive blank lines** at the v1.2.0 Matcher block
+    insertion seam in `src/cli.cyr` line 279: collapsed to one.
+- These warnings predated v1.2.0 (the box-drawing convention has been
+  in cyim since M0); CI escalated lint from advisory to blocking
+  after v1.1.4 shipped, surfacing them as a blocker on the v1.2.0
+  push. Fixed in this release because v1.2.0 is the first one to hit
+  the gate.
+
 ### Binary
 
-- `build/cyim` — DCE build size: **354,832 B** (v1.2.0 added the
+- `build/cyim` — DCE build size: **355,256 B** (v1.2.0 added the
   Matcher + RegexOpts abstractions in `src/cli.cyr` plus six
   `_dispatch_<verb>` extraction functions plus the Pike NFA engine
-  consumed from cyrius stdlib `lib/regex.cyr`; v1.1.4 was 312,088 B,
-  so +42,744 B — the bulk is the engine itself, the cyim consumer
-  code adds ~4 KB. The dispatch extraction is byte-neutral; it
-  moves code, doesn't add it).
+  consumed from cyrius stdlib `lib/regex.cyr`; the lint cleanup
+  added +424 B from syscall-split overhead vs the pre-cleanup
+  354,832 B. v1.1.4 was 312,088 B, so +43,168 B total — the bulk
+  is the engine itself, the cyim consumer code adds ~4 KB, the
+  dispatch extraction is byte-neutral, the lint-cleanup syscall
+  splits add ~400 B).
 
 ## [1.1.4] — 2026-04-27
 

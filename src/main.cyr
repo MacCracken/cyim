@@ -54,19 +54,27 @@ fn print_help() {
     syscall(1, 1, "       cyim --write <file>                   (replace <file> with stdin)\n", 73);
     syscall(1, 1, "       cyim --replace <old> <new> <file>     (substitute first; OLD must be unique)\n", 84);
     syscall(1, 1, "       cyim --replace-all <old> <new> <file> (substitute every occurrence)\n", 75);
-    syscall(1, 1, "       cyim --replace-files <old-file> <new-file> <file>     (substitute first; OLD/NEW read from files; OLD must be unique)\n", 125);
-    syscall(1, 1, "       cyim --replace-files-all <old-file> <new-file> <file> (substitute every occurrence; OLD/NEW read from files)\n", 116);
-    syscall(1, 1, "       cyim --grep <pattern> <file>          (read-only; literal substring by default; --regex=<flavor> for regex; emit FILE:N:LINE)\n", 133);
-    syscall(1, 1, "       cyim --grepfiles <pattern> <file...> (read-only multi-file grep; same FILE:N:LINE shape)\n", 96);
-    syscall(1, 1, "       cyim --batch <file>                   (apply NUL-separated OLD/NEW pairs from stdin; atomic)\n", 100);
+    syscall(1, 1, "       cyim --replace-files <old-file> <new-file> <file>     ", 61);
+    syscall(1, 1, "(substitute first; OLD/NEW read from files; OLD must be unique)\n", 64);
+    syscall(1, 1, "       cyim --replace-files-all <old-file> <new-file> <file> ", 61);
+    syscall(1, 1, "(substitute every occurrence; OLD/NEW read from files)\n", 55);
+    syscall(1, 1, "       cyim --grep <pattern> <file>          (read-only; ", 57);
+    syscall(1, 1, "literal substring by default; --regex=<flavor> for regex; emit FILE:N:LINE)\n", 76);
+    syscall(1, 1, "       cyim --grepfiles <pattern> <file...> (read-only multi-file ", 66);
+    syscall(1, 1, "grep; same FILE:N:LINE shape)\n", 30);
+    syscall(1, 1, "       cyim --batch <file>                   (apply NUL-separated ", 66);
+    syscall(1, 1, "OLD/NEW pairs from stdin; atomic)\n", 34);
     syscall(1, 1, "       --wc[=l|=long]      on --write/--replace[-all]/--batch: print wc(1) on success\n", 86);
     syscall(1, 1, "       --expect=<pat>      on --write/--batch: post-save assertion (exit 6 on miss)\n", 84);
     syscall(1, 1, "       --expect-not=<pat>  on --write/--batch: post-save assertion (exit 6 on hit)\n", 83);
     syscall(1, 1, "       --expect-N=<n>      on --replace[-all]: pre-sub count must equal N\n", 74);
     syscall(1, 1, "       --expect-1          on --replace[-all]: alias for --expect-N=1\n", 70);
     syscall(1, 1, "       --all               on --batch: each pair runs --replace-all\n", 68);
-    syscall(1, 1, "       --context=<n>       on --grep/--grepfiles: emit N lines before+after each match (grep -C)\n", 97);
-    syscall(1, 1, "       --regex=<flavor>    on --grep/--grepfiles/--replace[-all]/--replace-files[-all]: pattern is a regex (only flavor supported today: ere)\n", 142);
+    syscall(1, 1, "       --context=<n>       on --grep/--grepfiles: ", 50);
+    syscall(1, 1, "emit N lines before+after each match (grep -C)\n", 47);
+    syscall(1, 1, "       --regex=<flavor>    on ", 30);
+    syscall(1, 1, "--grep/--grepfiles/--replace[-all]/--replace-files[-all]: ", 58);
+    syscall(1, 1, "pattern is a regex (only flavor supported today: ere)\n", 54);
     return 0;
 }
 
@@ -343,7 +351,10 @@ fn main() {
                             syscall(1, 2, "cyim --batch: --expect-not requires a non-empty pattern\n", 56);
                             return 2;
                         }
-                        if (ba_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-not\n", 35); return 2; }
+                        if (ba_expect_seen == 1) {
+                            syscall(1, 2, "cyim: duplicate flag: --expect-not\n", 35);
+                            return 2;
+                        }
                         ba_expect = s2;
                         ba_expect_pol = 2;
                         ba_expect_seen = 1;
@@ -361,7 +372,8 @@ fn main() {
                 ba_idx = ba_idx + 1;
             }
             if (ba_npos < 1) {
-                syscall(1, 2, "usage: cyim --batch [--wc[=l]] [--expect=<pat>|--expect-not=<pat>] [--all] <file>\n", 82);
+                syscall(1, 2, "usage: cyim --batch [--wc[=l]] [--expect=<pat>|--expect-not=<pat>] ", 67);
+                syscall(1, 2, "[--all] <file>\n", 15);
                 return 2;
             }
             return run_batch(ba_pos0, ba_mode, ba_wc, ba_expect, ba_expect_pol);

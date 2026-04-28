@@ -24,7 +24,7 @@
 # unaffected, only the display is.
 var RENDER_LINE_BUF = 8192;
 
-# ── Token palette ───────────────────────────────────────────────────
+# ── Token palette
 # Maps a vyakarana TK_* kind to a 256-color ANSI index. Returns -1
 # for "no color" — caller skips the foreground escape and (if a color
 # was active) emits a reset on the transition.

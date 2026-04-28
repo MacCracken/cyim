@@ -15,7 +15,7 @@
 # Required include order: alloc / vec stdlib → src/mode.cyr → this file
 # (this file uses editor_buf / editor_modified / editor_file_path).
 
-# ── Buffer record (40 B) ─────────────────────────────────────────────
+# ── Buffer record (40 B)
 #   off  0  buf          gap-buffer ptr (or 0)
 #   off  8  file_path    cstr or 0
 #   off 16  modified     i64

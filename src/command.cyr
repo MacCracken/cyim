@@ -75,7 +75,7 @@ fn _cmd_arg_dup(cb, start, len) {
     return p;
 }
 
-# ─── Command implementations ─────────────────────────────────────────
+# ─── Command implementations
 
 fn _cmd_q(s) {
     if (editor_modified(s) == 1) {

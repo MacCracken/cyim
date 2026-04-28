@@ -13,7 +13,7 @@
 # src/edit.cyr, src/command.cyr, src/search.cyr, src/undo.cyr,
 # src/visual.cyr (consumer includes them in that order).
 
-# ── Dot-repeat tracking ─────────────────────────────────────────────
+# ── Dot-repeat tracking
 # A "vim undo unit" is recorded into editor.dot_buf so `.` can replay
 # it. Today only insert sessions are captured (i/a/A → bytes → Esc);
 # x / paste / visual aren't dot-replayable yet (deferred to keep the

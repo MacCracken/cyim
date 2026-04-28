@@ -16,7 +16,7 @@
 
 ## Binary
 
-- `build/cyim` — DCE build size: **354,832 B** (v1.2.0 added the Matcher + RegexOpts abstractions, `_cli_count_matches_m` / `_cli_substitute_regex` / `_cli_substitute_m` matcher-dispatching helpers, six `_dispatch_<verb>(ac)` extraction functions, and the cyrius stdlib `regex` dep — Pike NFA engine consumed via `regex_compile`/`regex_search`/`regex_search_at`/`regex_group_*`. The bulk of the +42,744 B delta from 1.1.4 is the engine itself; cyim consumer code adds ~4 KB; the dispatch extraction is byte-neutral. v1.1.4 was 312,088 B; v1.1.3 was 300,640 B with 8 duplicate-flag guards across four verbs in `src/main.cyr` + a slightly longer `--grep` help string; v1.1.2 was 298,392 B with `run_batch` + `_cli_drain_stdin_raw` in `src/cli.cyr` and `--batch` dispatch in `src/main.cyr`; v1.1.0 was 293,192 B; v1.0.2 was 283,984 B; v1.0.0 was 274,656 B; M6 was 273,912 B; M5 was 262,504 B; M4 was 256,344 B; M3 was 226,064 B; M2 was 162,184 B; M1 was 101,560 B; M0 stub was 57,728 B).
+- `build/cyim` — DCE build size: **355,256 B** (v1.2.0 added the Matcher + RegexOpts abstractions, `_cli_count_matches_m` / `_cli_substitute_regex` / `_cli_substitute_m` matcher-dispatching helpers, six `_dispatch_<verb>(ac)` extraction functions, and the cyrius stdlib `regex` dep — Pike NFA engine consumed via `regex_compile`/`regex_search`/`regex_search_at`/`regex_group_*`. The bulk of the +43,168 B delta from 1.1.4 is the engine itself; cyim consumer code adds ~4 KB; the dispatch extraction is byte-neutral. v1.1.4 was 312,088 B; v1.1.3 was 300,640 B with 8 duplicate-flag guards across four verbs in `src/main.cyr` + a slightly longer `--grep` help string; v1.1.2 was 298,392 B with `run_batch` + `_cli_drain_stdin_raw` in `src/cli.cyr` and `--batch` dispatch in `src/main.cyr`; v1.1.0 was 293,192 B; v1.0.2 was 283,984 B; v1.0.0 was 274,656 B; M6 was 273,912 B; M5 was 262,504 B; M4 was 256,344 B; M3 was 226,064 B; M2 was 162,184 B; M1 was 101,560 B; M0 stub was 57,728 B).
 
 ## Tests
 
@@ -27,7 +27,7 @@
 - Fuzz harnesses: 3; all pass under `cyrius fuzz`
 - Performance benches: 9; M5 baseline + M6 cache-hit win in [`BENCHMARKS.md`](../../BENCHMARKS.md)
 - Security audit: initial pass [M5](../audit/2026-04-25-security-audit.md), second pass [M7](../audit/2026-04-25-m7-audit.md), 0day-corpus survey at [`docs/security/2026-04-25-0day-corpus.md`](../security/2026-04-25-0day-corpus.md), trust-model ADR at [`docs/adr/0001-trust-model.md`](../adr/0001-trust-model.md). **End-of-M7 triage: 0 CRITICAL / 0 HIGH / 0 MEDIUM**; 8 LOW findings all triaged with rationale.
-- Cleanliness: `cyrius lint` 0 correctness warnings; `cyrius fmt --check` clean across all `src/*.cyr`
+- Cleanliness: `cyrius lint` **0 warnings** (down from 42 pre-v1.2.0 cleanup — see CHANGELOG § Internal); `cyrius fmt --check` clean across all `src/*.cyr`
 
 ## Active Milestone
 

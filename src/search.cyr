@@ -16,7 +16,7 @@
 # Requires: src/buffer.cyr, src/mode.cyr (consumer includes them
 # beforehand).
 
-# ── Pattern snapshot ────────────────────────────────────────────────
+# ── Pattern snapshot
 
 # Copy the current cmdbuf into a NUL-terminated heap cstr and pin it
 # as the editor's last_search_pattern. Returns 0 on empty (caller is
@@ -36,7 +36,7 @@ fn _search_snapshot_pattern(s) {
     return 1;
 }
 
-# ── Forward / backward scan ─────────────────────────────────────────
+# ── Forward / backward scan
 
 # Fold a single byte to lowercase for case-insensitive comparison.
 fn _search_lower(c) {
@@ -103,7 +103,7 @@ fn _search_scan_backward(b, pattern, plen, upto, fold) {
     return 0 - 1;
 }
 
-# ── Public search entry points ──────────────────────────────────────
+# ── Public search entry points
 
 # Search forward from cursor + 1. Wraps to start of buffer if no match
 # in the tail. Updates cursor on success. Returns 0 on success, -1 on
@@ -148,7 +148,7 @@ fn search_backward(s) {
     return 0;
 }
 
-# ── Word-under-cursor extraction ────────────────────────────────────
+# ── Word-under-cursor extraction
 
 # Build a NUL-terminated heap cstr containing the word currently under
 # the cursor (a maximal run of CCLASS_WORD bytes containing the cursor
@@ -193,7 +193,7 @@ fn _search_word_under_cursor(s) {
     return p;
 }
 
-# ── Action handler ──────────────────────────────────────────────────
+# ── Action handler
 
 # Top-level search-action handler. Returns 1 if the action was a search
 # action (so callers know it was consumed), 0 otherwise.

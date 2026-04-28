@@ -20,7 +20,7 @@
 #
 # Requires: src/buffer.cyr, src/mode.cyr, src/buflist.cyr.
 
-# ── Snapshot helpers ────────────────────────────────────────────────
+# ── Snapshot helpers
 
 fn _snap_new_from_buf(b) {
     var len = buf_len(b);
@@ -55,7 +55,7 @@ fn _snap_restore_into(b, snap) {
     return 0;
 }
 
-# ── Stack accessors ────────────────────────────────────────────────
+# ── Stack accessors
 
 # Lazy-init the undo / redo stacks on the active buffer's record.
 fn _undo_ensure_stacks(s) {
@@ -66,7 +66,7 @@ fn _undo_ensure_stacks(s) {
     return 0;
 }
 
-# ── Public entry points ─────────────────────────────────────────────
+# ── Public entry points
 
 # Snapshot the current buffer state and push it onto the active record's
 # undo stack. Clears the redo stack — fresh edit invalidates any redos.

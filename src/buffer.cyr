@@ -48,7 +48,7 @@ fn buf_new() {
     return b;
 }
 
-# ──── Version + tokenbuf-cache accessors ────────────────────────────
+# ──── Version + tokenbuf-cache accessors
 # Public; called from highlight.cyr and from anywhere that needs to
 # notice mutation without parsing the buffer.
 
@@ -231,7 +231,7 @@ fn buf_load_file(b, path) {
     return total;
 }
 
-# ──── Line / column queries ─────────────────────────────────────────
+# ──── Line / column queries
 # All positions are byte offsets into the logical buffer (0..buf_len).
 # Lines are separated by '\n'; the trailing '\n' (if any) is the line
 # terminator, not the start of a new line. An empty buffer has 1 line.

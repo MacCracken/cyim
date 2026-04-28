@@ -27,7 +27,7 @@
 #           [deps.vyakarana] block in cyrius.cyml. Test files include
 #           buffer.cyr first, then highlight.cyr.
 
-# ── Grammar dir resolution (binary-relative) ─────────────────────────
+# ── Grammar dir resolution (binary-relative)
 
 # Probe `<dir>cyrius.cyml`. cyim ships the cyrius grammar in every
 # release, so its presence is a reliable witness for "this dir is the
@@ -146,7 +146,7 @@ fn highlight_init() {
     return 0;
 }
 
-# ── Buffer-to-cstr + tokenize ────────────────────────────────────────
+# ── Buffer-to-cstr + tokenize
 
 fn _hl_buf_to_cstr(b) {
     var len = buf_len(b);

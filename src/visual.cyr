@@ -14,7 +14,7 @@
 #
 # Requires: src/buffer.cyr, src/mode.cyr, src/buflist.cyr, src/undo.cyr.
 
-# ── Selection range helpers ─────────────────────────────────────────
+# ── Selection range helpers
 
 # Returns the selection's lower bound (byte offset). Returns -1 when not
 # in a visual mode.
@@ -49,7 +49,7 @@ fn visual_selection_hi(s) {
     return hi;
 }
 
-# ── Yank-register I/O ───────────────────────────────────────────────
+# ── Yank-register I/O
 
 # Copy bytes [lo, hi] (inclusive on both ends) from `b` into a fresh
 # heap buffer; pin it as the editor's yank register.
@@ -85,7 +85,7 @@ fn _visual_delete_range(b, lo, hi) {
     return n;
 }
 
-# ── Action handlers ─────────────────────────────────────────────────
+# ── Action handlers
 
 # Anchor stamping: when ACT_TO_VISUAL or ACT_TO_VISUAL_LINE fires, the
 # dispatcher has just set the mode but hasn't recorded an anchor yet.
