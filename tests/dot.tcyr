@@ -135,6 +135,115 @@ fn main() {
     editor_step(s6, 46);  # . in second buffer
     assert_eq(buf_eq(editor_buf(s6), "A", 1), 1, "second buffer received 'A'");
 
+    test_group("editor_feed: CSI arrow sequences move cursor without mode toggle (v1.2.0 fix)");
+    # Bug pre-1.2.0: terminals send arrow keys as 3-byte CSI sequences
+    # (ESC [ A/B/C/D). The driver read 1 byte per syscall, so ESC exited
+    # INSERT, [ was unmapped in NORMAL, and A/B/C/D triggered destructive
+    # NORMAL-mode commands (vim's `A` = append-end-of-line, `D` = delete-
+    # to-end-of-line, etc.). Fix: editor_feed parses CSI at the driver
+    # layer and dispatches ACT_MOVE_* directly via motion_apply.
+    var b7 = buf_new();
+    buf_insert(b7, "line1\nline2\nline3\n", 18);
+    buf_move(b7, 0);
+    var s7 = editor_new(b7);
+    bl_init(s7, b7);
+
+    # ESC [ B = arrow down. From line1 col 0 → line2 col 0 (pos 6).
+    var down_seq[3];
+    store8(&down_seq + 0, 27);  # ESC
+    store8(&down_seq + 1, 91);  # [
+    store8(&down_seq + 2, 66);  # B
+    editor_feed(s7, &down_seq, 3);
+    assert_eq(buf_cursor(b7), 6, "ESC [ B moves cursor down to line2 start");
+    assert_eq(editor_mode(s7), MODE_NORMAL, "arrow does not exit NORMAL");
+
+    # ESC [ A = arrow up. line2 col 0 → line1 col 0 (pos 0).
+    var up_seq[3];
+    store8(&up_seq + 0, 27);
+    store8(&up_seq + 1, 91);
+    store8(&up_seq + 2, 65);  # A
+    editor_feed(s7, &up_seq, 3);
+    assert_eq(buf_cursor(b7), 0, "ESC [ A moves cursor up to line1 start");
+
+    # ESC [ C = arrow right. pos 0 → pos 1.
+    var right_seq[3];
+    store8(&right_seq + 0, 27);
+    store8(&right_seq + 1, 91);
+    store8(&right_seq + 2, 67);  # C
+    editor_feed(s7, &right_seq, 3);
+    assert_eq(buf_cursor(b7), 1, "ESC [ C moves cursor right");
+
+    # ESC [ D = arrow left. pos 1 → pos 0.
+    var left_seq[3];
+    store8(&left_seq + 0, 27);
+    store8(&left_seq + 1, 91);
+    store8(&left_seq + 2, 68);  # D
+    editor_feed(s7, &left_seq, 3);
+    assert_eq(buf_cursor(b7), 0, "ESC [ D moves cursor left");
+
+    test_group("editor_feed: arrow keys work in INSERT mode without exiting (v1.2.0 fix)");
+    # The pre-1.2.0 bug was especially nasty in INSERT: arrow up did
+    # ESC + [ + A = exit INSERT + no-op + jump to end of line and
+    # re-enter INSERT. Verify INSERT stays put and the cursor moves.
+    var b8 = buf_new();
+    buf_insert(b8, "abc\nxyz\n", 8);
+    buf_move(b8, 0);
+    var s8 = editor_new(b8);
+    bl_init(s8, b8);
+    editor_step(s8, 105);  # i — enter INSERT
+    assert_eq(editor_mode(s8), MODE_INSERT, "in INSERT");
+    var down_in_insert[3];
+    store8(&down_in_insert + 0, 27);
+    store8(&down_in_insert + 1, 91);
+    store8(&down_in_insert + 2, 66);  # B
+    editor_feed(s8, &down_in_insert, 3);
+    assert_eq(editor_mode(s8), MODE_INSERT, "arrow does NOT exit INSERT");
+    assert_eq(buf_cursor(b8), 4, "arrow down in INSERT moved cursor to line2 start");
+
+    test_group("editor_feed: bare ESC still exits INSERT immediately");
+    # Critical regression guard: the dispatch path is unchanged. ESC
+    # alone (not followed by `[`) must still exit INSERT in one step.
+    # editor_feed routes non-CSI bytes through editor_step unchanged.
+    var bare_esc[1];
+    store8(&bare_esc, 27);
+    editor_feed(s8, &bare_esc, 1);
+    assert_eq(editor_mode(s8), MODE_NORMAL, "bare ESC still exits INSERT");
+
+    test_group("editor_feed: unknown CSI final byte gets swallowed");
+    # ESC [ Z (Shift-Tab in some terminals) isn't mapped; should
+    # consume 3 bytes silently rather than letting `Z` reach NORMAL
+    # mode dispatch (where it might do something).
+    var b9 = buf_new();
+    buf_insert(b9, "hello", 5);
+    buf_move(b9, 0);
+    var s9 = editor_new(b9);
+    bl_init(s9, b9);
+    var unknown_csi[3];
+    store8(&unknown_csi + 0, 27);
+    store8(&unknown_csi + 1, 91);
+    store8(&unknown_csi + 2, 90);  # Z
+    editor_feed(s9, &unknown_csi, 3);
+    assert_eq(editor_mode(s9), MODE_NORMAL, "unknown CSI does not change mode");
+    assert_eq(buf_cursor(b9), 0, "unknown CSI does not move cursor");
+    assert_eq(buf_eq(b9, "hello", 5), 1, "unknown CSI does not modify buffer");
+
+    test_group("editor_feed: Enter (CR) splits the line in INSERT mode");
+    # End-to-end verification of the Enter-key fix. Type `iAB<CR>CD<Esc>`
+    # and confirm the buffer contains 'AB\nCD'.
+    var b10 = buf_new();
+    var s10 = editor_new(b10);
+    bl_init(s10, b10);
+    var enter_seq[7];
+    store8(&enter_seq + 0, 105);  # i
+    store8(&enter_seq + 1, 65);   # A
+    store8(&enter_seq + 2, 66);   # B
+    store8(&enter_seq + 3, 13);   # CR (terminal Enter)
+    store8(&enter_seq + 4, 67);   # C
+    store8(&enter_seq + 5, 68);   # D
+    store8(&enter_seq + 6, 27);   # Esc
+    editor_feed(s10, &enter_seq, 7);
+    assert_eq(buf_eq(b10, "AB\nCD", 5), 1, "iAB<CR>CD<Esc> -> 'AB\\nCD'");
+
     return assert_summary();
 }
 

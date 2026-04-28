@@ -39,6 +39,7 @@ var ACT_NONE              = 0;
 # in INSERT / COMMAND so the caller knows to consume the byte).
 var ACT_INSERT_LITERAL    = 1;
 var ACT_DELETE_LEFT       = 2;
+var ACT_INSERT_NEWLINE    = 5;
 var ACT_CMDLINE_APPEND    = 3;
 var ACT_CMDLINE_BACKSPACE = 4;
 
@@ -281,6 +282,9 @@ fn editor_dispatch(s, key) {
     # current byte resolves. Today only Ctrl-w (window navigation) uses
     # this; clearing the prefix is unconditional so an unmapped follow-up
     # is silently swallowed (prefix consumed → ACT_NONE).
+    # CSI escape sequences (arrow keys etc., ESC [ <final>) are parsed
+    # at the driver layer in editor_feed(), not here — keeps dispatch
+    # byte-token-clean and lets ESC stay an immediate mode-exit.
     if (editor_prefix(s) == KEY_CTRL_W) {
         editor_set_prefix(s, 0);
         if (key == 104) { return ACT_WIN_LEFT; }
@@ -336,6 +340,8 @@ fn editor_dispatch(s, key) {
 
     if (mode == MODE_INSERT) {
         if (key == KEY_ESC)       { store64(s, MODE_NORMAL); return ACT_TO_NORMAL; }
+        if (key == KEY_ENTER)     { return ACT_INSERT_NEWLINE; }
+        if (key == KEY_LF)        { return ACT_INSERT_NEWLINE; }
         if (key == KEY_DEL)       { return ACT_DELETE_LEFT; }
         if (key == KEY_BACKSPACE) { return ACT_DELETE_LEFT; }
         return ACT_INSERT_LITERAL;

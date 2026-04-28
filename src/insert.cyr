@@ -23,6 +23,19 @@ fn insert_literal(s, key) {
     return 1;
 }
 
+# Insert a real LF (byte 10), splitting the line at the cursor.
+# Triggered by Enter / Return: terminals send CR (byte 13) for
+# the Enter key in raw mode, and many keymaps also send LF (10);
+# both translate to a single LF insert here so the buffer's
+# line-index stays consistent.
+fn insert_newline(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    buf_insert_byte(b, 10);
+    editor_set_modified(s, 1);
+    return 1;
+}
+
 # Delete one byte to the left of the cursor. Marks modified only when a byte
 # was actually deleted (a no-op at line 0 col 0 should not dirty the buffer).
 fn insert_delete_left(s) {
@@ -79,6 +92,7 @@ fn insert_to_normal(s) {
 # actions are silent no-ops.
 fn insert_apply(s, action, key) {
     if (action == ACT_INSERT_LITERAL)      { insert_literal(s, key); return 1; }
+    if (action == ACT_INSERT_NEWLINE)      { insert_newline(s); return 1; }
     if (action == ACT_DELETE_LEFT)         { insert_delete_left(s); return 1; }
     if (action == ACT_TO_INSERT_AFTER)     { insert_to_after(s); return 1; }
     if (action == ACT_TO_INSERT_LINE_END)  { insert_to_line_end(s); return 1; }

@@ -100,6 +100,9 @@ fn editor_step(s, key) {
     if (action == ACT_INSERT_LITERAL) {
         if (editor_dot_recording(s) == 1) { _dot_record_byte(s, key); }
     }
+    if (action == ACT_INSERT_NEWLINE) {
+        if (editor_dot_recording(s) == 1) { _dot_record_byte(s, 10); }
+    }
     if (action == ACT_TO_NORMAL) {
         if (editor_dot_recording(s) == 1) { editor_set_dot_recording(s, 0); }
     }
@@ -133,4 +136,59 @@ fn editor_run(s, keys, n) {
         i = i + 1;
     }
     return n;
+}
+
+# Driver-side multi-byte input feeder. Modern terminals send the
+# entire CSI escape sequence (e.g. arrow up = ESC [ A = 3 bytes)
+# in a single TTY frame; a single read on stdin gets all 3 bytes
+# at once. We scan the buffer for ESC [ <final> at the head and
+# dispatch the corresponding ACT_MOVE_* directly via motion_apply,
+# consuming 3 bytes per CSI hit. Anything else routes through
+# editor_step unchanged so dispatch stays byte-token-clean.
+#
+# Limitation: if a CSI sequence is split across reads (rare on
+# modern terminals; can happen on slow serial), the leading ESC
+# would dispatch a mode-exit on its own and the [ + final would
+# arrive as separate bytes the next iteration. Acceptable for
+# v1.2.0; a follow-up pass with a 1-iteration look-ahead buffer
+# would close that hole.
+fn editor_feed(s, buf, len) {
+    var i = 0;
+    while (i < len) {
+        # CSI head: ESC [ <final>. We need at least 3 bytes
+        # remaining for a complete sequence.
+        var consumed = 0;
+        if (i + 2 < len) {
+            if (load8(buf + i) == 27) {
+                if (load8(buf + i + 1) == 91) {
+                    var final = load8(buf + i + 2);
+                    var act = 0;
+                    if (final == 65) { act = ACT_MOVE_UP; }
+                    if (final == 66) { act = ACT_MOVE_DOWN; }
+                    if (final == 67) { act = ACT_MOVE_RIGHT; }
+                    if (final == 68) { act = ACT_MOVE_LEFT; }
+                    if (act != 0) {
+                        # Apply the motion in whatever mode the
+                        # editor is in (NORMAL, INSERT, VISUAL).
+                        # motion_apply guards by mode/state.
+                        motion_apply(s, act);
+                        consumed = 3;
+                    } else {
+                        # Unknown CSI final byte — swallow the
+                        # 3-byte sequence to avoid the destructive
+                        # fallback (ESC + [ + <byte> processed
+                        # individually would exit insert + dispatch
+                        # whatever <byte> means in NORMAL).
+                        consumed = 3;
+                    }
+                }
+            }
+        }
+        if (consumed == 0) {
+            editor_step(s, load8(buf + i));
+            consumed = 1;
+        }
+        i = i + consumed;
+    }
+    return i;
 }

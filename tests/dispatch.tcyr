@@ -58,6 +58,16 @@ fn main() {
     assert_eq(editor_mode(s), MODE_INSERT, "BS does not transition");
     assert_eq(editor_dispatch(s, 8),   ACT_DELETE_LEFT, "^H -> DELETE_LEFT");
 
+    test_group("INSERT: Enter / LF -> INSERT_NEWLINE (v1.2.0 fix)");
+    # Bug pre-1.2.0: terminals send CR (13) for Enter; INSERT mode had no
+    # special case so CR was inserted as a literal byte instead of splitting
+    # the line. Both KEY_ENTER (13) and KEY_LF (10) now translate to a
+    # dedicated ACT_INSERT_NEWLINE that always inserts byte 10 (LF).
+    assert_eq(editor_dispatch(s, 13), ACT_INSERT_NEWLINE, "CR (13) -> INSERT_NEWLINE");
+    assert_eq(editor_mode(s), MODE_INSERT, "CR does not transition");
+    assert_eq(editor_dispatch(s, 10), ACT_INSERT_NEWLINE, "LF (10) -> INSERT_NEWLINE");
+    assert_eq(editor_mode(s), MODE_INSERT, "LF does not transition");
+
     test_group("INSERT: Esc -> NORMAL");
     assert_eq(editor_dispatch(s, 27), ACT_TO_NORMAL, "Esc -> TO_NORMAL");
     assert_eq(editor_mode(s), MODE_NORMAL, "back to NORMAL");

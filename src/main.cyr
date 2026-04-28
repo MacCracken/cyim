@@ -121,13 +121,18 @@ fn run_headless(file_path) {
 
     var quit = 0;
     while (quit == 0) {
-        var key_buf[1];
-        var n = file_read(0, &key_buf, 1);
+        # 8-byte read buffer accommodates the longest interactive
+        # sequences cyim cares about (CSI arrow = 3 bytes; CSI
+        # extended = up to ~7). editor_feed parses ESC [ <final>
+        # CSI codes as a unit; everything else routes through
+        # editor_step byte-by-byte.
+        var key_buf[8];
+        var n = file_read(0, &key_buf, 8);
         if (n <= 0) {
             quit = 1;
         }
         if (quit == 0) {
-            editor_step(s, load8(&key_buf));
+            editor_feed(s, &key_buf, n);
             if (editor_quit(s) == 1) { quit = 1; }
         }
     }
@@ -178,13 +183,18 @@ fn run_editor(file_path) {
         # M5 perf pass surfaces a real workload that complains.
         var tb = highlight_buf(b, lang);
         render_frame(s, DEFAULT_ROWS, DEFAULT_COLS, tb);
-        var key_buf[1];
-        var n = file_read(0, &key_buf, 1);
+        # 8-byte read buffer accommodates the longest interactive
+        # sequences cyim cares about (CSI arrow = 3 bytes; CSI
+        # extended = up to ~7). editor_feed parses ESC [ <final>
+        # CSI codes as a unit; everything else routes through
+        # editor_step byte-by-byte.
+        var key_buf[8];
+        var n = file_read(0, &key_buf, 8);
         if (n <= 0) {
             quit = 1;
         }
         if (quit == 0) {
-            editor_step(s, load8(&key_buf));
+            editor_feed(s, &key_buf, n);
             if (editor_quit(s) == 1) { quit = 1; }
         }
     }

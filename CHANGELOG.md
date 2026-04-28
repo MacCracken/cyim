@@ -161,6 +161,45 @@ Also: cyrius toolchain pin bumped 5.7.13 → 5.7.23.
   flags vs. comma-extended value `--regex=ere,icase` — is deferred
   until the second engine lands and use cases sharpen.
 
+### Fixed
+
+- **Enter key in INSERT mode now splits the line** (was: inserted CR
+  byte 13 verbatim). Terminals send CR (byte 13) for the Enter key in
+  raw mode; the pre-1.2.0 INSERT-mode dispatch had no special case so
+  CR fell through to `ACT_INSERT_LITERAL` and was stuffed into the
+  buffer as-is — rendering as nothing or `^M` and not actually
+  splitting the line. v1.2.0 adds `ACT_INSERT_NEWLINE` (in
+  `src/mode.cyr` and `src/insert.cyr`) and special-cases both
+  `KEY_ENTER` (13/CR) and `KEY_LF` (10/LF) in INSERT mode to translate
+  to a real LF (byte 10) insert. Verified by `dispatch.tcyr` and the
+  `iAB<CR>CD<Esc>` end-to-end case in `dot.tcyr`.
+- **Arrow keys in interactive mode now move the cursor instead of
+  triggering destructive NORMAL-mode commands.** Pre-1.2.0 the TTY
+  driver read 1 byte per syscall, so the 3-byte CSI escape sequence
+  (e.g. arrow up = `ESC [ A`) got dispatched a byte at a time: ESC
+  exited INSERT to NORMAL, `[` was unmapped, and `A`/`B`/`C`/`D`
+  triggered vim's `A`/`B`/`C`/`D` (append-end-of-line, word-back,
+  change-end-of-line, delete-end-of-line) — destructive in every
+  direction. Fix: new `editor_feed(s, buf, len)` in `src/driver.cyr`
+  scans the read buffer for `ESC [ <final>` CSI sequences and
+  dispatches `ACT_MOVE_*` directly via `motion_apply` (consuming 3
+  bytes per hit); `run_editor` and `run_headless` in `src/main.cyr`
+  switched from a 1-byte read to an 8-byte read + `editor_feed`.
+  Bare ESC stays an immediate mode-exit (dispatch unchanged).
+  Limitation: if a CSI sequence is split across reads (rare on modern
+  terminals; can happen on slow serial), the leading ESC dispatches
+  alone — acceptable degenerate case; closes with a 1-byte
+  look-ahead buffer in a follow-up. Verified by 6 new cases in
+  `dot.tcyr` (`editor_feed: CSI arrow sequences move cursor without
+  mode toggle`, `editor_feed: arrow keys work in INSERT mode without
+  exiting`, `editor_feed: bare ESC still exits INSERT immediately`,
+  `editor_feed: unknown CSI final byte gets swallowed`, plus the
+  Enter-key end-to-end).
+
+Both bugs predated 1.2.0 — surfaced once cyim got real interactive
+use. Folded into the in-flight 1.2.0 release rather than minting a
+1.2.1 since 1.2.0 wasn't tagged yet.
+
 ### Internal
 
 - **Lint cleanup sweep across all 20 src files** to take CI from 42
@@ -186,12 +225,12 @@ Also: cyrius toolchain pin bumped 5.7.13 → 5.7.23.
 
 ### Binary
 
-- `build/cyim` — DCE build size: **355,256 B** (v1.2.0 added the
+- `build/cyim` — DCE build size: **356,424 B** (v1.2.0 added the
   Matcher + RegexOpts abstractions in `src/cli.cyr` plus six
   `_dispatch_<verb>` extraction functions plus the Pike NFA engine
   consumed from cyrius stdlib `lib/regex.cyr`; the lint cleanup
   added +424 B from syscall-split overhead vs the pre-cleanup
-  354,832 B. v1.1.4 was 312,088 B, so +43,168 B total — the bulk
+  354,832 B. v1.1.4 was 312,088 B, so +44,336 B total — the bulk
   is the engine itself, the cyim consumer code adds ~4 KB, the
   dispatch extraction is byte-neutral, the lint-cleanup syscall
   splits add ~400 B).
