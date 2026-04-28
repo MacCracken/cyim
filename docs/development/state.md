@@ -2,21 +2,21 @@
 
 > **Volatile.** This file is the live state of the project — current version, sizes, in-flight slot, consumer build status. Bumped every release (ideally by the release post-hook). Don't put durable rules here — those live in [`CLAUDE.md`](../../CLAUDE.md).
 
-*Last bumped: 2026-04-28 (v1.2.0 — `--regex=<flavor>` modifier on the four pattern verbs + `--replace-files[-all]` + cyrius 5.7.23 / Pike NFA stdlib regex engine consumed)*
+*Last bumped: 2026-04-28 (v1.2.1 — patch fixing two interactive-mode bugs: Enter key now splits the line; arrow keys navigate via driver-side CSI parsing instead of triggering destructive NORMAL-mode commands)*
 
 ---
 
 ## Version
 
-- **VERSION**: `1.2.0`
+- **VERSION**: `1.2.1`
 - **Cyrius toolchain pin**: `5.7.23` (in `cyrius.cyml [package].cyrius`)
-- **Last release**: `1.2.0` — `--regex=<flavor>` modifier on six agent-drive verbs (`--grep`, `--grepfiles`, `--replace`, `--replace-all`, `--replace-files`, `--replace-files-all`) consuming the cyrius 5.7.23 stdlib `regex_*` Pike NFA ABI + cyrius toolchain bump 5.7.13 → 5.7.23, 2026-04-28
-- **Prior release**: `1.1.4` — `--grepfiles` multi-file grep + `--context=N` modifier (`grep -C` shape) on `--grep`/`--grepfiles` + `--replace-files[-all]` (OLD/NEW from file paths) + cyrius 5.7.13 toolchain bump, 2026-04-27
-- **Prior prior**: `1.1.3` — duplicate-flag refusal (exit 2) across all four agent-drive verbs + `--grep` "literal substring, not regex" clarification in `--help`, 2026-04-26
+- **Last release**: `1.2.1` — interactive-mode fixes: Enter key in INSERT now splits the line via `ACT_INSERT_NEWLINE` (was inserting CR byte 13 verbatim); arrow keys parse CSI sequences in `editor_feed` (driver-side) instead of being dispatched byte-by-byte through editor_dispatch (which previously triggered vim's destructive `A`/`B`/`C`/`D` NORMAL-mode commands), 2026-04-28
+- **Prior release**: `1.2.0` — `--regex=<flavor>` modifier on six agent-drive verbs (`--grep`, `--grepfiles`, `--replace`, `--replace-all`, `--replace-files`, `--replace-files-all`) consuming the cyrius 5.7.23 stdlib `regex_*` Pike NFA ABI + cyrius toolchain bump 5.7.13 → 5.7.23, 2026-04-28
+- **Prior prior**: `1.1.4` — `--grepfiles` multi-file grep + `--context=N` modifier (`grep -C` shape) on `--grep`/`--grepfiles` + `--replace-files[-all]` (OLD/NEW from file paths) + cyrius 5.7.13 toolchain bump, 2026-04-27
 
 ## Binary
 
-- `build/cyim` — DCE build size: **356,424 B** (v1.2.0 added the Matcher + RegexOpts abstractions, `_cli_count_matches_m` / `_cli_substitute_regex` / `_cli_substitute_m` matcher-dispatching helpers, six `_dispatch_<verb>(ac)` extraction functions, and the cyrius stdlib `regex` dep — Pike NFA engine consumed via `regex_compile`/`regex_search`/`regex_search_at`/`regex_group_*`. The bulk of the +44,336 B delta from 1.1.4 is the engine itself; cyim consumer code adds ~4 KB; the dispatch extraction is byte-neutral. v1.1.4 was 312,088 B; v1.1.3 was 300,640 B with 8 duplicate-flag guards across four verbs in `src/main.cyr` + a slightly longer `--grep` help string; v1.1.2 was 298,392 B with `run_batch` + `_cli_drain_stdin_raw` in `src/cli.cyr` and `--batch` dispatch in `src/main.cyr`; v1.1.0 was 293,192 B; v1.0.2 was 283,984 B; v1.0.0 was 274,656 B; M6 was 273,912 B; M5 was 262,504 B; M4 was 256,344 B; M3 was 226,064 B; M2 was 162,184 B; M1 was 101,560 B; M0 stub was 57,728 B).
+- `build/cyim` — DCE build size: **356,424 B** (v1.2.1 added `editor_feed` + 8-byte read buffer in `run_editor`/`run_headless` for driver-side CSI parsing, +1,168 B over v1.2.0's 355,256 B; v1.2.0 added the Matcher + RegexOpts abstractions, `_cli_count_matches_m` / `_cli_substitute_regex` / `_cli_substitute_m` matcher-dispatching helpers, six `_dispatch_<verb>(ac)` extraction functions, and the cyrius stdlib `regex` dep — Pike NFA engine consumed via `regex_compile`/`regex_search`/`regex_search_at`/`regex_group_*`. The bulk of the +44,336 B delta from 1.1.4 is the engine itself; cyim consumer code adds ~4 KB; the dispatch extraction is byte-neutral. v1.1.4 was 312,088 B; v1.1.3 was 300,640 B with 8 duplicate-flag guards across four verbs in `src/main.cyr` + a slightly longer `--grep` help string; v1.1.2 was 298,392 B with `run_batch` + `_cli_drain_stdin_raw` in `src/cli.cyr` and `--batch` dispatch in `src/main.cyr`; v1.1.0 was 293,192 B; v1.0.2 was 283,984 B; v1.0.0 was 274,656 B; M6 was 273,912 B; M5 was 262,504 B; M4 was 256,344 B; M3 was 226,064 B; M2 was 162,184 B; M1 was 101,560 B; M0 stub was 57,728 B).
 
 ## Tests
 
