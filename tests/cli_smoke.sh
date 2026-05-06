@@ -681,14 +681,15 @@ case "$RW_GOT" in
     *) FAIL=$((FAIL + 1)); echo "FAIL: --replace --regex=re2 --expect-1 got: '$RW_GOT'" ;;
 esac
 
-# Case 81 — --regex=fuzzy: parser recognises but rejects with a
-# v1.3.1-deferred message, exit 2. Distinct from the unknown-flavor
-# arm so consumers can trust the diagnostic to be accurate.
-ERR_OUT=$("$BIN" --grep --regex=fuzzy 'foo' "$REGEX_FIX_3" 2>&1)
-assert_rc '--grep --regex=fuzzy deferred to v1.3.1' 2 $?
-case "$ERR_OUT" in
-    *"v1.3.1"*) PASS=$((PASS + 1)) ;;
-    *) FAIL=$((FAIL + 1)); echo "FAIL: --regex=fuzzy diagnostic missing v1.3.1 hint: '$ERR_OUT'" ;;
+# Case 81 — --grep --regex=fuzzy basic exact match (zero edits).
+# (v1.3.1: fuzzy is shipped — niyama_fuzzy_compile + cstring-offset
+# pseudo-_search_at + plen-approximation _group_end. v1.3.0's
+# "deferred" assertion repurposed for typo-tolerance below.)
+OUT=$("$BIN" --grep --regex=fuzzy 'foo' "$REGEX_FIX_3" 2>&1)
+assert_rc '--grep --regex=fuzzy foo (exact)' 0 $?
+case "$OUT" in
+    *"foo123"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=fuzzy foo output: '$OUT'" ;;
 esac
 
 # Case 82 — --regex=bre invalid pattern (unbalanced bracket) → exit 2.
@@ -724,9 +725,85 @@ esac
 
 rm -f "$REGEX_FIX_3" "$REGEX_FIX_3B" "$REGEX_RW" "$REGEX_OLD_3" "$REGEX_NEW_3"
 
+# === v1.3.1 — fuzzy flavor =====================================
+# niyama_fuzzy via cstring-offset pseudo-`_search_at` and the plen
+# approximation for `_group_end`. Default max_edits=2 (niyama default).
+# Substitute path is bounded-imperfect on insert/delete edits — the
+# replaced span is `plen` not the actual matched span. Tests cover
+# the well-defined surfaces (exact, single-substitution edit, count)
+# and the substitute-path roundtrip; deletion-edit corner cases
+# documented in CHANGELOG v1.3.1 § Notes are NOT asserted because
+# their precise output is part of the "tighten later" surface.
+
+FZ=/tmp/cyim-cli-smoke-fuzzy.txt
+
+# Case 85 — --grep --regex=fuzzy single-edit substitution match.
+# "fop" within distance 1 of "foo" → all foo-prefixed lines hit.
+printf 'foo\nfop\nbar\nfoot\n' > "$FZ"
+OUT=$("$BIN" --grep --regex=fuzzy 'foo' "$FZ" 2>&1)
+assert_rc '--grep --regex=fuzzy foo (1-edit substitution)' 0 $?
+case "$OUT" in
+    *"$FZ:1:foo"*"$FZ:2:fop"*"$FZ:4:foot"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=fuzzy 1-edit output: '$OUT'" ;;
+esac
+
+# Case 86 — --grep --regex=fuzzy beyond distance: 'xyz' too far
+# from any line content (default k=2) → exit 1.
+"$BIN" --grep --regex=fuzzy 'xyz' "$FZ" >/dev/null 2>&1
+assert_rc '--grep --regex=fuzzy xyz (no match)' 1 $?
+
+# Case 87 — --replace-all --regex=fuzzy substitution-only edit
+# (well-defined: matched span == plen, plen-approximation is exact).
+printf 'foo\nfop\n' > "$FZ"
+"$BIN" --replace-all --regex=fuzzy 'foo' 'X' "$FZ" >/dev/null 2>&1
+assert_rc '--replace-all --regex=fuzzy substitution' 0 $?
+RW_GOT=$(cat "$FZ")
+case "$RW_GOT" in
+    # Substitution edit ('foo'→'fop') keeps span_len=plen=3 → both
+    # lines collapse to "X". Deletion/insertion edits would diverge
+    # here; this case only exercises the well-defined behaviour.
+    "X"*"X") PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --replace-all --regex=fuzzy got: '$RW_GOT'" ;;
+esac
+
+# Case 88 — --replace --regex=fuzzy --expect-1 (count-path through
+# fuzzy iteration; needs exactly one fuzzy hit so unique-replace
+# semantics are well-defined).
+printf 'one\nzzz\n' > "$FZ"
+"$BIN" --replace --regex=fuzzy 'one' 'TWO' --expect-1 "$FZ" >/dev/null 2>&1
+assert_rc '--replace --regex=fuzzy --expect-1' 0 $?
+RW_GOT=$(cat "$FZ")
+case "$RW_GOT" in
+    "TWO"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --replace --regex=fuzzy --expect-1 got: '$RW_GOT'" ;;
+esac
+
+# Case 89 — --grepfiles --regex=fuzzy across multiple files.
+FZ2=/tmp/cyim-cli-smoke-fuzzy-b.txt
+printf 'foo\nbar\n' > "$FZ"
+printf 'fop\nbaz\n' > "$FZ2"
+OUT=$("$BIN" --grepfiles --regex=fuzzy 'foo' "$FZ" "$FZ2" 2>&1)
+assert_rc '--grepfiles --regex=fuzzy multi-file' 0 $?
+case "$OUT" in
+    *"$FZ:1:foo"*"$FZ2:1:fop"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grepfiles --regex=fuzzy output: '$OUT'" ;;
+esac
+
+# Case 90 — --regex=fuzzy compose with --context=N (still grep-side;
+# proves fuzzy threads through the context-window pipeline).
+printf 'aaa\nfoo\nbbb\n' > "$FZ"
+OUT=$("$BIN" --grep --regex=fuzzy 'foo' --context=1 "$FZ" 2>&1)
+assert_rc '--grep --regex=fuzzy --context=1' 0 $?
+case "$OUT" in
+    *"aaa"*"foo"*"bbb"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=fuzzy --context output: '$OUT'" ;;
+esac
+
+rm -f "$FZ" "$FZ2"
+
 rm -f "$REGEX_FIX" "$REGEX_FIX2" "$REGEX_REPLACE" "$REGEX_OLD" "$REGEX_NEW"
 
 rm -f "$FIX" "$WRITE_FIX" "$BATCH_FIX"
 
-echo "$PASS passed, $FAIL failed (103 total)"
+echo "$PASS passed, $FAIL failed (114 total)"
 [ "$FAIL" = "0" ] || exit 1

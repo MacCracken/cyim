@@ -133,15 +133,27 @@ fn _re_search_at(flavor, nfa, s, slen, from) {
     if (flavor == FLAVOR_RE2)  { return niyama_re2_search_at(nfa, s, slen, from); }
     if (flavor == FLAVOR_PCRE) { return niyama_pcre_search_at(nfa, s, slen, from); }
     if (flavor == FLAVOR_VIM)  { return niyama_vim_search_at(nfa, s, slen, from); }
+    # v1.3.1: niyama_fuzzy lacks `_search_at`. Fake it via cstring
+    # pointer arithmetic — niyama_fuzzy_search reads NUL-terminated,
+    # so advancing the base pointer is equivalent to starting from
+    # `from`. The hit it returns is relative to the substring start;
+    # we add `from` to convert back to absolute offset.
+    if (flavor == FLAVOR_FUZZY) {
+        if (from >= slen) { return 0 - 1; }
+        var hit = niyama_fuzzy_search(nfa, s + from);
+        if (hit < 0) { return 0 - 1; }
+        return from + hit;
+    }
     return 0 - 1;
 }
 
 fn _re_search(flavor, nfa, s) {
-    if (flavor == FLAVOR_ERE)  { return regex_search(nfa, s); }
-    if (flavor == FLAVOR_BRE)  { return niyama_bre_search(nfa, s); }
-    if (flavor == FLAVOR_RE2)  { return niyama_re2_search(nfa, s); }
-    if (flavor == FLAVOR_PCRE) { return niyama_pcre_search(nfa, s); }
-    if (flavor == FLAVOR_VIM)  { return niyama_vim_search(nfa, s); }
+    if (flavor == FLAVOR_ERE)   { return regex_search(nfa, s); }
+    if (flavor == FLAVOR_BRE)   { return niyama_bre_search(nfa, s); }
+    if (flavor == FLAVOR_RE2)   { return niyama_re2_search(nfa, s); }
+    if (flavor == FLAVOR_PCRE)  { return niyama_pcre_search(nfa, s); }
+    if (flavor == FLAVOR_VIM)   { return niyama_vim_search(nfa, s); }
+    if (flavor == FLAVOR_FUZZY) { return niyama_fuzzy_search(nfa, s); }
     return 0 - 1;
 }
 
@@ -157,21 +169,14 @@ fn _re_group_end(flavor, nfa, n) {
 # Validate a parsed --regex=<flavor> id against what cyim ships
 # today. Returns 1 on accept, 0 on reject (caller returns exit 2).
 # Centralises the per-verb diagnostic so all six parser sites
-# emit a uniform supported-list message and the same fuzzy-deferred
-# explainer. `verb` is the short verb prefix ("--grep",
-# "--replace-all", etc.) — included in the message so a wrapped
-# script user sees which surface refused.
+# emit a uniform supported-list message. `verb` is the short verb
+# prefix ("--grep", "--replace-all", etc.) — included in the
+# message so a wrapped script user sees which surface refused.
 fn _flavor_validate(verb, fid) {
     if (fid == FLAVOR_LITERAL) {
         syscall(1, 2, "cyim ", 5);
         syscall(1, 2, verb, strlen(verb));
-        syscall(1, 2, ": unknown --regex flavor (supported: bre, ere, pcre, re2, vim; fuzzy: v1.3.1)\n", 78);
-        return 0;
-    }
-    if (fid == FLAVOR_FUZZY) {
-        syscall(1, 2, "cyim ", 5);
-        syscall(1, 2, verb, strlen(verb));
-        syscall(1, 2, ": --regex=fuzzy not yet supported; planned for v1.3.1\n", 54);
+        syscall(1, 2, ": unknown --regex flavor (supported: bre, ere, fuzzy, pcre, re2, vim)\n", 70);
         return 0;
     }
     return 1;
@@ -199,14 +204,25 @@ fn _matcher_nlen(m)   { return load64(m + 16); }
 # helpers read this to dispatch to the right engine without
 # re-resolving from a passed-in opts struct.
 fn _matcher_flavor(m) { return load64(m + 16); }
+# v1.3.1: regex matchers also store the pattern length in +24,
+# used by FLAVOR_FUZZY's span approximation. niyama_fuzzy lacks
+# `_group_end`, so substitute / count paths approximate the match
+# span as `hit + plen`. Imperfect for insert/delete edits within
+# max_edits, but bounded — see CHANGELOG v1.3.1 § Notes for the
+# tighten path. Other flavors get exact span via _re_group_end.
+fn _matcher_plen(m)   { return load64(m + 24); }
 
 # Build a literal Matcher around a NUL-terminated `needle`.
+# v1.3.1: 32B (was 24B) to make room for the +24 plen slot used by
+# regex matchers' fuzzy-span approximation. Literal matchers leave
+# +24 zero; the slot is interpreted by kind.
 fn _matcher_literal(needle) {
-    var m = alloc(24);
+    var m = alloc(32);
     if (m == 0) { return 0; }
     store64(m,      MATCHER_LITERAL);
     store64(m + 8,  needle);
     store64(m + 16, strlen(needle));
+    store64(m + 24, 0);
     return m;
 }
 
@@ -215,22 +231,25 @@ fn _matcher_literal(needle) {
 # message) or alloc failure. The flavor is stashed in the matcher's
 # +16 slot so hot-path helpers (count_matches, substitute, run_grep)
 # dispatch via `_matcher_flavor` + `_re_search_at` without re-passing
-# opts. v1.3.1 will add a niyama_fuzzy_compile arm here once the
-# iteration-wrapper for fuzzy lands.
+# opts. v1.3.1: pattern length stored in +24 for FLAVOR_FUZZY's
+# span approximation (niyama_fuzzy lacks `_group_end` so callers
+# approximate match end as `hit + plen`).
 fn _matcher_regex(pattern, opts) {
     var flavor = load64(opts);
     var nfa = 0;
-    if (flavor == FLAVOR_ERE)  { nfa = regex_compile(pattern); }
-    if (flavor == FLAVOR_BRE)  { nfa = niyama_bre_compile(pattern); }
-    if (flavor == FLAVOR_RE2)  { nfa = niyama_re2_compile(pattern); }
-    if (flavor == FLAVOR_PCRE) { nfa = niyama_pcre_compile(pattern); }
-    if (flavor == FLAVOR_VIM)  { nfa = niyama_vim_compile(pattern); }
+    if (flavor == FLAVOR_ERE)   { nfa = regex_compile(pattern); }
+    if (flavor == FLAVOR_BRE)   { nfa = niyama_bre_compile(pattern); }
+    if (flavor == FLAVOR_RE2)   { nfa = niyama_re2_compile(pattern); }
+    if (flavor == FLAVOR_PCRE)  { nfa = niyama_pcre_compile(pattern); }
+    if (flavor == FLAVOR_VIM)   { nfa = niyama_vim_compile(pattern); }
+    if (flavor == FLAVOR_FUZZY) { nfa = niyama_fuzzy_compile(pattern); }
     if (nfa == 0) { return 0; }
-    var m = alloc(24);
+    var m = alloc(32);
     if (m == 0) { return 0; }
     store64(m,      MATCHER_REGEX);
     store64(m + 8,  nfa);
     store64(m + 16, flavor);
+    store64(m + 24, strlen(pattern));
     return m;
 }
 
@@ -268,6 +287,7 @@ fn _cli_count_matches_m(b, m) {
     var slen = load64(&len_slot);
     var nfa = _matcher_nfa(m);
     var flavor = _matcher_flavor(m);
+    var plen = _matcher_plen(m);
     var count = 0;
     var from = 0;
     var go = 1;
@@ -279,7 +299,15 @@ fn _cli_count_matches_m(b, m) {
                 go = 0;
             } else {
                 count = count + 1;
-                var span_end = _re_group_end(flavor, nfa, 0);
+                # v1.3.1: niyama_fuzzy lacks `_group_end`; approximate
+                # span as hit + plen. Other engines have exact ends.
+                var span_end = 0;
+                if (flavor == FLAVOR_FUZZY) {
+                    span_end = hit + plen;
+                    if (span_end > slen) { span_end = slen; }
+                } else {
+                    span_end = _re_group_end(flavor, nfa, 0);
+                }
                 if (span_end == hit) {
                     from = hit + 1;
                 } else {
@@ -296,7 +324,11 @@ fn _cli_count_matches_m(b, m) {
 # every occurrence; otherwise just the first. `flavor` selects which
 # engine's `search_at` / `group_end` ABI to drive (FLAVOR_ERE through
 # the cyrius stdlib; FLAVOR_BRE / RE2 / PCRE / VIM through niyama).
-fn _cli_substitute_regex(src, flavor, nfa, new, mode) {
+# v1.3.1: FLAVOR_FUZZY uses `plen` (the compile-time pattern length)
+# as the replaced span length — niyama_fuzzy lacks `_group_end`, so
+# the actual matched span (which can be plen ± max_edits for insert
+# / delete edits) is approximated.
+fn _cli_substitute_regex(src, flavor, nfa, plen, new, mode) {
     var nlen = strlen(new);
     var len_slot[8];
     store64(&len_slot, 0);
@@ -326,7 +358,13 @@ fn _cli_substitute_regex(src, flavor, nfa, new, mode) {
                     buf_insert_byte(out, load8(s + p));
                     p = p + 1;
                 }
-                var span_end = _re_group_end(flavor, nfa, 0);
+                var span_end = 0;
+                if (flavor == FLAVOR_FUZZY) {
+                    span_end = hit + plen;
+                    if (span_end > slen) { span_end = slen; }
+                } else {
+                    span_end = _re_group_end(flavor, nfa, 0);
+                }
                 var span_len = span_end - hit;
                 var emit_replace = 1;
                 if (mode == REPLACE_FIRST_UNIQUE) {
@@ -372,7 +410,7 @@ fn _cli_substitute_m(src, m, new, mode) {
     if (_matcher_kind(m) == MATCHER_LITERAL) {
         return _cli_substitute(src, _matcher_needle(m), new, mode);
     }
-    return _cli_substitute_regex(src, _matcher_flavor(m), _matcher_nfa(m), new, mode);
+    return _cli_substitute_regex(src, _matcher_flavor(m), _matcher_nfa(m), _matcher_plen(m), new, mode);
 }
 
 # BUG-001 workaround for cyrius/lib/args.cyr.

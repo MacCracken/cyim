@@ -4,6 +4,94 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-05-06
+
+Minor release — `--regex=fuzzy` (Levenshtein) now ships across all six
+pattern verbs. Closes the v1.3.0 deferral. niyama_fuzzy lacks the
+`_search_at` and `_group_end` ABI the other engines expose; cyim
+fakes them: `_search_at` via cstring-pointer arithmetic
+(`niyama_fuzzy_search` reads NUL-terminated, so `s + from` is
+equivalent to "start at offset"), and `_group_end` via the
+compile-time pattern length stored in the `Matcher` struct's new
++24 slot. The plen approximation is exact for substitution edits
+(matched span == pattern length) but imperfect for insertion /
+deletion edits within `max_edits` — the substitute path eats
+exactly `plen` source bytes regardless of whether the actual
+matched span is `plen ± k`. Surfaced in `cyim --help`. Per the
+plan: ship the intended scope; tighten in a follow-up if the
+imperfection bites.
+
+Default `max_edits = 2` (niyama's `FUZZY_DEFAULT_K`). No knob to
+tune it on cyim's side yet — that lands when surface demand shows.
+
+### Added
+
+- **`--regex=fuzzy`** wiring across `--grep`, `--grepfiles`,
+  `--replace`, `--replace-all`, `--replace-files`,
+  `--replace-files-all`. New arms in `_matcher_regex`,
+  `_re_search_at`, `_re_search`. `_flavor_validate` no longer
+  rejects FLAVOR_FUZZY.
+- **`Matcher` +24 slot** holds `plen` (compile-time pattern
+  length). `_matcher_plen(m)` accessor. Used by FLAVOR_FUZZY's
+  span approximation in `_cli_count_matches_m` and
+  `_cli_substitute_regex` (both now compute `span_end =
+  hit + plen` for fuzzy, clamped to slen; other flavors stay on
+  exact `_re_group_end`).
+- **`Matcher` struct grew 24B → 32B.** Literal matchers leave +24
+  zeroed; regex matchers store plen there. Negligible per-call
+  cost.
+- **`--help` flavor table** updated: fuzzy row replaces the
+  v1.3.0 "planned for v1.3.1" placeholder with shipping
+  semantics + the substitute-imperfection caveat in plain
+  English.
+
+### Changed
+
+- `_cli_substitute_regex` signature gained `plen` parameter
+  (between `nfa` and `new`). Internal-only; no consumer impact.
+- `_flavor_validate` unknown-flavor message reordered alphabetic
+  (`bre, ere, fuzzy, pcre, re2, vim`) and dropped the
+  `fuzzy: v1.3.1` parenthetical (fuzzy is now in the supported
+  list).
+
+### Tests
+
+- `tests/cli_smoke.sh` — 6 new fuzzy cases (case 85 reused from
+  v1.3.0's deferred-diagnostic slot, repurposed for exact-match;
+  cases 85–90 cover single-edit substitution match, beyond-distance
+  rejection, substitute-path roundtrip, count-path via
+  `--expect-1`, multi-file `--grepfiles`, `--context=N`
+  composition). Suite total: 114 assertions (was 103). Deletion-
+  edit corner cases NOT asserted because their precise output is
+  part of the documented "tighten later" surface.
+
+### Binary
+
+- `build/cyim` — DCE build size: **889,128 B** (+720 B over
+  v1.3.0's 888,408 B). The fuzzy compile arm + the cstring-offset
+  pseudo-`_search_at` + the plen-approximation `_group_end`
+  inline at two call sites + the expanded `--help` flavor table
+  (fuzzy row plus the substitute-imperfection caveat). Total
+  <1 KB of new code; niyama_fuzzy + unicode tables already linked
+  in v1.3.0.
+
+### Notes
+
+- **Substitute imperfection — known and bounded.** For deletion
+  edits ("foo" pattern matched against "fo" at distance 1), the
+  plen=3 span eats one extra byte past the actual match — which
+  in practice can consume the `\n` and merge lines. For insertion
+  edits ("foo" matched against "fooo"), the plen=3 span leaves
+  one byte of the match in place. The bound is `± max_edits`
+  bytes per match. To tighten: implement a post-match span search
+  (binary-walk via repeated `niyama_fuzzy_match` calls on
+  candidate substring lengths), OR get niyama to expose the
+  internal `end_pos_buf` it already computes during search. The
+  latter is the upstream fix; the former is the cyim-side
+  workaround if niyama's ABI stays frozen.
+- **Backreferences (`\1`)** still deferred per niyama's long-term
+  security-against-misuse plan — unchanged from v1.3.0.
+
 ## [1.3.0] — 2026-05-06
 
 Minor release — `--regex=<flavor>` now accepts four additional
