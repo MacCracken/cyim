@@ -94,9 +94,18 @@ table so script authors see them before hitting the engine.
 
 ### Notes
 
-- **No toolchain bump in this release.** Cyrius pin stays at 5.9.1
-  (set in v1.2.2). niyama is consumed via the 5.9.x stdlib fold,
-  not as an external dep — no `[deps.niyama]` block.
+- **Cyrius toolchain pin: `5.9.1` → `5.9.2`.** Required to unblock
+  CI: cyrius 5.9.1's release tarball was missing the
+  `lib/unicode/*.cyr` files cyim's `[deps].stdlib` resolves through
+  v5.8.49 subdir-nested-stdlib syntax (`"unicode/<file>"` →
+  `lib/unicode/<file>.cyr`). Local dev builds compiled fine because
+  `~/.cyrius/lib/unicode/` was already present from a prior install;
+  CI's clean install-from-tarball hit the gap on `cyrius deps`.
+  Upstream packaging fixed in 5.9.2 — the tarball now includes the
+  full `lib/unicode/` directory. Binary is byte-identical between
+  5.9.1 and 5.9.2 builds (no codegen drift).
+- niyama is consumed via the 5.9.x stdlib fold, not as an external
+  dep — no `[deps.niyama]` block.
 
 ## [1.2.2] — 2026-05-06
 
