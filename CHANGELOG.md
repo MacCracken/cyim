@@ -6,15 +6,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.2.2] — 2026-05-06
 
-Patch release — Cyrius toolchain bump 5.7.23 → 5.9.1. No cyim source
-changes; the `regex_*` ABI cyim consumes (`regex_compile`,
+Patch release — Cyrius toolchain bump 5.7.23 → 5.9.1, plus a
+version-string cleanup so `cyim --version` can never silently drift
+again. The `regex_*` ABI cyim consumes (`regex_compile`,
 `regex_search`, `regex_search_at`, `regex_group_start`,
 `regex_group_end`) is unchanged across the bump. niyama 1.0.1's
 fold trigger fired at cyrius 5.9.0 so `lib/niyama.cyr` is now
 vendored stdlib alongside `lib/regex.cyr` — wiring the additional
 flavors (`bre`/`re2`/`pcre`/`fuzzy`/`vim`) into `--regex=<flavor>`
-is queued as a v1.3.0 followup; v1.2.2 just rebases onto the new
-toolchain so that work has a clean base.
+is queued as a v1.3.0 followup.
 
 ### Changed
 
@@ -22,11 +22,40 @@ toolchain so that work has a clean base.
   [package].cyrius`. All tests, lint, and CLI/integration smokes
   pass byte-identically against the new toolchain.
 
+### Added
+
+- **`src/version_str.cyr`** (auto-generated) — single source of
+  truth for the `cyim --version` literal and its byte length.
+  `src/main.cyr`'s `print_version` reads `_VERSION_STR_CYIM` /
+  `_VERSION_LEN_CYIM` instead of hardcoded literals.
+- **`scripts/version-bump.sh`** — single entrypoint for version
+  bumps. Writes `VERSION`, regenerates `src/version_str.cyr`
+  unconditionally (idempotent under same-version invocation per
+  the cyrius pattern), and inserts the `## [X.Y.Z]` CHANGELOG
+  header after `## [Unreleased]`. Mirrors cyrius's own
+  `scripts/version-bump.sh` + `src/version_str.cyr` pattern.
+
+### Fixed
+
+- **`cyim --version` no longer drifts on toolchain-only bumps.**
+  v1.2.2 originally shipped with `print_version` still emitting
+  `cyim 1.2.1` because the literal was hardcoded into
+  `src/main.cyr` and the version-sync checklist
+  (`VERSION` / `cyrius.cyml` / `CHANGELOG` header) didn't list a
+  fourth surface; CI's version-sync gate caught it. Cleanup
+  centralises the literal into the auto-generated
+  `src/version_str.cyr`. CLAUDE.md's Work Loop step 7 + Closeout
+  step 10 now point at `scripts/version-bump.sh` instead of
+  enumerating the surfaces.
+
 ### Binary
 
-- `build/cyim` — DCE build size: **369,688 B** (+13,264 B over
-  1.2.1's 356,424 B; cyim source is unchanged so the delta is
-  entirely stdlib drift between cyrius 5.7.23 and 5.9.1).
+- `build/cyim` — DCE build size: **369,768 B** (+13,344 B over
+  1.2.1's 356,424 B). +13,264 B is stdlib drift between cyrius
+  5.7.23 and 5.9.1; +80 B is the version-string cleanup (the
+  literal moves from `src/main.cyr` into the new auto-generated
+  `src/version_str.cyr` — same string content, slightly larger
+  encoding once the include + var declarations land).
 
 ### Notes
 

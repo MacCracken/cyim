@@ -1,0 +1,18 @@
+# src/version_str.cyr — AUTO-GENERATED from `VERSION` by
+# `scripts/version-bump.sh`. Do NOT edit by hand; the next bump
+# will overwrite. To regenerate without bumping, run:
+#
+#   sh scripts/version-bump.sh "$(cat VERSION)"
+#
+# Why this file exists: the v1.2.2 toolchain bump shipped with
+# `print_version` still emitting "cyim 1.2.1" because the literal
+# was hardcoded into `src/main.cyr` and the version-sync checklist
+# (VERSION / cyrius.cyml / CHANGELOG header) didn't list it.
+# Centralising the strings here means version-bump.sh writes ONE
+# file every time and `src/main.cyr` references these vars. No
+# regex hunting; no drift; no fourth-file gotcha. The cyrius
+# compiler itself uses the same pattern (see cyrius's
+# `src/version_str.cyr` + `scripts/version-bump.sh`).
+
+var _VERSION_STR_CYIM = "cyim 1.2.2\n";
+var _VERSION_LEN_CYIM = 11;

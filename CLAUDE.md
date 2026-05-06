@@ -115,7 +115,7 @@ CYRIUS_DCE=1 cyrius build ...            # dead-code-eliminated release build
 4. **Internal review** — performance (edit latency, repaint cost), memory (gap-buffer growth), correctness, edge cases
 5. **Security check** — any new syscall usage, user input handling, buffer allocation
 6. **Documentation** — update CHANGELOG, roadmap, `docs/development/state.md`, any ADR the change earned
-7. **Version check** — `VERSION`, `cyrius.cyml`, CHANGELOG header in sync
+7. **Version check** — bump via `sh scripts/version-bump.sh X.Y.Z` (writes `VERSION`, regenerates auto-generated `src/version_str.cyr` so `cyim --version` stays in sync, and inserts the CHANGELOG header). `cyrius.cyml` resolves the version via `${file:VERSION}` automatically. Never edit `src/version_str.cyr` by hand — the next bump overwrites it. CI's version-sync gate enforces this.
 8. **Return to step 1**
 
 ### Security Hardening (before every release)
@@ -146,7 +146,7 @@ Run a closeout pass before tagging `X.Y.0` or `X.0.0`. Ship as the last patch of
 7. **Security re-scan** — quick grep for new `sys_system`, unchecked writes, buffer size mismatches
 8. **Downstream check** — `agnoshi` and `aethersafha` still embed cyim cleanly when they reach that integration
 9. **Doc sync** — CHANGELOG, roadmap, `docs/development/state.md`, CLAUDE.md (if durable content changed)
-10. **Version verify** — `VERSION`, `cyrius.cyml`, CHANGELOG header, intended git tag all match
+10. **Version verify** — `VERSION`, `cyrius.cyml`, CHANGELOG header, `src/version_str.cyr`, and intended git tag all match. `sh scripts/version-bump.sh "$(cat VERSION)"` regenerates `src/version_str.cyr` idempotently if you suspect drift.
 11. **Full build from clean** — `rm -rf build && cyrius deps && CYRIUS_DCE=1 cyrius build` passes clean
 
 ### Task Sizing

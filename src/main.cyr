@@ -18,6 +18,7 @@
 # the same teardown path.
 
 include "lib/vyakarana.cyr"
+include "src/version_str.cyr"
 include "src/buffer.cyr"
 include "src/highlight.cyr"
 include "src/lang.cyr"
@@ -41,7 +42,7 @@ var DEFAULT_ROWS = 24;
 var DEFAULT_COLS = 80;
 
 fn print_version() {
-    syscall(1, 1, "cyim 1.2.1\n", 11);
+    syscall(1, 1, _VERSION_STR_CYIM, _VERSION_LEN_CYIM);
     return 0;
 }
 
