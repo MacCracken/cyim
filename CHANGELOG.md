@@ -4,6 +4,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.2] — 2026-05-06
+
+Patch release — Cyrius toolchain bump 5.7.23 → 5.9.1. No cyim source
+changes; the `regex_*` ABI cyim consumes (`regex_compile`,
+`regex_search`, `regex_search_at`, `regex_group_start`,
+`regex_group_end`) is unchanged across the bump. niyama 1.0.1's
+fold trigger fired at cyrius 5.9.0 so `lib/niyama.cyr` is now
+vendored stdlib alongside `lib/regex.cyr` — wiring the additional
+flavors (`bre`/`re2`/`pcre`/`fuzzy`/`vim`) into `--regex=<flavor>`
+is queued as a v1.3.0 followup; v1.2.2 just rebases onto the new
+toolchain so that work has a clean base.
+
+### Changed
+
+- **Cyrius toolchain pin**: `5.7.23` → `5.9.1` in `cyrius.cyml
+  [package].cyrius`. All tests, lint, and CLI/integration smokes
+  pass byte-identically against the new toolchain.
+
+### Binary
+
+- `build/cyim` — DCE build size: **369,688 B** (+13,264 B over
+  1.2.1's 356,424 B; cyim source is unchanged so the delta is
+  entirely stdlib drift between cyrius 5.7.23 and 5.9.1).
+
+### Notes
+
+- `cyrius audit` is broken in 5.9.1 install (`/home/macro/.cyrius/bin/check.sh`
+  missing); individual gates (`build`, `test`, `fmt`, `lint`) all
+  green, so this is an upstream packaging issue, not a cyim
+  problem. Tracked for the next toolchain pickup.
+
 ## [1.2.1] — 2026-04-28
 
 Patch release — two interactive-mode bugs surfaced once cyim got real
