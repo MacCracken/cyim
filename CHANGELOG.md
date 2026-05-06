@@ -4,6 +4,100 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-05-06
+
+Minor release — `--regex=<flavor>` now accepts four additional
+engines (`bre`, `re2`, `pcre`, `vim`) via niyama 1.0.1, which folded
+into cyrius stdlib at 5.9.0 per niyama's ADR 0011 fold trigger. cyim
+consumes the fold via the documented sandhi pattern: `lib/niyama.cyr`
+is pulled by explicit `include` in `src/main.cyr` rather than
+`[deps].stdlib` auto-prepend (keeps consumers under the 2 MB
+preprocess_out cap that motivated opt-in fold inclusion at cyrius
+5.8.65). The ERE engine (cyrius stdlib Pike NFA) is unchanged and
+remains the default ERE flavor.
+
+`fuzzy` is recognized at the parser level but rejected with a
+`v1.3.1` diagnostic — niyama_fuzzy lacks `_search_at`, so iterating
+over multiple matches needs a wrapper layer that lands in v1.3.1.
+Backreferences (`\1`-style) are deferred per niyama's long-term
+security-against-misuse plan; not yet supported in any v1.3.0
+flavor. Both caveats surfaced in `cyim --help` next to the flavor
+table so script authors see them before hitting the engine.
+
+### Added
+
+- **`--regex=bre`** — POSIX-BRE via `niyama_bre_compile` /
+  `_search_at` / `_group_end`. `\+` and `\?` quantifiers are GNU
+  extensions, not POSIX-BRE — use `[c][c]*` or `\{1,\}` for
+  one-or-more.
+- **`--regex=re2`** — Google RE2 (`niyama_re2_*`); linear-time, no
+  backreferences by design.
+- **`--regex=pcre`** — PCRE-style (`niyama_pcre_*`); `\d`, `\w`,
+  lookaround supported. No backreferences yet (deferred per niyama
+  v1).
+- **`--regex=vim`** — vim-regex flavor (`niyama_vim_*`); supports
+  `\v` very-magic and `\V` very-nomagic mode prefixes. Default is
+  vim's "magic" mode.
+- **`niyama` stdlib fold** — `lib/niyama.cyr` (vendored
+  byte-identical at cyrius 5.9.0) wired via explicit
+  `include "lib/niyama.cyr"` in `src/main.cyr`. Required unicode
+  normalization tables (`unicode/normalize`, `unicode/_normalize_data`,
+  + categories/casefold) added to `[deps].stdlib` per the v5.8.49
+  subdir-nested-stdlib resolution rule (`"unicode/<file>"` →
+  `lib/unicode/<file>.cyr`).
+- **Per-flavor dispatch helpers** (`_re_search_at`, `_re_search`,
+  `_re_group_end`) in `src/cli.cyr` — single source of truth for
+  engine selection so future flavor additions touch one site
+  instead of every hot-path call.
+- **`_flavor_validate` parser helper** — central rejection arm for
+  unknown / deferred flavors. Each of the six pattern verbs
+  (`--grep`, `--grepfiles`, `--replace`, `--replace-all`,
+  `--replace-files`, `--replace-files-all`) now emits a uniform
+  supported-list message naming all four shipping flavors plus the
+  `fuzzy: v1.3.1` deferred note.
+- **`_help_line` runtime-strlen helper** in `src/main.cyr` — the
+  flavor-table rows in `--help` use `strlen()` instead of
+  hand-counted byte literals so future caveats can edit text
+  without re-counting.
+
+### Changed
+
+- `Matcher` struct's `+16` slot now stores the regex flavor (was
+  unused for `MATCHER_REGEX` in v1.2.0). Hot-path helpers read it
+  via the new `_matcher_flavor(m)` accessor.
+- `_cli_substitute_regex` signature gained `flavor` parameter
+  (between `src` and `nfa`). Internal-only function; no consumer
+  impact.
+
+### Tests
+
+- `tests/cli_smoke.sh` — 10 new cases covering one end-to-end check
+  per flavor on the most distinctive idiom for that engine,
+  substitute-path roundtrip with flavor dispatch, count-path
+  flavor dispatch via `--expect-1`, fuzzy-deferred gate (asserts
+  the diagnostic includes "v1.3.1"), and a multi-file × cross-engine
+  composition. Suite total: 103 assertions (was 84).
+- Existing case 64 ("`--regex=pcre` unknown flavor") repurposed to
+  `--regex=foobar` since `pcre` is now a real flavor; the parser
+  arm stays exercised.
+
+### Binary
+
+- `build/cyim` — DCE build size: **888,408 B** (+518,640 B over
+  v1.2.2's 369,768 B). The bulk is the niyama dist (~6.6 KLOC of
+  engine code) plus the unicode normalization tables it pulls in
+  even though fuzzy isn't exposed yet (niyama is one concatenated
+  artifact). The flat 4-engine dispatch in `src/cli.cyr` adds
+  <2 KB; everything else is folded library + unicode data. Future
+  fuzzy expansion in v1.3.1 should add ~0 incremental binary cost
+  (engine + tables already linked).
+
+### Notes
+
+- **No toolchain bump in this release.** Cyrius pin stays at 5.9.1
+  (set in v1.2.2). niyama is consumed via the 5.9.x stdlib fold,
+  not as an external dep — no `[deps.niyama]` block.
+
 ## [1.2.2] — 2026-05-06
 
 Patch release — Cyrius toolchain bump 5.7.23 → 5.9.1, plus a

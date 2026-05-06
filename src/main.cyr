@@ -18,6 +18,16 @@
 # the same teardown path.
 
 include "lib/vyakarana.cyr"
+# niyama 1.0.1 folded into cyrius stdlib at 5.9.0 (sandhi-pattern):
+# vendored as `lib/niyama.cyr` byte-identical from niyama's
+# `dist/niyama.cyr`. Pulled here via explicit include rather than
+# `[deps].stdlib` auto-prepend — see cyrius.cyml's own comment on
+# the sandhi fold pattern (folded ~6.6 KLOC + folded peers stay under
+# the 2 MB preprocess_out cap that motivated opt-in includes for
+# folded libs at cyrius v5.8.65). Engines exposed: bre, re2, pcre,
+# vim (v1.3.0); fuzzy gated to v1.3.1 because its `_search_at`
+# asymmetry needs explicit per-verb gating.
+include "lib/niyama.cyr"
 include "src/version_str.cyr"
 include "src/buffer.cyr"
 include "src/highlight.cyr"
@@ -75,7 +85,22 @@ fn print_help() {
     syscall(1, 1, "emit N lines before+after each match (grep -C)\n", 47);
     syscall(1, 1, "       --regex=<flavor>    on ", 30);
     syscall(1, 1, "--grep/--grepfiles/--replace[-all]/--replace-files[-all]: ", 58);
-    syscall(1, 1, "pattern is a regex (only flavor supported today: ere)\n", 54);
+    _help_line("pattern is a regex. Flavors:\n");
+    _help_line("                                ere   POSIX-ERE-ish (cyrius stdlib Pike NFA)\n");
+    _help_line("                                bre   POSIX-BRE (\\+, \\? are GNU exts)\n");
+    _help_line("                                re2   Google RE2 (linear-time; no backrefs)\n");
+    _help_line("                                pcre  PCRE-style (\\d, \\w, lookaround)\n");
+    _help_line("                                vim   vim-regex (\\v very-magic, \\V no-magic)\n");
+    _help_line("                                fuzzy planned for v1.3.1 (Levenshtein)\n");
+    _help_line("                              Note: backreferences (\\1) deferred per niyama v1.\n");
+    return 0;
+}
+
+# Helper for variable-width help lines — strlen() keeps the byte
+# count accurate without hand-counting per line. Used for the
+# --regex flavor table, where each engine's caveats vary in length.
+fn _help_line(s) {
+    syscall(1, 1, s, strlen(s));
     return 0;
 }
 

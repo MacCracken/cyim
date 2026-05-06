@@ -19,8 +19,19 @@ output = "cyim"
 #   fs                    — file read/write
 #   hashmap               — keymap tables, mode dispatch
 #   assert                — tests/cyim.tcyr
-#   regex                 — Pike NFA / POSIX-ERE engine for v1.2.0
-#                           --regex=<flavor> on agent-drive verbs
+#   regex                 — Pike NFA / POSIX-ERE engine (--regex=ere)
+#   unicode/normalize     — required by niyama_fuzzy's NFD path; pulled
+#   unicode/_normalize_data  in even though cyim's v1.3.0 doesn't expose
+#                           fuzzy, because the niyama dist is one
+#                           concatenated artifact. v5.8.49 subdir-nested
+#                           stdlib resolution (`"unicode/<file>"` →
+#                           `lib/unicode/<file>.cyr`) is the documented
+#                           way to pull these in.
+# niyama itself is folded into stdlib at cyrius 5.9.0 (per niyama
+# 1.0.1's ADR 0011 fold trigger) but NOT auto-prepended — per the
+# sandhi-pattern documented in cyrius.cyml itself, folded libs are
+# pulled via explicit `include "lib/niyama.cyr"` to keep the
+# preprocess_out buffer under the 2 MB cap. See src/main.cyr.
 # vyakarana grammar/tokenizer dep added when M2 highlighting lands.
 [deps]
 stdlib = [
@@ -37,6 +48,13 @@ stdlib = [
     "assert",
     "bench",
     "regex",
+    "unicode/_decode",
+    "unicode/categories",
+    "unicode/_categories_data",
+    "unicode/casefold",
+    "unicode/_casefold_data",
+    "unicode/normalize",
+    "unicode/_normalize_data",
 ]
 
 # vyakarana — token-level grammar/tokenizer library. M2 syntax-highlighting

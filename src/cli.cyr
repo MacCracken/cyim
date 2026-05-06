@@ -82,15 +82,99 @@ var MATCHER_REGEX   = 1;
 # FLAVOR_LITERAL is the parser sentinel meaning "no --regex= seen on
 # cmdline" — distinct from any real flavor_id (>= 0) so the parser
 # code reads cleanly.
+#
+# v1.2.0: ERE only (cyrius stdlib `lib/regex.cyr` Pike NFA).
+# v1.3.0: BRE / RE2 / PCRE / VIM (niyama 1.0.1 vendored stdlib at
+#   cyrius 5.9.0; all four engines expose the full
+#   `<engine>_compile` / `_search_at` / `_group_end` ABI cyim's
+#   hot path requires).
+# v1.3.1 (planned): FUZZY. Deferred because niyama_fuzzy lacks
+#   `_search_at` (per niyama 1.0 state.md "v1.0 known asymmetries")
+#   so iteration over multiple matches needs a wrapper layer or
+#   per-verb gating. Reserved here so the parser can recognize
+#   "fuzzy" and emit a "v1.3.1" diagnostic instead of the generic
+#   unknown-flavor message.
+#
+# Caveats surfaced in --help (not enforced in cyim — engine-side):
+#   - Backreferences (`\1`-style) deferred per niyama's long-term
+#     security-against-misuse plan; not yet supported in any
+#     v1.3.0 flavor.
+#   - vim mode-aware syntax (`\v` / `\V` / `\m` / `\M`) compiles
+#     via niyama_vim_compile; default is "magic" (vim's `\m`).
 var FLAVOR_LITERAL = 0;
 var FLAVOR_ERE     = 1;
+var FLAVOR_BRE     = 2;
+var FLAVOR_RE2     = 3;
+var FLAVOR_PCRE    = 4;
+var FLAVOR_VIM     = 5;
+var FLAVOR_FUZZY   = 6;
 
 # Resolve a flavor name to its FLAVOR_* id. Unknown flavor returns
 # FLAVOR_LITERAL — the parser turns that into exit-2 with the
-# supported-flavor list.
+# supported-flavor list. FLAVOR_FUZZY recognized but parsers reject
+# it with a "v1.3.1" diagnostic until the iteration wrapper lands.
 fn _regex_flavor_id(name) {
-    if (streq(name, "ere") == 1) { return FLAVOR_ERE; }
+    if (streq(name, "ere")   == 1) { return FLAVOR_ERE;   }
+    if (streq(name, "bre")   == 1) { return FLAVOR_BRE;   }
+    if (streq(name, "re2")   == 1) { return FLAVOR_RE2;   }
+    if (streq(name, "pcre")  == 1) { return FLAVOR_PCRE;  }
+    if (streq(name, "vim")   == 1) { return FLAVOR_VIM;   }
+    if (streq(name, "fuzzy") == 1) { return FLAVOR_FUZZY; }
     return FLAVOR_LITERAL;
+}
+
+# Per-flavor dispatch wrappers. Single source of truth so flavor
+# additions touch ONE site (here) instead of every hot-path call.
+# Returns -1 on unknown flavor (defensive — the parser already
+# rejects FLAVOR_LITERAL paths before reaching these).
+fn _re_search_at(flavor, nfa, s, slen, from) {
+    if (flavor == FLAVOR_ERE)  { return regex_search_at(nfa, s, slen, from); }
+    if (flavor == FLAVOR_BRE)  { return niyama_bre_search_at(nfa, s, slen, from); }
+    if (flavor == FLAVOR_RE2)  { return niyama_re2_search_at(nfa, s, slen, from); }
+    if (flavor == FLAVOR_PCRE) { return niyama_pcre_search_at(nfa, s, slen, from); }
+    if (flavor == FLAVOR_VIM)  { return niyama_vim_search_at(nfa, s, slen, from); }
+    return 0 - 1;
+}
+
+fn _re_search(flavor, nfa, s) {
+    if (flavor == FLAVOR_ERE)  { return regex_search(nfa, s); }
+    if (flavor == FLAVOR_BRE)  { return niyama_bre_search(nfa, s); }
+    if (flavor == FLAVOR_RE2)  { return niyama_re2_search(nfa, s); }
+    if (flavor == FLAVOR_PCRE) { return niyama_pcre_search(nfa, s); }
+    if (flavor == FLAVOR_VIM)  { return niyama_vim_search(nfa, s); }
+    return 0 - 1;
+}
+
+fn _re_group_end(flavor, nfa, n) {
+    if (flavor == FLAVOR_ERE)  { return regex_group_end(nfa, n); }
+    if (flavor == FLAVOR_BRE)  { return niyama_bre_group_end(nfa, n); }
+    if (flavor == FLAVOR_RE2)  { return niyama_re2_group_end(nfa, n); }
+    if (flavor == FLAVOR_PCRE) { return niyama_pcre_group_end(nfa, n); }
+    if (flavor == FLAVOR_VIM)  { return niyama_vim_group_end(nfa, n); }
+    return 0 - 1;
+}
+
+# Validate a parsed --regex=<flavor> id against what cyim ships
+# today. Returns 1 on accept, 0 on reject (caller returns exit 2).
+# Centralises the per-verb diagnostic so all six parser sites
+# emit a uniform supported-list message and the same fuzzy-deferred
+# explainer. `verb` is the short verb prefix ("--grep",
+# "--replace-all", etc.) — included in the message so a wrapped
+# script user sees which surface refused.
+fn _flavor_validate(verb, fid) {
+    if (fid == FLAVOR_LITERAL) {
+        syscall(1, 2, "cyim ", 5);
+        syscall(1, 2, verb, strlen(verb));
+        syscall(1, 2, ": unknown --regex flavor (supported: bre, ere, pcre, re2, vim; fuzzy: v1.3.1)\n", 78);
+        return 0;
+    }
+    if (fid == FLAVOR_FUZZY) {
+        syscall(1, 2, "cyim ", 5);
+        syscall(1, 2, verb, strlen(verb));
+        syscall(1, 2, ": --regex=fuzzy not yet supported; planned for v1.3.1\n", 54);
+        return 0;
+    }
+    return 1;
 }
 
 # Allocate a RegexOpts with `flavor_id` and zeroed reserved slots.
@@ -110,6 +194,11 @@ fn _matcher_kind(m)   { return load64(m); }
 fn _matcher_needle(m) { return load64(m + 8); }
 fn _matcher_nfa(m)    { return load64(m + 8); }
 fn _matcher_nlen(m)   { return load64(m + 16); }
+# v1.3.0: regex matchers store FLAVOR_* in +16 (literal matchers
+# use +16 for nlen — the field is interpreted by kind). Hot-path
+# helpers read this to dispatch to the right engine without
+# re-resolving from a passed-in opts struct.
+fn _matcher_flavor(m) { return load64(m + 16); }
 
 # Build a literal Matcher around a NUL-terminated `needle`.
 fn _matcher_literal(needle) {
@@ -123,18 +212,25 @@ fn _matcher_literal(needle) {
 
 # Build a regex Matcher by compiling `pattern` per `opts`. Returns 0
 # on engine compile failure (caller emits exit-2 + a parse-error
-# message) or alloc failure.
+# message) or alloc failure. The flavor is stashed in the matcher's
+# +16 slot so hot-path helpers (count_matches, substitute, run_grep)
+# dispatch via `_matcher_flavor` + `_re_search_at` without re-passing
+# opts. v1.3.1 will add a niyama_fuzzy_compile arm here once the
+# iteration-wrapper for fuzzy lands.
 fn _matcher_regex(pattern, opts) {
     var flavor = load64(opts);
     var nfa = 0;
-    if (flavor == FLAVOR_ERE) { nfa = regex_compile(pattern); }
-    # Future flavors (BRE/RE2/PCRE/fuzzy/vim via niyama) dispatch here.
+    if (flavor == FLAVOR_ERE)  { nfa = regex_compile(pattern); }
+    if (flavor == FLAVOR_BRE)  { nfa = niyama_bre_compile(pattern); }
+    if (flavor == FLAVOR_RE2)  { nfa = niyama_re2_compile(pattern); }
+    if (flavor == FLAVOR_PCRE) { nfa = niyama_pcre_compile(pattern); }
+    if (flavor == FLAVOR_VIM)  { nfa = niyama_vim_compile(pattern); }
     if (nfa == 0) { return 0; }
     var m = alloc(24);
     if (m == 0) { return 0; }
     store64(m,      MATCHER_REGEX);
     store64(m + 8,  nfa);
-    store64(m + 16, 0);
+    store64(m + 16, flavor);
     return m;
 }
 
@@ -171,18 +267,19 @@ fn _cli_count_matches_m(b, m) {
     if (s == 0) { return 0; }
     var slen = load64(&len_slot);
     var nfa = _matcher_nfa(m);
+    var flavor = _matcher_flavor(m);
     var count = 0;
     var from = 0;
     var go = 1;
     while (go == 1) {
         if (from > slen) { go = 0; }
         if (go == 1) {
-            var hit = regex_search_at(nfa, s, slen, from);
+            var hit = _re_search_at(flavor, nfa, s, slen, from);
             if (hit < 0) {
                 go = 0;
             } else {
                 count = count + 1;
-                var span_end = regex_group_end(nfa, 0);
+                var span_end = _re_group_end(flavor, nfa, 0);
                 if (span_end == hit) {
                     from = hit + 1;
                 } else {
@@ -196,8 +293,10 @@ fn _cli_count_matches_m(b, m) {
 
 # Build a fresh gap-buffer copy of `src` with regex matches of `nfa`
 # replaced by NUL-terminated `new`. mode == REPLACE_ALL substitutes
-# every occurrence; otherwise just the first.
-fn _cli_substitute_regex(src, nfa, new, mode) {
+# every occurrence; otherwise just the first. `flavor` selects which
+# engine's `search_at` / `group_end` ABI to drive (FLAVOR_ERE through
+# the cyrius stdlib; FLAVOR_BRE / RE2 / PCRE / VIM through niyama).
+fn _cli_substitute_regex(src, flavor, nfa, new, mode) {
     var nlen = strlen(new);
     var len_slot[8];
     store64(&len_slot, 0);
@@ -211,7 +310,7 @@ fn _cli_substitute_regex(src, nfa, new, mode) {
     while (go == 1) {
         if (from > slen) { go = 0; }
         if (go == 1) {
-            var hit = regex_search_at(nfa, s, slen, from);
+            var hit = _re_search_at(flavor, nfa, s, slen, from);
             if (hit < 0) {
                 # Emit tail [from..slen) and finish.
                 var t = from;
@@ -227,7 +326,7 @@ fn _cli_substitute_regex(src, nfa, new, mode) {
                     buf_insert_byte(out, load8(s + p));
                     p = p + 1;
                 }
-                var span_end = regex_group_end(nfa, 0);
+                var span_end = _re_group_end(flavor, nfa, 0);
                 var span_len = span_end - hit;
                 var emit_replace = 1;
                 if (mode == REPLACE_FIRST_UNIQUE) {
@@ -273,7 +372,7 @@ fn _cli_substitute_m(src, m, new, mode) {
     if (_matcher_kind(m) == MATCHER_LITERAL) {
         return _cli_substitute(src, _matcher_needle(m), new, mode);
     }
-    return _cli_substitute_regex(src, _matcher_nfa(m), new, mode);
+    return _cli_substitute_regex(src, _matcher_flavor(m), _matcher_nfa(m), new, mode);
 }
 
 # BUG-001 workaround for cyrius/lib/args.cyr.
@@ -639,11 +738,13 @@ fn _cli_grep_one(b, file_path, m, context_n, emitted_inout) {
     var lit_needle = 0;
     var lit_nlen = 0;
     var nfa = 0;
+    var flavor = 0;
     if (m_kind == MATCHER_LITERAL) {
         lit_needle = _matcher_needle(m);
         lit_nlen = _matcher_nlen(m);
     } else {
         nfa = _matcher_nfa(m);
+        flavor = _matcher_flavor(m);
     }
 
     var any_hit = 0;
@@ -684,7 +785,7 @@ fn _cli_grep_one(b, file_path, m, context_n, emitted_inout) {
                     c = c + 1;
                 }
                 store8(line_buf + line_len, 0);
-                if (regex_search(nfa, line_buf) >= 0) { hit = 1; }
+                if (_re_search(flavor, nfa, line_buf) >= 0) { hit = 1; }
             }
         }
         if (hit == 1) {
@@ -1219,10 +1320,7 @@ fn _dispatch_grep(ac) {
                     }
                     if (g_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
                     var fid = _regex_flavor_id(sf);
-                    if (fid == FLAVOR_LITERAL) {
-                        syscall(1, 2, "cyim --grep: unknown --regex flavor (supported: ere)\n", 53);
-                        return 2;
-                    }
+                    if (_flavor_validate("--grep", fid) == 0) { return 2; }
                     g_regex_flavor = fid;
                     g_regex_seen = 1;
                     consumed = 1;
@@ -1288,10 +1386,7 @@ fn _dispatch_grepfiles(ac) {
                     }
                     if (gf_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
                     var fid = _regex_flavor_id(sf);
-                    if (fid == FLAVOR_LITERAL) {
-                        syscall(1, 2, "cyim --grepfiles: unknown --regex flavor (supported: ere)\n", 58);
-                        return 2;
-                    }
+                    if (_flavor_validate("--grepfiles", fid) == 0) { return 2; }
                     gf_regex_flavor = fid;
                     gf_regex_seen = 1;
                     consumed = 1;
@@ -1378,10 +1473,7 @@ fn _dispatch_replace(ac) {
                     }
                     if (r_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
                     var fid = _regex_flavor_id(sf);
-                    if (fid == FLAVOR_LITERAL) {
-                        syscall(1, 2, "cyim --replace: unknown --regex flavor (supported: ere)\n", 56);
-                        return 2;
-                    }
+                    if (_flavor_validate("--replace", fid) == 0) { return 2; }
                     r_regex_flavor = fid;
                     r_regex_seen = 1;
                     consumed = 1;
@@ -1461,10 +1553,7 @@ fn _dispatch_replace_all(ac) {
                     }
                     if (ra_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
                     var fid = _regex_flavor_id(sf);
-                    if (fid == FLAVOR_LITERAL) {
-                        syscall(1, 2, "cyim --replace-all: unknown --regex flavor (supported: ere)\n", 60);
-                        return 2;
-                    }
+                    if (_flavor_validate("--replace-all", fid) == 0) { return 2; }
                     ra_regex_flavor = fid;
                     ra_regex_seen = 1;
                     consumed = 1;
@@ -1548,10 +1637,7 @@ fn _dispatch_replace_files(ac) {
                     }
                     if (rf_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
                     var fid = _regex_flavor_id(sf);
-                    if (fid == FLAVOR_LITERAL) {
-                        syscall(1, 2, "cyim --replace-files: unknown --regex flavor (supported: ere)\n", 62);
-                        return 2;
-                    }
+                    if (_flavor_validate("--replace-files", fid) == 0) { return 2; }
                     rf_regex_flavor = fid;
                     rf_regex_seen = 1;
                     consumed = 1;
@@ -1632,10 +1718,7 @@ fn _dispatch_replace_files_all(ac) {
                     }
                     if (rfa_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
                     var fid = _regex_flavor_id(sf);
-                    if (fid == FLAVOR_LITERAL) {
-                        syscall(1, 2, "cyim --replace-files-all: unknown --regex flavor (supported: ere)\n", 66);
-                        return 2;
-                    }
+                    if (_flavor_validate("--replace-files-all", fid) == 0) { return 2; }
                     rfa_regex_flavor = fid;
                     rfa_regex_seen = 1;
                     consumed = 1;

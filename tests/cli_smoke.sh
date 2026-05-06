@@ -517,9 +517,11 @@ assert_rc '--grep no --regex (literal default back-compat)' 1 $?
 "$BIN" --grep --regex=ere '[' "$REGEX_FIX" >/dev/null 2>&1
 assert_rc '--grep --regex=ere invalid pattern' 2 $?
 
-# Case 64 — --grep --regex=pcre unknown flavor → exit 2.
-"$BIN" --grep --regex=pcre 'foo' "$REGEX_FIX" >/dev/null 2>&1
-assert_rc '--grep --regex=pcre unknown flavor' 2 $?
+# Case 64 — --grep --regex=foobar unknown flavor → exit 2.
+# (v1.3.0: pcre is now a real flavor; use a deliberately fake name
+# so the unknown-flavor parser arm stays exercised.)
+"$BIN" --grep --regex=foobar 'foo' "$REGEX_FIX" >/dev/null 2>&1
+assert_rc '--grep --regex=foobar unknown flavor' 2 $?
 
 # Case 65 — --grep --regex= (missing flavor) → exit 2.
 "$BIN" --grep --regex= 'foo' "$REGEX_FIX" >/dev/null 2>&1
@@ -610,9 +612,121 @@ case "$WC_OUT" in
     *) FAIL=$((FAIL + 1)); echo "FAIL: --replace-all --regex=ere --wc=l output: expected '3 $REGEX_REPLACE', got '$WC_OUT'" ;;
 esac
 
+# === v1.3.0 — niyama flavor expansion ================================
+# bre / re2 / pcre / vim wired through niyama (folded into cyrius
+# stdlib at 5.9.0). One end-to-end case per engine on the most
+# distinctive idiom for that flavor, plus a --replace-all roundtrip
+# proving the substitute path threads flavor correctly. Plus a
+# fuzzy-deferred gate (parses but exits 2 with a v1.3.1 message).
+
+REGEX_FIX_3=/tmp/cyim-cli-smoke-regex-v130.txt
+printf 'foo123\nbar456\nbaz789\n' > "$REGEX_FIX_3"
+
+# Case 75 — --grep --regex=bre POSIX-BRE digit class with explicit
+# repeat (\+ is GNU extension, not POSIX-BRE — proves we're really
+# running BRE semantics, not falling through to ERE).
+OUT=$("$BIN" --grep --regex=bre '[0-9][0-9]*' "$REGEX_FIX_3" 2>&1)
+assert_rc '--grep --regex=bre [0-9][0-9]*' 0 $?
+case "$OUT" in
+    *"foo123"*"bar456"*"baz789"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=bre output: '$OUT'" ;;
+esac
+
+# Case 76 — --grep --regex=re2 (RE2 syntax: + quantifier supported).
+OUT=$("$BIN" --grep --regex=re2 '[0-9]+' "$REGEX_FIX_3" 2>&1)
+assert_rc '--grep --regex=re2 [0-9]+' 0 $?
+case "$OUT" in
+    *"foo123"*"bar456"*"baz789"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=re2 output: '$OUT'" ;;
+esac
+
+# Case 77 — --grep --regex=pcre with PCRE-only \d shorthand (proves
+# we're running PCRE, not ERE — \d isn't an ERE class).
+OUT=$("$BIN" --grep --regex=pcre '\d+' "$REGEX_FIX_3" 2>&1)
+assert_rc '--grep --regex=pcre \d+' 0 $?
+case "$OUT" in
+    *"foo123"*"bar456"*"baz789"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=pcre \\d+ output: '$OUT'" ;;
+esac
+
+# Case 78 — --grep --regex=vim with vim's \+ quantifier (default
+# magic mode). Proves vim flavor compiles vim-specific syntax.
+OUT=$("$BIN" --grep --regex=vim '[0-9]\+' "$REGEX_FIX_3" 2>&1)
+assert_rc '--grep --regex=vim [0-9]\+' 0 $?
+case "$OUT" in
+    *"foo123"*"bar456"*"baz789"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grep --regex=vim output: '$OUT'" ;;
+esac
+
+# Case 79 — --replace-all --regex=pcre (substitute path through new
+# flavor — _cli_substitute_regex flavor dispatch).
+REGEX_RW=/tmp/cyim-cli-smoke-regex-v130-rw.txt
+printf 'a1b2c3\n' > "$REGEX_RW"
+"$BIN" --replace-all --regex=pcre '\d' 'N' "$REGEX_RW" >/dev/null 2>&1
+assert_rc '--replace-all --regex=pcre \d' 0 $?
+RW_GOT=$(cat "$REGEX_RW")
+case "$RW_GOT" in
+    "aNbNcN") PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --replace-all --regex=pcre \\d got: '$RW_GOT'" ;;
+esac
+
+# Case 80 — --replace --regex=re2 with --expect-1 (count_matches
+# flavor dispatch — proves the unique-check path threads flavor).
+printf 'one ONE one\n' > "$REGEX_RW"
+"$BIN" --replace --regex=re2 'ONE' 'TWO' --expect-1 "$REGEX_RW" >/dev/null 2>&1
+assert_rc '--replace --regex=re2 --expect-1' 0 $?
+RW_GOT=$(cat "$REGEX_RW")
+case "$RW_GOT" in
+    "one TWO one") PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --replace --regex=re2 --expect-1 got: '$RW_GOT'" ;;
+esac
+
+# Case 81 — --regex=fuzzy: parser recognises but rejects with a
+# v1.3.1-deferred message, exit 2. Distinct from the unknown-flavor
+# arm so consumers can trust the diagnostic to be accurate.
+ERR_OUT=$("$BIN" --grep --regex=fuzzy 'foo' "$REGEX_FIX_3" 2>&1)
+assert_rc '--grep --regex=fuzzy deferred to v1.3.1' 2 $?
+case "$ERR_OUT" in
+    *"v1.3.1"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --regex=fuzzy diagnostic missing v1.3.1 hint: '$ERR_OUT'" ;;
+esac
+
+# Case 82 — --regex=bre invalid pattern (unbalanced bracket) → exit 2.
+"$BIN" --grep --regex=bre '[' "$REGEX_FIX_3" >/dev/null 2>&1
+assert_rc '--grep --regex=bre invalid pattern' 2 $?
+
+# Case 83 — --grepfiles --regex=pcre across multiple files
+# (cross-engine × multi-file composition).
+REGEX_FIX_3B=/tmp/cyim-cli-smoke-regex-v130-b.txt
+printf 'no digits here\n' > "$REGEX_FIX_3B"
+OUT=$("$BIN" --grepfiles --regex=pcre '\d+' "$REGEX_FIX_3" "$REGEX_FIX_3B" 2>&1)
+assert_rc '--grepfiles --regex=pcre across files' 0 $?
+case "$OUT" in
+    *"$REGEX_FIX_3:1:foo123"*"$REGEX_FIX_3:3:baz789"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --grepfiles --regex=pcre output: '$OUT'" ;;
+esac
+
+# Case 84 — --replace-files --regex=vim (file-sourced OLD/NEW × niyama
+# vim flavor). Proves --regex= threads through the file-sourced verb
+# path identically to argv-sourced.
+REGEX_OLD_3=/tmp/cyim-cli-smoke-regex-v130-old.txt
+REGEX_NEW_3=/tmp/cyim-cli-smoke-regex-v130-new.txt
+printf '[0-9]\+' > "$REGEX_OLD_3"
+printf 'NUM' > "$REGEX_NEW_3"
+printf 'a1b2\n' > "$REGEX_RW"
+"$BIN" --replace-all --regex=vim "$(cat "$REGEX_OLD_3")" "$(cat "$REGEX_NEW_3")" "$REGEX_RW" >/dev/null 2>&1
+assert_rc '--replace-all --regex=vim [0-9]\+' 0 $?
+RW_GOT=$(cat "$REGEX_RW")
+case "$RW_GOT" in
+    "aNUMbNUM") PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --replace-all --regex=vim got: '$RW_GOT'" ;;
+esac
+
+rm -f "$REGEX_FIX_3" "$REGEX_FIX_3B" "$REGEX_RW" "$REGEX_OLD_3" "$REGEX_NEW_3"
+
 rm -f "$REGEX_FIX" "$REGEX_FIX2" "$REGEX_REPLACE" "$REGEX_OLD" "$REGEX_NEW"
 
 rm -f "$FIX" "$WRITE_FIX" "$BATCH_FIX"
 
-echo "$PASS passed, $FAIL failed (84 total)"
+echo "$PASS passed, $FAIL failed (103 total)"
 [ "$FAIL" = "0" ] || exit 1
