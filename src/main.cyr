@@ -91,8 +91,10 @@ fn print_help() {
     _help_line("                                re2   Google RE2 (linear-time; no backrefs)\n");
     _help_line("                                pcre  PCRE-style (\\d, \\w, lookaround)\n");
     _help_line("                                vim   vim-regex (\\v very-magic, \\V no-magic)\n");
-    _help_line("                                fuzzy Levenshtein (default k=2; substitute eats `plen`\n");
-    _help_line("                                      bytes per match — imperfect for insert/delete edits)\n");
+    _help_line("                                fuzzy Levenshtein (default k=2 via --fuzzy-edits=<n>;\n");
+    _help_line("                                      0=exact, 1=one edit, etc.; tight span via min-distance\n");
+    _help_line("                                      walk over candidate lengths, ties broken to smallest L)\n");
+    _help_line("       --fuzzy-edits=<n>   on --regex=fuzzy: max Levenshtein distance (0=exact)\n");
     _help_line("                              Note: backreferences (\\1) deferred per niyama v1.\n");
     return 0;
 }

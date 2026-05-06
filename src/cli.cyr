@@ -166,6 +166,75 @@ fn _re_group_end(flavor, nfa, n) {
     return 0 - 1;
 }
 
+# v1.3.2: tight match-end recovery for FLAVOR_FUZZY. niyama_fuzzy
+# doesn't expose `_group_end`; v1.3.1 used `hit + plen` as a coarse
+# approximation, which overshoots on deletion edits and undershoots
+# on insertion edits. This walks candidate end positions in
+# [hit + max(0, plen - max_edits), hit + plen + max_edits] and
+# picks the one with minimum Levenshtein distance to the pattern.
+#
+# Tie-break: smaller L wins. Never eat more source bytes than
+# strictly necessary — preserves line boundaries on deletion edits
+# (e.g. `fo` matching pattern `foo`: L=2 d=1 and L=3 d=1 tie, but
+# L=2 doesn't cross the trailing newline). The alternative tie-break
+# "L closer to plen" was tried first and produced exactly the
+# newline-crossing failure mode that motivated this work.
+#
+# Cost: O(2 * max_edits + 1) substring materialisations per match,
+# each driving an O(plen × candidate_len) DP inside niyama. For
+# default k=2 and small patterns this is negligible; for large
+# patterns + k it's still bounded and called once per match.
+#
+# Returns absolute end offset, clamped to [hit, slen]. Falls back
+# to the v1.3.1 plen-approximation only if no candidate verifies
+# (shouldn't happen if `hit` is a real fuzzy match offset).
+fn _fuzzy_span_end(nfa, s, slen, hit, plen, max_edits) {
+    var lo_len = plen - max_edits;
+    if (lo_len < 0) { lo_len = 0; }
+    var hi_len = plen + max_edits;
+
+    var best_end = hit + plen;
+    if (best_end > slen) { best_end = slen; }
+    var best_dist = 0 - 1;
+    var best_len = 0 - 1;
+
+    var cap = hi_len + 1;
+    var sub = alloc(cap);
+    if (sub == 0) { return best_end; }
+
+    var L = lo_len;
+    while (L <= hi_len) {
+        var end_candidate = hit + L;
+        if (end_candidate <= slen) {
+            var i = 0;
+            while (i < L) {
+                store8(sub + i, load8(s + hit + i));
+                i = i + 1;
+            }
+            store8(sub + L, 0);
+            var d = niyama_fuzzy_distance(nfa, sub);
+            if (d <= max_edits) {
+                var take = 0;
+                if (best_dist < 0) {
+                    take = 1;
+                } else {
+                    if (d < best_dist) { take = 1; }
+                    if (d == best_dist) {
+                        if (L < best_len) { take = 1; }
+                    }
+                }
+                if (take == 1) {
+                    best_dist = d;
+                    best_len = L;
+                    best_end = end_candidate;
+                }
+            }
+        }
+        L = L + 1;
+    }
+    return best_end;
+}
+
 # Validate a parsed --regex=<flavor> id against what cyim ships
 # today. Returns 1 on accept, 0 on reject (caller returns exit 2).
 # Centralises the per-verb diagnostic so all six parser sites
@@ -186,6 +255,12 @@ fn _flavor_validate(verb, fid) {
 # Reserved slots are the load-bearing extensibility seam — future
 # icase / multiline / etc. set bits in reserved_flags without
 # changing the Matcher signature or the run_* shape.
+#
+# v1.3.2: +8 reserved_flags repurposed as `fuzzy_edits` (only
+# meaningful when flavor_id == FLAVOR_FUZZY). 0 means "use niyama's
+# default k=2"; positive means "compile fuzzy with this max_edits".
+# Other flavors ignore the slot. Reserved name kept in comments
+# above for future bit-field reuse on non-fuzzy engines.
 fn _regex_opts_new(flavor_id) {
     var opts = alloc(24);
     if (opts == 0) { return 0; }
@@ -193,6 +268,24 @@ fn _regex_opts_new(flavor_id) {
     store64(opts + 8,  0);
     store64(opts + 16, 0);
     return opts;
+}
+
+# Set the fuzzy_edits override on a RegexOpts. Only effective when
+# the opts' flavor is FLAVOR_FUZZY; otherwise the slot is ignored
+# at compile time. Caller (parser) emits the per-verb diagnostic
+# if a non-fuzzy verb tries to set this.
+#
+# Encoding: opts +8 stores `k + 1` when explicitly set, `0` when
+# unset (use niyama default of 2). This lets `--fuzzy-edits=0`
+# (exact-match-only fuzzy, useful for "match the pattern verbatim
+# but go through the fuzzy code path") differ from "user didn't
+# pass --fuzzy-edits at all" — passing -1 as `k` here means
+# "unset, leave the slot at 0 → niyama default".
+fn _regex_opts_set_fuzzy_edits(opts, k) {
+    if (opts == 0) { return 0; }
+    if (k < 0) { return 0; }
+    store64(opts + 8, k + 1);
+    return 0;
 }
 
 fn _matcher_kind(m)   { return load64(m); }
@@ -205,24 +298,28 @@ fn _matcher_nlen(m)   { return load64(m + 16); }
 # re-resolving from a passed-in opts struct.
 fn _matcher_flavor(m) { return load64(m + 16); }
 # v1.3.1: regex matchers also store the pattern length in +24,
-# used by FLAVOR_FUZZY's span approximation. niyama_fuzzy lacks
-# `_group_end`, so substitute / count paths approximate the match
-# span as `hit + plen`. Imperfect for insert/delete edits within
-# max_edits, but bounded — see CHANGELOG v1.3.1 § Notes for the
-# tighten path. Other flavors get exact span via _re_group_end.
-fn _matcher_plen(m)   { return load64(m + 24); }
+# used by FLAVOR_FUZZY's span computation. v1.3.2: max_edits in
+# +32 (for fuzzy only — other flavors leave it 0). The fuzzy
+# substitute path uses (plen, max_edits) as the bounds for
+# `_fuzzy_span_end`'s candidate-length walk: the match span is
+# in [plen - max_edits, plen + max_edits], picked by minimum
+# Levenshtein distance. Replaces v1.3.1's plain `hit + plen`
+# approximation — exact for substitution edits, now also tight
+# for insertion / deletion edits within max_edits.
+fn _matcher_plen(m)      { return load64(m + 24); }
+fn _matcher_max_edits(m) { return load64(m + 32); }
 
 # Build a literal Matcher around a NUL-terminated `needle`.
-# v1.3.1: 32B (was 24B) to make room for the +24 plen slot used by
-# regex matchers' fuzzy-span approximation. Literal matchers leave
-# +24 zero; the slot is interpreted by kind.
+# v1.3.2: 40B (was 32B) — added +32 max_edits slot for FLAVOR_FUZZY's
+# span search. Literal matchers leave +24 / +32 zero.
 fn _matcher_literal(needle) {
-    var m = alloc(32);
+    var m = alloc(40);
     if (m == 0) { return 0; }
     store64(m,      MATCHER_LITERAL);
     store64(m + 8,  needle);
     store64(m + 16, strlen(needle));
     store64(m + 24, 0);
+    store64(m + 32, 0);
     return m;
 }
 
@@ -236,20 +333,40 @@ fn _matcher_literal(needle) {
 # approximate match end as `hit + plen`).
 fn _matcher_regex(pattern, opts) {
     var flavor = load64(opts);
+    var encoded_k = load64(opts + 8);
     var nfa = 0;
     if (flavor == FLAVOR_ERE)   { nfa = regex_compile(pattern); }
     if (flavor == FLAVOR_BRE)   { nfa = niyama_bre_compile(pattern); }
     if (flavor == FLAVOR_RE2)   { nfa = niyama_re2_compile(pattern); }
     if (flavor == FLAVOR_PCRE)  { nfa = niyama_pcre_compile(pattern); }
     if (flavor == FLAVOR_VIM)   { nfa = niyama_vim_compile(pattern); }
-    if (flavor == FLAVOR_FUZZY) { nfa = niyama_fuzzy_compile(pattern); }
+    if (flavor == FLAVOR_FUZZY) {
+        # v1.3.2: honor --fuzzy-edits=N override (opts +8 stores k+1
+        # when set, 0 when unset). Unset → niyama default (k=2).
+        if (encoded_k > 0) {
+            nfa = niyama_fuzzy_compile_opts(pattern, encoded_k - 1, 0);
+        } else {
+            nfa = niyama_fuzzy_compile(pattern);
+        }
+    }
     if (nfa == 0) { return 0; }
-    var m = alloc(32);
+    var m = alloc(40);
     if (m == 0) { return 0; }
     store64(m,      MATCHER_REGEX);
     store64(m + 8,  nfa);
     store64(m + 16, flavor);
     store64(m + 24, strlen(pattern));
+    # v1.3.2: stash effective max_edits for fuzzy span search. For
+    # non-fuzzy flavors we leave 0 (unused — _re_group_end is exact).
+    var eff_k = 0;
+    if (flavor == FLAVOR_FUZZY) {
+        if (encoded_k > 0) {
+            eff_k = encoded_k - 1;
+        } else {
+            eff_k = 2;
+        }
+    }
+    store64(m + 32, eff_k);
     return m;
 }
 
@@ -288,6 +405,7 @@ fn _cli_count_matches_m(b, m) {
     var nfa = _matcher_nfa(m);
     var flavor = _matcher_flavor(m);
     var plen = _matcher_plen(m);
+    var max_edits = _matcher_max_edits(m);
     var count = 0;
     var from = 0;
     var go = 1;
@@ -299,12 +417,11 @@ fn _cli_count_matches_m(b, m) {
                 go = 0;
             } else {
                 count = count + 1;
-                # v1.3.1: niyama_fuzzy lacks `_group_end`; approximate
-                # span as hit + plen. Other engines have exact ends.
+                # v1.3.2: tight fuzzy span via min-distance walk;
+                # other engines exact via _re_group_end.
                 var span_end = 0;
                 if (flavor == FLAVOR_FUZZY) {
-                    span_end = hit + plen;
-                    if (span_end > slen) { span_end = slen; }
+                    span_end = _fuzzy_span_end(nfa, s, slen, hit, plen, max_edits);
                 } else {
                     span_end = _re_group_end(flavor, nfa, 0);
                 }
@@ -324,11 +441,11 @@ fn _cli_count_matches_m(b, m) {
 # every occurrence; otherwise just the first. `flavor` selects which
 # engine's `search_at` / `group_end` ABI to drive (FLAVOR_ERE through
 # the cyrius stdlib; FLAVOR_BRE / RE2 / PCRE / VIM through niyama).
-# v1.3.1: FLAVOR_FUZZY uses `plen` (the compile-time pattern length)
-# as the replaced span length — niyama_fuzzy lacks `_group_end`, so
-# the actual matched span (which can be plen ± max_edits for insert
-# / delete edits) is approximated.
-fn _cli_substitute_regex(src, flavor, nfa, plen, new, mode) {
+# v1.3.2: FLAVOR_FUZZY uses `_fuzzy_span_end` for tight match-span
+# recovery (was: `hit + plen` approximation in v1.3.1). `max_edits`
+# is the engine's k from compile time; threaded here because the
+# span search needs it as the candidate-length window bound.
+fn _cli_substitute_regex(src, flavor, nfa, plen, max_edits, new, mode) {
     var nlen = strlen(new);
     var len_slot[8];
     store64(&len_slot, 0);
@@ -360,8 +477,7 @@ fn _cli_substitute_regex(src, flavor, nfa, plen, new, mode) {
                 }
                 var span_end = 0;
                 if (flavor == FLAVOR_FUZZY) {
-                    span_end = hit + plen;
-                    if (span_end > slen) { span_end = slen; }
+                    span_end = _fuzzy_span_end(nfa, s, slen, hit, plen, max_edits);
                 } else {
                     span_end = _re_group_end(flavor, nfa, 0);
                 }
@@ -410,7 +526,7 @@ fn _cli_substitute_m(src, m, new, mode) {
     if (_matcher_kind(m) == MATCHER_LITERAL) {
         return _cli_substitute(src, _matcher_needle(m), new, mode);
     }
-    return _cli_substitute_regex(src, _matcher_flavor(m), _matcher_nfa(m), _matcher_plen(m), new, mode);
+    return _cli_substitute_regex(src, _matcher_flavor(m), _matcher_nfa(m), _matcher_plen(m), _matcher_max_edits(m), new, mode);
 }
 
 # BUG-001 workaround for cyrius/lib/args.cyr.
@@ -916,7 +1032,7 @@ fn _cli_slurp_file(file_path, len_out) {
 #   4 — OLD content not found in FILE
 #   5 — OLD content occurs more than once and not --replace-files-all
 #   6 — --expect-N / --expect-1 mismatch
-fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, regex_flavor) {
+fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits) {
     if (old_file == 0)  { syscall(1, 2, "cyim --replace-files: missing OLD_FILE\n", 39); return 2; }
     if (new_file == 0)  { syscall(1, 2, "cyim --replace-files: missing NEW_FILE\n", 39); return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace-files: missing FILE\n",     35); return 2; }
@@ -941,7 +1057,7 @@ fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, reg
         return 3;
     }
 
-    return run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor);
+    return run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits);
 }
 
 # `cyim --grep [--context=N] PATTERN FILE` — emit `FILE:N:LINE` for
@@ -950,7 +1066,7 @@ fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, reg
 # `--` separators between non-adjacent groups (grep -C N shape).
 # Matches grep(1) exit conventions: 0 if any match, 1 if none, 2 on
 # usage error, 3 if FILE is missing.
-fn run_grep(pattern, file_path, context_n, regex_flavor) {
+fn run_grep(pattern, file_path, context_n, regex_flavor, fuzzy_edits) {
     if (pattern == 0)   { syscall(1, 2, "cyim --grep: missing PATTERN\n", 29); return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --grep: missing FILE\n",    26); return 2; }
     if (strlen(pattern) == 0) {
@@ -971,6 +1087,7 @@ fn run_grep(pattern, file_path, context_n, regex_flavor) {
     } else {
         var opts = _regex_opts_new(regex_flavor);
         if (opts == 0) { syscall(1, 2, "cyim --grep: alloc failed\n", 26); return 1; }
+        _regex_opts_set_fuzzy_edits(opts, fuzzy_edits);
         m = _matcher_regex(pattern, opts);
         if (m == 0) {
             syscall(1, 2, "cyim --grep: invalid regex pattern\n", 35);
@@ -1000,7 +1117,7 @@ fn run_grep(pattern, file_path, context_n, regex_flavor) {
 # Exit codes: 0 = at least one match across all files, 1 = no matches
 # in any file, 2 = bad args, 3 = first missing FILE (early-exit so the
 # caller learns about typos before partial output diverges).
-fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor) {
+fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor, fuzzy_edits) {
     if (pattern == 0) {
         syscall(1, 2, "cyim --grepfiles: missing PATTERN\n", 35);
         return 2;
@@ -1021,6 +1138,7 @@ fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor) {
     } else {
         var opts = _regex_opts_new(regex_flavor);
         if (opts == 0) { syscall(1, 2, "cyim --grepfiles: alloc failed\n", 32); return 1; }
+        _regex_opts_set_fuzzy_edits(opts, fuzzy_edits);
         m = _matcher_regex(pattern, opts);
         if (m == 0) {
             syscall(1, 2, "cyim --grepfiles: invalid regex pattern\n", 40);
@@ -1101,7 +1219,7 @@ fn run_write(file_path, wc_mode, expect_pat, expect_pol) {
 #             return 6 *before* touching the file. --expect-N=0 is the
 #             "must be a no-op" idiom: success without writing, with
 #             --wc still honored if requested.
-fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor) {
+fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits) {
     if (old_str == 0)   { syscall(1, 2, "cyim --replace: missing OLD\n", 28);  return 2; }
     if (new_str == 0)   { syscall(1, 2, "cyim --replace: missing NEW\n", 28);  return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace: missing FILE\n", 29); return 2; }
@@ -1123,6 +1241,7 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavo
     } else {
         var opts = _regex_opts_new(regex_flavor);
         if (opts == 0) { syscall(1, 2, "cyim --replace: alloc failed\n", 29); return 1; }
+        _regex_opts_set_fuzzy_edits(opts, fuzzy_edits);
         m = _matcher_regex(old_str, opts);
         if (m == 0) {
             syscall(1, 2, "cyim --replace: invalid regex pattern\n", 38);
@@ -1345,6 +1464,8 @@ fn _dispatch_grep(ac) {
         var g_ctx_seen = 0;
         var g_regex_flavor = FLAVOR_LITERAL;
         var g_regex_seen = 0;
+        var g_fuzzy_edits = 0 - 1;
+        var g_fz_seen = 0;
         var g_idx = 2;
         while (g_idx < ac) {
             var arg = argv(g_idx);
@@ -1361,6 +1482,20 @@ fn _dispatch_grep(ac) {
                     if (_flavor_validate("--grep", fid) == 0) { return 2; }
                     g_regex_flavor = fid;
                     g_regex_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+                if (sfe != 0) {
+                    var nfe = _cli_atoi_nn(sfe);
+                    if (nfe < 0) {
+                        syscall(1, 2, "cyim --grep: --fuzzy-edits requires a non-negative integer\n", 60);
+                        return 2;
+                    }
+                    if (g_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                    g_fuzzy_edits = nfe;
+                    g_fz_seen = 1;
                     consumed = 1;
                 }
             }
@@ -1393,7 +1528,13 @@ fn _dispatch_grep(ac) {
             syscall(1, 2, "usage: cyim --grep [--context=<n>] <pattern> <file>\n", 53);
             return 2;
         }
-        return run_grep(g_p0, g_p1, g_ctx, g_regex_flavor);
+        if (g_fz_seen == 1) {
+            if (g_regex_flavor != FLAVOR_FUZZY) {
+                syscall(1, 2, "cyim --grep: --fuzzy-edits requires --regex=fuzzy\n", 51);
+                return 2;
+            }
+        }
+        return run_grep(g_p0, g_p1, g_ctx, g_regex_flavor, g_fuzzy_edits);
 }
 
 fn _dispatch_grepfiles(ac) {
@@ -1407,6 +1548,8 @@ fn _dispatch_grepfiles(ac) {
         var gf_ctx_seen = 0;
         var gf_regex_flavor = FLAVOR_LITERAL;
         var gf_regex_seen = 0;
+        var gf_fuzzy_edits = 0 - 1;
+        var gf_fz_seen = 0;
         var gf_alloc_n = (ac - 2) * 8;
         if (gf_alloc_n < 8) { gf_alloc_n = 8; }
         var gf_files = alloc(gf_alloc_n);
@@ -1427,6 +1570,20 @@ fn _dispatch_grepfiles(ac) {
                     if (_flavor_validate("--grepfiles", fid) == 0) { return 2; }
                     gf_regex_flavor = fid;
                     gf_regex_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
+                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+                if (sfe != 0) {
+                    var nfe = _cli_atoi_nn(sfe);
+                    if (nfe < 0) {
+                        syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires a non-negative integer\n", 65);
+                        return 2;
+                    }
+                    if (gf_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                    gf_fuzzy_edits = nfe;
+                    gf_fz_seen = 1;
                     consumed = 1;
                 }
             }
@@ -1463,7 +1620,13 @@ fn _dispatch_grepfiles(ac) {
             syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 61);
             return 2;
         }
-        return run_grepfiles(gf_pat, gf_files, gf_fcount, gf_ctx, gf_regex_flavor);
+        if (gf_fz_seen == 1) {
+            if (gf_regex_flavor != FLAVOR_FUZZY) {
+                syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires --regex=fuzzy\n", 56);
+                return 2;
+            }
+        }
+        return run_grepfiles(gf_pat, gf_files, gf_fcount, gf_ctx, gf_regex_flavor, gf_fuzzy_edits);
 }
 
 fn _dispatch_replace(ac) {
@@ -1482,6 +1645,8 @@ fn _dispatch_replace(ac) {
         var r_expect_seen = 0;
         var r_regex_flavor = FLAVOR_LITERAL;
         var r_regex_seen = 0;
+        var r_fuzzy_edits = 0 - 1;
+        var r_fz_seen = 0;
         var r_idx = 2;
         while (r_idx < ac) {
             var arg = argv(r_idx);
@@ -1518,6 +1683,20 @@ fn _dispatch_replace(ac) {
                 }
             }
             if (consumed == 0) {
+                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+                if (sfe != 0) {
+                    var nfe = _cli_atoi_nn(sfe);
+                    if (nfe < 0) {
+                        syscall(1, 2, "cyim --replace: --fuzzy-edits requires a non-negative integer\n", 63);
+                        return 2;
+                    }
+                    if (r_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                    r_fuzzy_edits = nfe;
+                    r_fz_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
                 var s = _cli_argprefix(arg, "--expect-N=");
                 if (s != 0) {
                     var n = _cli_atoi_nn(s);
@@ -1547,7 +1726,13 @@ fn _dispatch_replace(ac) {
             syscall(1, 2, "usage: cyim --replace [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 80);
             return 2;
         }
-        return run_replace(r_p0, r_p1, r_p2, 0, r_wc, r_expect_n, r_regex_flavor);
+        if (r_fz_seen == 1) {
+            if (r_regex_flavor != FLAVOR_FUZZY) {
+                syscall(1, 2, "cyim --replace: --fuzzy-edits requires --regex=fuzzy\n", 54);
+                return 2;
+            }
+        }
+        return run_replace(r_p0, r_p1, r_p2, 0, r_wc, r_expect_n, r_regex_flavor, r_fuzzy_edits);
 }
 
 fn _dispatch_replace_all(ac) {
@@ -1562,6 +1747,8 @@ fn _dispatch_replace_all(ac) {
         var ra_expect_seen = 0;
         var ra_regex_flavor = FLAVOR_LITERAL;
         var ra_regex_seen = 0;
+        var ra_fuzzy_edits = 0 - 1;
+        var ra_fz_seen = 0;
         var ra_idx = 2;
         while (ra_idx < ac) {
             var arg = argv(ra_idx);
@@ -1598,6 +1785,20 @@ fn _dispatch_replace_all(ac) {
                 }
             }
             if (consumed == 0) {
+                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+                if (sfe != 0) {
+                    var nfe = _cli_atoi_nn(sfe);
+                    if (nfe < 0) {
+                        syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires a non-negative integer\n", 67);
+                        return 2;
+                    }
+                    if (ra_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                    ra_fuzzy_edits = nfe;
+                    ra_fz_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
                 var s = _cli_argprefix(arg, "--expect-N=");
                 if (s != 0) {
                     var n = _cli_atoi_nn(s);
@@ -1627,7 +1828,13 @@ fn _dispatch_replace_all(ac) {
             syscall(1, 2, "usage: cyim --replace-all [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 84);
             return 2;
         }
-        return run_replace(ra_p0, ra_p1, ra_p2, 1, ra_wc, ra_expect_n, ra_regex_flavor);
+        if (ra_fz_seen == 1) {
+            if (ra_regex_flavor != FLAVOR_FUZZY) {
+                syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires --regex=fuzzy\n", 58);
+                return 2;
+            }
+        }
+        return run_replace(ra_p0, ra_p1, ra_p2, 1, ra_wc, ra_expect_n, ra_regex_flavor, ra_fuzzy_edits);
 }
 
 fn _dispatch_replace_files(ac) {
@@ -1646,6 +1853,8 @@ fn _dispatch_replace_files(ac) {
         var rf_expect_seen = 0;
         var rf_regex_flavor = FLAVOR_LITERAL;
         var rf_regex_seen = 0;
+        var rf_fuzzy_edits = 0 - 1;
+        var rf_fz_seen = 0;
         var rf_idx = 2;
         while (rf_idx < ac) {
             var arg = argv(rf_idx);
@@ -1682,6 +1891,20 @@ fn _dispatch_replace_files(ac) {
                 }
             }
             if (consumed == 0) {
+                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+                if (sfe != 0) {
+                    var nfe = _cli_atoi_nn(sfe);
+                    if (nfe < 0) {
+                        syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires a non-negative integer\n", 69);
+                        return 2;
+                    }
+                    if (rf_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                    rf_fuzzy_edits = nfe;
+                    rf_fz_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
                 var s = _cli_argprefix(arg, "--expect-N=");
                 if (s != 0) {
                     var n = _cli_atoi_nn(s);
@@ -1712,7 +1935,13 @@ fn _dispatch_replace_files(ac) {
             syscall(1, 2, "<old-file> <new-file> <file>\n", 29);
             return 2;
         }
-        return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor);
+        if (rf_fz_seen == 1) {
+            if (rf_regex_flavor != FLAVOR_FUZZY) {
+                syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires --regex=fuzzy\n", 60);
+                return 2;
+            }
+        }
+        return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor, rf_fuzzy_edits);
 }
 
 fn _dispatch_replace_files_all(ac) {
@@ -1727,6 +1956,8 @@ fn _dispatch_replace_files_all(ac) {
         var rfa_expect_seen = 0;
         var rfa_regex_flavor = FLAVOR_LITERAL;
         var rfa_regex_seen = 0;
+        var rfa_fuzzy_edits = 0 - 1;
+        var rfa_fz_seen = 0;
         var rfa_idx = 2;
         while (rfa_idx < ac) {
             var arg = argv(rfa_idx);
@@ -1763,6 +1994,20 @@ fn _dispatch_replace_files_all(ac) {
                 }
             }
             if (consumed == 0) {
+                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+                if (sfe != 0) {
+                    var nfe = _cli_atoi_nn(sfe);
+                    if (nfe < 0) {
+                        syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires a non-negative integer\n", 73);
+                        return 2;
+                    }
+                    if (rfa_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                    rfa_fuzzy_edits = nfe;
+                    rfa_fz_seen = 1;
+                    consumed = 1;
+                }
+            }
+            if (consumed == 0) {
                 var s = _cli_argprefix(arg, "--expect-N=");
                 if (s != 0) {
                     var n = _cli_atoi_nn(s);
@@ -1793,6 +2038,12 @@ fn _dispatch_replace_files_all(ac) {
             syscall(1, 2, "[--expect-N=<n>|--expect-1] <old-file> <new-file> <file>\n", 57);
             return 2;
         }
-        return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor);
+        if (rfa_fz_seen == 1) {
+            if (rfa_regex_flavor != FLAVOR_FUZZY) {
+                syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires --regex=fuzzy\n", 64);
+                return 2;
+            }
+        }
+        return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor, rfa_fuzzy_edits);
 }
 

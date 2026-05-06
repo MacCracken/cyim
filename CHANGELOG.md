@@ -4,6 +4,98 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-05-06
+
+Patch release — fuzzy substitute precision + `--fuzzy-edits=<n>`
+modifier + closeout. Three things in one cut:
+
+1. **Tight fuzzy match-end recovery.** v1.3.1 used `hit + plen` as
+   the substitute span, which over-ate on deletion edits (the
+   `fo` example consumed the trailing `\n` and merged lines) and
+   under-ate on insertion edits. v1.3.2 walks candidate end
+   positions in `[hit + max(0, plen - max_edits), hit + plen +
+   max_edits]`, picks the one with minimum Levenshtein distance,
+   tie-breaks by smallest L. Newline preservation: `fo` matched
+   against pattern `foo` now picks L=2 (insertion edit, span
+   doesn't cross `\n`) instead of L=3.
+2. **`--fuzzy-edits=<n>` modifier** on the six pattern verbs.
+   Currently `0` (exact-fuzzy), `1`, `2` (= niyama default) are
+   most useful; niyama's max is bounded by the engine's k slot.
+   Reject if paired with a non-fuzzy `--regex=` (parser-level,
+   exit 2). The encoding stores `k+1` in `RegexOpts +8` so `k=0`
+   is distinguishable from "user didn't set --fuzzy-edits".
+3. **Closeout pass per CLAUDE.md.** Dead code audit, lint,
+   security re-scan, doc sync. No structural changes — current
+   dead-code floor is stable stdlib auto-prepend that DCE strips
+   from the binary. Cyim source has a handful of unreferenced
+   helpers (`tty_cursor_hide`, `editor_drive`, `motion_file_start`,
+   `buf_cap`/`buf_gap`, etc.) — DCE'd out, not refactored speculatively.
+
+### Added
+
+- **`--fuzzy-edits=<n>`** modifier on `--grep`, `--grepfiles`,
+  `--replace`, `--replace-all`, `--replace-files`,
+  `--replace-files-all`. Threaded through six dispatchers + four
+  `run_*` functions + `RegexOpts +8` slot (encoded as k+1) to
+  `niyama_fuzzy_compile_opts(pat, k, 0)`. Default unchanged
+  (niyama's `FUZZY_DEFAULT_K=2`).
+- **`_fuzzy_span_end`** helper in `src/cli.cyr` — post-match
+  candidate-length walk using `niyama_fuzzy_distance` for scoring.
+  Cost: O(2k+1) substring materialisations per match, each
+  driving an O(plen × candidate_len) DP inside niyama. Negligible
+  at default k for typical patterns.
+- **`Matcher` +32 slot** holds `max_edits` (effective k after
+  `--fuzzy-edits` resolution; 2 if unset). `_matcher_max_edits(m)`
+  accessor. Read by `_fuzzy_span_end` for the candidate window.
+- **`Matcher` struct grew 32B → 40B.** Literal matchers leave the
+  new slot zero. Negligible per-call cost.
+- **Per-verb `--fuzzy-edits` validation**: parser rejects
+  `--fuzzy-edits` without `--regex=fuzzy` (exit 2 + verb-prefixed
+  message). Duplicate `--fuzzy-edits=` flags refused (exit 2).
+
+### Changed
+
+- **Behaviour change for fuzzy substitute on tied distances.**
+  When two candidate spans achieve the same Levenshtein distance,
+  v1.3.2 picks the smaller L (don't eat extra source bytes). For
+  inputs where v1.3.1 collapsed `fop` to `X` (plen=3 approximation),
+  v1.3.2 leaves the trailing byte: `fop` → `Xp`. Documented in
+  `--help`'s flavor table; `cli_smoke.sh` case 87 updated.
+- `_cli_substitute_regex` signature gained `max_edits` parameter
+  (between `plen` and `new`). Internal-only; no consumer impact.
+- `--help` flavor-table fuzzy row replaces v1.3.1's
+  "imperfect for insert/delete" caveat with the v1.3.2 tight-span
+  semantics. New `--fuzzy-edits=<n>` row added below.
+
+### Tests
+
+- `tests/cli_smoke.sh` — 4 new fuzzy cases (87b–87d): `--fuzzy-edits=0`
+  forces exact-only fuzzy (proves k=0 distinguishes from "unset");
+  `--fuzzy-edits` rejected without `--regex=fuzzy`; duplicate
+  `--fuzzy-edits` refused. Case 87 updated to assert the new tight
+  span (`fop` → `Xp`, was `X`). Suite total: 118 assertions (was 114).
+
+### Notes
+
+- **BUG-001 still unfixed upstream.** cyrius 5.9.2's `lib/args.cyr`
+  still has `var buf[4096]` in `args_init()`. cyim's
+  `_cli_args_reload_big()` workaround stays. Re-checked at v1.3.2
+  closeout; will retire once cyrius patches.
+- **Backreferences (`\1`)** still deferred per niyama's long-term
+  security-against-misuse plan. Unchanged from v1.3.0/1.3.1.
+- **No cyrius toolchain bump.** Pin stays at 5.9.2 (set in v1.3.0).
+- **LSP client (v1.4.0) promoted from demand-gated.** cyrius-lsp
+  is stable in the toolchain (`programs/cyrius-lsp.cyr`); cyim-side
+  client lands as v1.4.0 — own milestone, not a 1.3.x patch.
+
+### Binary
+
+- `build/cyim` — DCE build size: **894,752 B** (+5,624 B over
+  v1.3.1's 889,128 B). The fuzzy-edits parser arm × 6 dispatchers
+  + the `_fuzzy_span_end` helper + `_regex_opts_set_fuzzy_edits` +
+  the threading through 4 `run_*` functions account for the delta.
+  niyama_fuzzy + unicode tables already linked.
+
 ## [1.3.1] — 2026-05-06
 
 Minor release — `--regex=fuzzy` (Levenshtein) now ships across all six

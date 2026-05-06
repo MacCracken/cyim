@@ -752,19 +752,45 @@ esac
 "$BIN" --grep --regex=fuzzy 'xyz' "$FZ" >/dev/null 2>&1
 assert_rc '--grep --regex=fuzzy xyz (no match)' 1 $?
 
-# Case 87 — --replace-all --regex=fuzzy substitution-only edit
-# (well-defined: matched span == plen, plen-approximation is exact).
+# Case 87 — --replace-all --regex=fuzzy substitute-path roundtrip.
+# v1.3.2: tight span search via _fuzzy_span_end picks min-L on tied
+# distances. For input "fop" with pattern "foo", L=2 ("fo", d=1
+# insertion) ties L=3 ("fop", d=1 substitution); min-L wins so only
+# "fo" is replaced, "p" stays. v1.3.1 used plen approximation
+# (always L=3) and would collapse to "X". This case asserts the
+# new (tighter) semantics.
 printf 'foo\nfop\n' > "$FZ"
 "$BIN" --replace-all --regex=fuzzy 'foo' 'X' "$FZ" >/dev/null 2>&1
-assert_rc '--replace-all --regex=fuzzy substitution' 0 $?
+assert_rc '--replace-all --regex=fuzzy substitute' 0 $?
 RW_GOT=$(cat "$FZ")
 case "$RW_GOT" in
-    # Substitution edit ('foo'→'fop') keeps span_len=plen=3 → both
-    # lines collapse to "X". Deletion/insertion edits would diverge
-    # here; this case only exercises the well-defined behaviour.
-    "X"*"X") PASS=$((PASS + 1)) ;;
+    *"X"*"Xp"*) PASS=$((PASS + 1)) ;;
     *) FAIL=$((FAIL + 1)); echo "FAIL: --replace-all --regex=fuzzy got: '$RW_GOT'" ;;
 esac
+
+# Case 87b — --replace-all --regex=fuzzy with --fuzzy-edits=0 forces
+# exact-match fuzzy: only literal 'foo' lines replaced, 'fop' stays.
+# Proves the v1.3.2 --fuzzy-edits knob threads through and that
+# k=0 distinguishes from "user didn't specify --fuzzy-edits"
+# (which would default to niyama's k=2).
+printf 'foo\nfop\n' > "$FZ"
+"$BIN" --replace-all --regex=fuzzy --fuzzy-edits=0 'foo' 'X' "$FZ" >/dev/null 2>&1
+assert_rc '--replace-all --regex=fuzzy --fuzzy-edits=0' 0 $?
+RW_GOT=$(cat "$FZ")
+case "$RW_GOT" in
+    *"X"*"fop"*) PASS=$((PASS + 1)) ;;
+    *) FAIL=$((FAIL + 1)); echo "FAIL: --replace-all --regex=fuzzy --fuzzy-edits=0 got: '$RW_GOT'" ;;
+esac
+
+# Case 87c — --fuzzy-edits without --regex=fuzzy must reject
+# (parser-level pairing requirement, exit 2).
+"$BIN" --grep --regex=ere --fuzzy-edits=1 'foo' "$FZ" >/dev/null 2>&1
+assert_rc '--grep --regex=ere --fuzzy-edits rejected' 2 $?
+
+# Case 87d — duplicate --fuzzy-edits flags rejected (matches the
+# duplicate-flag refusal pattern from v1.1.3).
+"$BIN" --grep --regex=fuzzy --fuzzy-edits=1 --fuzzy-edits=2 'foo' "$FZ" >/dev/null 2>&1
+assert_rc 'duplicate --fuzzy-edits rejected' 2 $?
 
 # Case 88 — --replace --regex=fuzzy --expect-1 (count-path through
 # fuzzy iteration; needs exactly one fuzzy hit so unique-replace
@@ -805,5 +831,5 @@ rm -f "$REGEX_FIX" "$REGEX_FIX2" "$REGEX_REPLACE" "$REGEX_OLD" "$REGEX_NEW"
 
 rm -f "$FIX" "$WRITE_FIX" "$BATCH_FIX"
 
-echo "$PASS passed, $FAIL failed (114 total)"
+echo "$PASS passed, $FAIL failed (118 total)"
 [ "$FAIL" = "0" ] || exit 1
