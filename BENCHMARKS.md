@@ -13,6 +13,17 @@ the source of truth for what's measured.
 
 ---
 
+## v1.6.0 — 2026-05-07 (marks)
+
+Marks (`m<letter>` / `'<letter>`) added at v1.6.0 are not in any
+benched workload — mark set/get is O(n) over a small per-buffer vec
+(max 26 entries) plus an O(1) static-array lookup for global marks;
+never a hot path. Binary grew +7,712 B (957,720 → 965,432) for the
+new module + dispatch wiring; all other workloads stay within v1.5.3
+multi-iter bands. No re-bench needed at v1.6.0.
+
+---
+
 ## v1.5.3 — 2026-05-07 (multi-iter bench, F-CO-1 closure)
 
 Captured against the v1.5.3 multi-iter harness. **F-CO-1 verdict:

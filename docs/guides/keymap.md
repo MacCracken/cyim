@@ -271,10 +271,10 @@ all keys return `ACT_NONE` so motion / edit pipelines stay no-ops.
 | `q`   | 113 | Dismiss without firing |
 | any other | — | Swallowed (no-op) |
 
-**Arrow keys are NOT bound** in list mode at v1.5.x — they route
-to motion actions via `editor_feed`'s CSI parser, bypassing the
-list-mode interception. Future hardening per the
-[1.5.x cycle deferred items](../development/roadmap.md). Use j/k.
+**Arrow keys are NOT bound** in list mode as of v1.6.0 — they
+route to motion actions via `editor_feed`'s CSI parser, bypassing
+the list-mode interception. Future hardening per the
+[deferred LSP polish items](../development/roadmap.md). Use j/k.
 
 `on_select` runs **after** dismiss so the callback can call
 `plugin_list_display` again for chained pickers without leaking

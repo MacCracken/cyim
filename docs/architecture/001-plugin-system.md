@@ -208,12 +208,13 @@ gets:
 register → fire / lookup / collect cycle without any external
 plugin. It registers per-hook-type counter callbacks, drives
 small editor sequences, and asserts the callbacks fired (or not)
-at the documented call sites. **85 assertions across 21+ test
-groups** as of v1.5.x — covers all six hooks plus the v1.4.2 /
+at the documented call sites. **88 assertions across 22+ test
+groups** as of v1.6.0 — covers all six hooks plus the v1.4.2 /
 v1.5.0 additive extensions (prefix-keymap registration + dispatch
 + built-in-wins-on-conflict; buf-load-file + dedup + missing-file
 + null-path; list-display + j/k navigation + clamping +
-Enter/LF/Esc/q lifecycle + buffer-untouched-during-list).
+Enter/LF/Esc/q lifecycle + buffer-untouched-during-list +
+prefix-clear on display per F-CO-3).
 
 Every test file that includes `src/mode.cyr`, `src/driver.cyr`,
 or `src/command.cyr` also includes `src/plugin.cyr` (Cyrius is
@@ -234,7 +235,7 @@ restart. Runs under `cyrius smoke`.
 
 ## Live consumers
 
-Two plugins are folded in by default at v1.5.x:
+Two plugins are folded in by default as of v1.6.0:
 
 - **`cyim-lsp`** — LSP client; external repo
   [`MacCracken/cyim-lsp`](https://github.com/MacCracken/cyim-lsp)
@@ -293,8 +294,10 @@ Per ADR 0003 § Out of scope:
 - [ADR 0001 — Trust model](../adr/0001-trust-model.md) (plugins
   inherit the interactive-local-user trust model)
 - [`docs/development/roadmap.md`](../development/roadmap.md)
-  (1.5.x cycle deferred items + closeout findings before 1.6.0)
+  (closed milestones + carry-over LSP polish + demand-gated
+  features)
 - [`src/plugin.cyr`](../../src/plugin.cyr) (the ABI itself)
-- [`tests/plugin.tcyr`](../../tests/plugin.tcyr) (85 assertions
-  across 21+ test groups — registration / dispatch / conflict
-  resolution / list-mode lifecycle)
+- [`tests/plugin.tcyr`](../../tests/plugin.tcyr) (88 assertions
+  across 22+ test groups as of v1.6.0 — registration / dispatch /
+  conflict resolution / list-mode lifecycle / prefix-clear
+  defense)

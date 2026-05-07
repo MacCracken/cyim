@@ -66,7 +66,7 @@ A name in the tradition, written in the language of the library.
 cyrius deps                              # resolve deps (vyakarana + cyim-lsp)
 cyrius build src/main.cyr build/cyim     # compile
 CYRIUS_DCE=1 cyrius build ...            # dead-code-eliminated release build
-cyrius test                              # 20 .tcyr suites (~973 assertions)
+cyrius test                              # 21 .tcyr suites (~1023 assertions)
 cyrius fuzz                              # 3 .fcyr harnesses
 cyrius smoke                             # tests/smcyr/lsp_fold.smcyr (real cyrius-lsp)
 cyrius bench tests/perf.bcyr             # gap-buffer / search / render / highlight perf

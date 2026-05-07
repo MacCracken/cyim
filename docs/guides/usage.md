@@ -356,7 +356,9 @@ Esc     cancel
 to delete entire lines.
 
 The yank register is a single shared slot — there are no a-z named
-registers yet (post-v1.0 demand-gated).
+registers yet. (Note: vim's `"a-"z` *registers* are distinct from
+its `'a-'z` *marks* — cyim ships marks at v1.6.0 but not registers.
+Named registers are demand-gated.)
 
 ---
 
@@ -446,8 +448,9 @@ deferred mark items.
 
 ## LSP integration
 
-cyim 1.5.x folds in [cyim-lsp](https://github.com/MacCracken/cyim-lsp)
-via the sandhi pattern. With `cyrius-lsp` on PATH (the cyrius
+cyim folds in [cyim-lsp](https://github.com/MacCracken/cyim-lsp)
+via the sandhi pattern (since v1.4.0; current dep tag 1.2.1 as
+of v1.6.0). With `cyrius-lsp` on PATH (the cyrius
 toolchain installs it at `~/.cyrius/bin/cyrius-lsp`), opening a
 `.cyr` file lazily spawns the server and surfaces:
 
@@ -491,8 +494,9 @@ Esc / q   dismiss without selecting
 ```
 
 Every other keystroke is swallowed while the picker is up — the
-buffer stays untouched. Arrow keys are NOT bound at v1.5.x (they
-route to motion actions via the driver-level CSI parser); use j/k.
+buffer stays untouched. Arrow keys are NOT bound in list mode as
+of v1.6.0 (they route to motion actions via the driver-level CSI
+parser); use j/k.
 
 The picker is bottom-anchored, full-width, and shows up to 10
 items at a time. The current item is reverse-highlighted; if the

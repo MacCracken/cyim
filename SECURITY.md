@@ -96,3 +96,12 @@ State at v1.5.2: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 4 LOW from the
 prefix-clear hardening, URL-decode for `file://` URIs). All
 patch-sized, tracked in
 [`docs/development/roadmap.md`](docs/development/roadmap.md).
+
+State at v1.6.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM. F-CO-1 / F-CO-3 /
+F-CO-4 closed at v1.5.3 (multi-iter bench confirmed perf was 1-iter
+sampling noise; defensive prefix-clear in `plugin_list_display`;
+URL-decode for `file://` URIs via cyim-lsp 1.2.1's `lsp_uri_decode`).
+F-CO-2 stays informational. v1.6.0's marks feature added no new
+attack surface — module-internal storage; no untrusted-input parser
+paths; no syscall surfaces; key dispatch reuses the existing
+prefix-keymap mechanism. Trust model unchanged.
