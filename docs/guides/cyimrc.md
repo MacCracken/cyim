@@ -127,4 +127,17 @@ v0.5.0 onward.
   trigger system is the layer where Vimscript becomes load-bearing;
   cyim refuses by design.
 - **Shell-out** (`:!cmd`, `system()`). Use Ctrl-z + your shell + `fg`.
-- **Plugins.** Refusal §0 — if cyim needs to do X, cyim should do X.
+- **Embedded scripting** (Vimscript / Lua / Python). The load-bearing
+  refusal: every layer of the editor's behaviour is in compiled
+  Cyrius; configuration is data only.
+
+Note on plugins: cyim **does** have a plugin system — but plugins
+are AOT-compiled Cyrius bundles folded in at build time via the
+sandhi pattern, not runtime-loaded scripts. The 1.x ABI is frozen
+at v1.3.6 / [ADR 0004](../adr/0004-plugin-abi-freeze.md); the
+shipping consumers are
+[cyim-lsp](https://github.com/MacCracken/cyim-lsp) (LSP client)
+and `src/plugins/trailing_ws.cyr` (inline). The `.cyimrc` /
+`:set` surface configures the editor; plugin selection is decided
+at build time via `cyrius.cyml`'s `[deps.<plugin>]` blocks. See
+[`docs/architecture/001-plugin-system.md`](../architecture/001-plugin-system.md).

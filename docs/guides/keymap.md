@@ -22,9 +22,22 @@ vim — the rest match.
 | `w` | 119  | Next word         | `ACT_MOVE_WORD_FWD`  | =   |
 | `b` | 98   | Previous word     | `ACT_MOVE_WORD_BACK` | =   |
 | `G` | 71   | Last line, col 0  | `ACT_MOVE_FILE_END`  | ≠ vim's "first non-blank" — cyim lands on col 0 |
+| `gg` | 103, 103 | First line, col 0 | `ACT_MOVE_FILE_START` (109) | = |
 
 Motions never cross newlines (`l` at end-of-line is a no-op; `h` at
 column 0 stays put). j/k preserve column, clamping to target-line end.
+
+`gg` is a two-byte sequence — the first `g` latches the prefix
+(`KEY_G` = 103), the next `g` resolves to `ACT_MOVE_FILE_START`. Any
+other follow-up byte falls through to the plugin prefix-key lookup
+(see "Plugin prefix-keys" below) — built-ins win on conflict per
+[ADR 0003 §3](../adr/0003-cyrius-plugin-system.md).
+
+**Arrow keys** also route to the motion actions: terminals send
+`ESC [ A/B/C/D` for up/down/right/left; cyim's driver-side
+`editor_feed` parses the 3-byte CSI sequence and dispatches the
+matching `ACT_MOVE_*` directly. Available in NORMAL, INSERT, and
+VISUAL.
 
 ### Edits
 
@@ -74,6 +87,41 @@ selects the navigation direction:
 `Ctrl-w` followed by anything else clears the prefix and produces no
 action.
 
+### Plugin prefix-keys
+
+cyim's NORMAL-mode dispatch generalizes the prefix mechanism (Ctrl-W
+above, KEY_G for `gg`) to plugins via
+[`plugin_register_normal_prefix_key(prefix, key, fp)`](../adr/0004-plugin-abi-freeze.md#v142-additive-extensions-2026-05-07)
+— the additive ABI extension landed at cyim 1.4.2. Plugins register
+their two-byte sequences; built-ins (Ctrl-W navigation, `gg`) win
+on conflict.
+
+When [cyim-lsp](https://github.com/MacCracken/cyim-lsp) is folded
+in (cyim 1.4.0+, default with the `[deps.cyim-lsp]` block in
+`cyrius.cyml`), the LSP plugin's `cyim_lsp_init()` registers:
+
+| Sequence | Bytes  | Action |
+|----------|--------|--------|
+| `gd`     | 103 100 | Go to definition (same-file: cursor moves; cross-file: file loads + cursor jumps) |
+| `gr`     | 103 114 | Find references (pops a quickfix picker — see "List mode" below) |
+
+`gd` / `gr` delegate to `:lsp-goto-def` / `:lsp-find-refs`
+respectively; the prefix-keymap is the muscle-memory surface, the
+ex-commands are the typed-out form.
+
+### LSP ex-commands
+
+Registered by [cyim-lsp](https://github.com/MacCracken/cyim-lsp)'s
+consumer-side glue (`src/plugins/lsp_glue.cyr`). Available when
+the plugin is folded in.
+
+| Command | Effect | Notes |
+|---|---|---|
+| `:lsp-restart` | Kill + respawn `cyrius-lsp` subprocess | Useful after upgrading the toolchain or recovering from a server crash |
+| `:lsp-status` | Print server pid + describe state | Result lands in the status row |
+| `:lsp-goto-def` | textDocument/definition request → jump to result | Same-file or cross-file (1.4.3+) |
+| `:lsp-find-refs` | textDocument/references request → pop quickfix picker | List mode opens (1.5.1+) |
+
 ---
 
 ## INSERT
@@ -121,7 +169,14 @@ arrows anyway.
 | `:vsp`        | Vertical split                           | — |
 | `:set <opt>`  | Runtime config toggle (see `cyimrc.md`)  | `ERR_UNKNOWN_CMD` if unknown |
 
-Unknown commands → `ERR_UNKNOWN_CMD`.
+Plugin-registered ex-commands extend this table. Built-ins win on
+conflict per [ADR 0003 §3](../adr/0003-cyrius-plugin-system.md);
+plugin lookup is reached only after every built-in misses. With
+[cyim-lsp](https://github.com/MacCracken/cyim-lsp) folded in,
+`:lsp-restart`, `:lsp-status`, `:lsp-goto-def`, `:lsp-find-refs`
+are all registered (see "LSP ex-commands" above).
+
+Unknown commands (built-in **and** plugin miss) → `ERR_UNKNOWN_CMD`.
 
 ---
 
@@ -152,6 +207,40 @@ pattern is saved and a forward / backward scan runs from the cursor.
 - Empty pattern with no prior search is a no-op. (Empty pattern with
   a prior search re-runs the prior pattern — vim convention.)
 - Case-sensitive by default. `:set ic` toggles case-fold.
+
+---
+
+## List mode (popup picker)
+
+When a plugin calls
+[`plugin_list_display(s, items, count, on_select)`](../adr/0004-plugin-abi-freeze.md#v150-additive-extension-2026-05-07)
+(cyim 1.5.0+ ABI), a bottom-anchored popup picker captures input.
+Today's only consumer is
+[cyim-lsp](https://github.com/MacCracken/cyim-lsp)'s
+`:lsp-find-refs` / `gr` quickfix list.
+
+While list mode is active, every keystroke routes through the
+list-dispatch interception at the top of `editor_dispatch` — the
+buffer is **not** mutated, mode-specific dispatch is skipped, and
+all keys return `ACT_NONE` so motion / edit pipelines stay no-ops.
+
+| Key | Bytes | Action |
+|-----|-------|--------|
+| `j` | 106   | Next item (clamped at `count - 1`) |
+| `k` | 107   | Previous item (clamped at 0) |
+| `Enter` / `LF` | 13 / 10 | Fire `on_select(s, current_index)`; dismiss |
+| `Esc` | 27 | Dismiss without firing |
+| `q`   | 113 | Dismiss without firing |
+| any other | — | Swallowed (no-op) |
+
+**Arrow keys are NOT bound** in list mode at v1.5.x — they route
+to motion actions via `editor_feed`'s CSI parser, bypassing the
+list-mode interception. Future hardening per the
+[1.5.x cycle deferred items](../development/roadmap.md). Use j/k.
+
+`on_select` runs **after** dismiss so the callback can call
+`plugin_list_display` again for chained pickers without leaking
+active state.
 
 ---
 
@@ -188,7 +277,7 @@ renumbering:
 | 1–4     | Mode-default actions (literal-insert, cmdline-append, backspace) |
 | 10–22   | Mode transitions       |
 | 25–32   | Search subsystem       |
-| 100–109 | Motions                |
+| 100–109 | Motions (incl. `ACT_MOVE_FILE_START` = 109, added v1.4.2) |
 | 200     | NORMAL-mode edit (`x`) |
 | 210–211 | Undo / redo            |
 | 220–221 | Paste                  |

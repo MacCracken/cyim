@@ -10,6 +10,33 @@ the source of truth for what's measured.
 
 ---
 
+## v1.5.2 — 2026-05-07 (closeout cut)
+
+Captured during the v1.5.2 closeout audit. Within noise of M6.
+The 1.x cycle (M5 → v1.5.2) added LSP integration (cyim-lsp
+folded in), niyama regex flavors, plugin ABI extensions, and the
+list-display popup subsystem; net binary growth +682 KB, but
+hot-path edit/render perf is unchanged.
+
+| Workload | M6 | v1.5.2 | Δ |
+|---|---|---|---|
+| `buf_fill_1MB` | 12.7 ms | 13.4 ms | +5% (within noise) |
+| `buf_fill_100MB` | 1.32 s | 1.28 s | -3% (improvement / noise) |
+| `buf_move_10K_cycles_10MB` | 51 ms | 49 ms | -3.5% |
+| `search_forward_10MB_worst` | 108 ms | 100 ms | -7% (improvement) |
+| `render_build_line × 1000` | 214 μs | 252 μs | **+18% — see F-CO-1** |
+| `highlight_buf` 1 MB cyrius (cold) | 265 ms | 253 ms | -4.5% |
+| `highlight_buf` × 1000 cache hit | 17 μs | 16 μs | -6% |
+
+**F-CO-1 (LOW)** — the `render_build_line` regression is likely
+1-iter sampling noise; the render layer hasn't changed since
+v1.5.0 and the v1.5.0 → v1.5.1 delta in `render.cyr` is zero.
+Tracked in
+[`docs/development/roadmap.md`](docs/development/roadmap.md)'s
+1.5.x cycle for multi-iter re-bench before 1.6.0.
+
+---
+
 ## M6 — 2026-04-25 (tokenbuf cache landed)
 
 The headline result of M6.1 — closes the M5-flagged tokenize hot path:

@@ -12,16 +12,20 @@ For configuration, see [`cyimrc.md`](cyimrc.md).
 ## Starting cyim
 
 ```sh
-cyim                                       # open a scratch buffer
-cyim foo.cyr                               # open foo.cyr
+cyim                                                  # open a scratch buffer
+cyim foo.cyr                                          # open foo.cyr
 cyim --version
 cyim --help
-cyim --probe                               # TTY round-trip diagnostic (raw on / sleep / cooked off)
-cyim --headless [<file>]                   # read keystrokes from stdin; no TTY
-cyim --write <file>                        # replace <file> with stdin content
-cyim --replace <old> <new> <file>          # substitute first occurrence; OLD must be unique
-cyim --replace-all <old> <new> <file>      # substitute every occurrence
-cyim --grep <pattern> <file>               # read-only; emit FILE:N:LINE per matching line
+cyim --probe                                          # TTY round-trip diagnostic
+cyim --headless [<file>]                              # read keystrokes from stdin; no TTY
+cyim --write <file>                                   # replace <file> with stdin
+cyim --replace <old> <new> <file>                     # substitute first occurrence; OLD must be unique
+cyim --replace-all <old> <new> <file>                 # substitute every occurrence
+cyim --replace-files <old-file> <new-file> <file>     # OLD/NEW from file contents
+cyim --replace-files-all <old-file> <new-file> <file> # same, every occurrence
+cyim --grep <pattern> <file>                          # read-only; FILE:N:LINE per hit
+cyim --grepfiles <pattern> <file...>                  # multi-file grep
+cyim --batch <file>                                   # NUL-separated OLD/NEW pairs from stdin (atomic)
 ```
 
 `cyim --probe` is the smoke test for "does my terminal cooperate?" — it
@@ -95,15 +99,85 @@ cyim --grep 'TS_LEX_JSX_SKIP' src/frontend/ts/lex.cyr
 Scans `<file>` line by line and emits `FILE:N:LINE` (matching `grep -n`
 exactly: no spaces around the second colon) for every line containing
 `<pattern>` as a literal substring — same matching semantics as
-`--replace`'s `OLD` (no regex, byte-wise compare).
+`--replace`'s `OLD` (no regex by default, byte-wise compare).
 
 Why ship grep when `rg`/`grep` exist on every box: it keeps
 agent-driven flows inside one binary. No `rg` in `PATH`, no shell
 escaping for special characters in `<pattern>`, no tool-boundary
 jump between an edit and the check that follows it.
 
+`cyim --grepfiles <pattern> <file...>` extends the same shape over
+a list of files (multi-file grep, `FILE:N:LINE` per match). Useful
+for "find every reference to X across these N files" without
+shell-globbing inside argv.
+
 Exit codes follow `grep(1)`: **0** if any line matched, **1** if
 none, **2** on usage error, **3** if `<file>` is missing.
+
+`--context=<n>` modifier (matches `grep -C N`): emit the N lines
+before and after each match, with `--` separators between
+non-adjacent groups and between files. Overlap-merging keeps the
+output clean when matches are close together.
+
+```sh
+cyim --grep --context=2 'TODO' src/main.cyr
+# Emits 2 lines of context above + below each TODO match.
+```
+
+### `cyim --batch <file>` — multi-pair atomic find/replace
+
+```sh
+printf 'OLD1\0NEW1\0OLD2\0NEW2\0' | cyim --batch foo.cyr
+```
+
+Reads NUL-separated alternating `OLD\0NEW\0OLD\0NEW\0…` pairs from
+stdin and applies them to `<file>` in memory, then writes once at
+the end. Atomic: if any pair fails (OLD non-unique, OLD missing),
+the file on disk stays untouched.
+
+Per-pair semantics default to `--replace` (OLD must be unique). Add
+`--all` to switch every pair to `--replace-all` semantics.
+
+### `cyim --replace-files OLD_FILE NEW_FILE FILE` — file-sourced patterns
+
+When OLD or NEW are large, multi-line, or contain shell-special
+characters, argv encoding gets fragile. `--replace-files` reads OLD
+and NEW from the named files instead:
+
+```sh
+cyim --replace-files patches/old-block.txt patches/new-block.txt src/foo.cyr
+```
+
+Same uniqueness invariant as `--replace`. Sister verb
+`--replace-files-all` drops the uniqueness check.
+
+### `--regex=<flavor>` — regex matching on grep/replace verbs
+
+By default cyim's grep and replace verbs match patterns as literal
+substrings. `--regex=<flavor>` switches to regex matching across
+all six pattern verbs (`--grep`, `--grepfiles`,
+`--replace[-all]`, `--replace-files[-all]`):
+
+```sh
+cyim --grep --regex=ere '\bTODO\b' src/main.cyr   # word-boundary anchored
+cyim --replace-all --regex=re2 'fn (\w+)' 'pub fn \1' src/lib.cyr
+cyim --grep --regex=fuzzy --fuzzy-edits=2 'TS_LEX_JSXSKIP' src/lex.cyr
+```
+
+Six flavors ship:
+
+| Flavor   | Engine | Notes |
+|----------|--------|-------|
+| `ere`    | cyrius stdlib Pike NFA | POSIX-ERE-ish; default for casual regex |
+| `bre`    | niyama BRE | POSIX-BRE; archaic but stable for vim users |
+| `re2`    | niyama RE2 | RE2-ish; linear-time, no backreferences |
+| `pcre`   | niyama PCRE | PCRE-ish; richer but step-limited (no catastrophic backtracking) |
+| `vim`    | niyama vim | vim's regex flavor; for vim users porting `:s` patterns |
+| `fuzzy`  | niyama fuzzy | Levenshtein edit-distance match; pair with `--fuzzy-edits=<n>` |
+
+Backreferences (`\1`-style) are deferred per niyama's long-term
+security-against-misuse plan. Surface in `cyim --help` for the
+flavor list. ADR 0002 documents the extensibility shape.
 
 ### Modifiers — `--wc`, `--expect`, `--expect-N`
 
@@ -201,7 +275,8 @@ h j k l       move cursor (line-bounded; doesn't cross newlines)
 0             jump to start of line
 $             jump to end of line
 w b           next / previous word (whitespace + class boundaries)
-G             last line
+gg            first line, col 0  (two-byte sequence — g latches the prefix)
+G             last line, col 0
 x             delete byte under cursor
 i             enter INSERT at cursor
 a             enter INSERT one byte right of cursor
@@ -222,6 +297,9 @@ N             repeat last search (opposite direction)
 #             search backward for word under cursor
 Ctrl-w h/j/k/l    switch focus to neighbor window
 ```
+
+Arrow keys also move the cursor (terminal CSI sequences are parsed
+at the driver layer). They work in NORMAL, INSERT, and VISUAL.
 
 ---
 
@@ -325,6 +403,63 @@ new buffer becomes active.
 
 ---
 
+## LSP integration
+
+cyim 1.5.x folds in [cyim-lsp](https://github.com/MacCracken/cyim-lsp)
+via the sandhi pattern. With `cyrius-lsp` on PATH (the cyrius
+toolchain installs it at `~/.cyrius/bin/cyrius-lsp`), opening a
+`.cyr` file lazily spawns the server and surfaces:
+
+- **Diagnostics** — counts in the status segment (`E:N W:M I:K H:L`)
+  next to the file path; inline render via the `diagnostic_provider`
+  plugin hook (gutter glyphs / underline marks per cyim's render
+  layer).
+- **`gd`** — go-to-definition. Same-file: cursor moves. Cross-file:
+  the destination file loads (dedup-aware against the active
+  buflist) and the cursor jumps in the new buffer.
+- **`gr`** — find-references. Pops a quickfix picker showing every
+  reference site as `filename:line:col`. j/k navigates, Enter
+  jumps, Esc/q dismisses.
+- **`:lsp-restart`** — kill + respawn the server. Useful after
+  upgrading the cyrius toolchain.
+- **`:lsp-status`** — print server pid + describe state.
+- **`:lsp-goto-def`** / **`:lsp-find-refs`** — same as `gd` / `gr`,
+  ex-command form. The keymap surface is muscle-memory; the
+  ex-commands are the typed-out form.
+
+Built-in `gg` (first line) wins on conflict against any plugin
+attempt to bind `(KEY_G, 'g')` per
+[ADR 0003 §3](../adr/0003-cyrius-plugin-system.md). `gd` and `gr`
+are unclaimed by built-ins, so cyim-lsp owns them.
+
+Without `cyrius-lsp` on PATH, the LSP plugin lazily-fails on first
+post_change: the spawn returns -1, the editor stays clean, and
+the LSP-driven hooks become no-ops. No errors propagate to the
+edit path.
+
+### Quickfix-style picker (list mode)
+
+When `:lsp-find-refs` / `gr` opens the picker (or any future plugin
+that calls `plugin_list_display`), the editor enters **list mode**:
+
+```
+j         next item
+k         previous item
+Enter     select (load file + jump cursor); dismiss
+Esc / q   dismiss without selecting
+```
+
+Every other keystroke is swallowed while the picker is up — the
+buffer stays untouched. Arrow keys are NOT bound at v1.5.x (they
+route to motion actions via the driver-level CSI parser); use j/k.
+
+The picker is bottom-anchored, full-width, and shows up to 10
+items at a time. The current item is reverse-highlighted; if the
+list is longer than 10 the window auto-scrolls to keep the
+selection in view.
+
+---
+
 ## Differences from vim
 
 - **No `:set compatible`.** cyim is a modal editor in vim's lineage,
@@ -337,7 +472,13 @@ new buffer becomes active.
   the editor.
 - **No `:!cmd`.** Shell-out is deliberately absent. `Ctrl-z` to your
   shell, do the thing, `fg` back.
-- **No plugins.** If cyim needs to do X, cyim should do X — refusal §0.
+- **Plugins exist, but as bundles, not scripts.** AOT-compiled
+  Cyrius distfiles fold into the binary at build time via the
+  sandhi pattern (vyakarana, niyama, cyim-lsp, trailing_ws all
+  live this way). No `dlopen`, no eval, no runtime sandbox. The
+  refusal is on **embedded scripting** (Vimscript / Lua /
+  Python) — not on plugins-as-bundles. See
+  [`docs/architecture/001-plugin-system.md`](../architecture/001-plugin-system.md).
 
 ---
 

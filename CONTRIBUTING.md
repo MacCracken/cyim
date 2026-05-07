@@ -12,11 +12,13 @@ cyim-specific bits.
    documentation conventions.
 2. **Run the full local check** that CI runs:
    ```sh
-   cyrius deps                             # resolve stdlib + vyakarana
+   cyrius deps                             # resolve vyakarana + cyim-lsp
    cyrius build src/main.cyr build/cyim    # default build
    CYRIUS_DCE=1 cyrius build ...           # DCE parity
-   cyrius test                             # all .tcyr suites
+   cyrius test                             # all .tcyr suites (~973 assertions)
    cyrius fuzz                             # fuzz harnesses
+   cyrius smoke                            # tests/smcyr/* (LSP protocol harness)
+   cyrius bench tests/perf.bcyr            # gap-buffer / search / render perf
    python3 tests/integration_smoke.py      # PTY end-to-end
    cyrius lint src/*.cyr                   # advisory only
    ```
@@ -35,8 +37,14 @@ These are load-bearing refusals — please don't propose them as
 features without a prior conversation:
 
 - No embedded scripting language (Vimscript / Lua / Python /
-  anything). Configuration is data, not code.
-- No plugins. If cyim needs to do X, cyim should do X.
+  anything). Configuration is data, not code. The cyim binary
+  has no interpreter, no eval, no plugin VM.
+- No `dlopen` / runtime-loaded plugins. cyim **does** have a
+  plugin system (cyim-lsp ships at v1.4.0+, trailing_ws inline
+  since 1.3.5) but plugins are AOT-compiled Cyrius bundles
+  folded into the binary at build time via the sandhi pattern —
+  not runtime-loaded scripts. The refusal is on eval, not on
+  bundles.
 - No GUI. cyim is a TTY editor.
 - No `:!cmd` shell-out. Use Ctrl-z + your shell + `fg`.
 - No modeline parsing. The `.cyimrc` config surface is the only

@@ -55,6 +55,18 @@ than a security report — those decisions belong in
   input shouldn't crash)
 - Vyakarana grammar parser correctness when fed adversarial
   `.cyml` files (see also: vyakarana's own SECURITY.md)
+- LSP protocol surface — adversarial `cyrius-lsp` server output
+  (publishDiagnostics frames, JSON-RPC bodies). cyim-lsp
+  v1.0.1's F-1/F-2/F-3 audit findings are closed; subsequent
+  parser regressions in the bundled distfile are in-scope here
+  too. See cyim-lsp's
+  [`docs/audit/`](https://github.com/MacCracken/cyim-lsp/tree/main/docs/audit).
+- Plugin ABI surfaces — buffer / pointer / argument validation
+  in `plugin_register_*` / `plugin_buf_load_file` /
+  `plugin_list_display`. Plugins are trusted code per the
+  [ADR 0001 trust model](docs/adr/0001-trust-model.md), but the
+  ABI itself shouldn't crash on malformed inputs from a
+  well-behaved plugin.
 - Any deviation from the [ADR 0001](docs/adr/0001-trust-model.md)
   trust model
 
@@ -73,6 +85,14 @@ requests instead)
 - [2026-04-25 — Initial security audit (M5)](docs/audit/2026-04-25-security-audit.md)
 - [2026-04-25 — M7 pre-v1.0 audit](docs/audit/2026-04-25-m7-audit.md)
 - [2026-04-25 — 0day / CVE corpus survey](docs/security/2026-04-25-0day-corpus.md)
+- [2026-05-07 — 1.5.x closeout audit](docs/audit/2026-05-07-1.5x-closeout.md)
+  (post-LSP-fold-in; security re-scan included)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
 all triaged with rationale.
+
+State at v1.5.2: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 4 LOW from the
+1.5.x closeout (perf re-bench, refactor wait-for-third,
+prefix-clear hardening, URL-decode for `file://` URIs). All
+patch-sized, tracked in
+[`docs/development/roadmap.md`](docs/development/roadmap.md).

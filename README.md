@@ -20,15 +20,36 @@ for humanity. Consumers:
 
 ## Status
 
-**1.1.0 — released.** M0–M7 landed at v1.0.0 (2026-04-25); v1.0.1 added
-the agent-drive CLI surface; v1.0.2 added the `--wc` modifier and fixed
-BUG-001 (silent argv truncation > 4 KB); v1.1.0 adds `--grep` plus
-`--expect` / `--expect-not` / `--expect-N` / `--expect-1` modifiers
-that close the structural-invariant gap (post-write shape assertion,
-pre-substitution count assertion — no more `cyim … && rg -q …` chains).
+**1.5.2 — released.** The 1.x series shipped:
+
+- **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
+  modal dispatch, vyakarana syntax highlighting, multi-buffer +
+  splits, search / undo / visual / `.` / config, polish, P(-1)
+  hardening, security audit.
+- **v1.0.x / v1.1.x** — agent-drive CLI surface lit up:
+  `--headless` / `--write` / `--replace[-all]` / `--grep`
+  (1.0.1–1.1.0); `--batch` (1.1.2); `--grepfiles` / `--context=N` /
+  `--replace-files[-all]` (1.1.4).
+- **v1.2.x / v1.3.x** — `--regex=<flavor>` modifier on grep/replace
+  verbs: `ere` (1.2.0, cyrius stdlib Pike NFA), then
+  `bre`/`re2`/`pcre`/`vim`/`fuzzy` via the niyama fold (1.3.0+),
+  with `--fuzzy-edits=<n>` precision (1.3.2).
+- **v1.3.x** (continued) — plugin ABI scaffold + 6-hook freeze
+  (1.3.4–1.3.6 / [ADR 0004](docs/adr/0004-plugin-abi-freeze.md)).
+- **v1.4.x** — first non-trivial external plugin folded in:
+  [cyim-lsp](https://github.com/MacCracken/cyim-lsp) at 1.4.0.
+  Additive ABI extensions (`plugin_register_normal_prefix_key`,
+  `plugin_buf_load_file`) at 1.4.2 unlock `gd` / `gr` keymap dispatch
+  and cross-file goto-def at 1.4.3.
+- **v1.5.x** — `plugin_list_display` ABI (popup-picker subsystem)
+  at 1.5.0; cyim-lsp 1.2.0 pickup at 1.5.1 turns `:lsp-find-refs` /
+  `gr` into a navigable quickfix list.
+- **v1.5.2** — closeout cut for the 1.5.x cycle. 0 CRITICAL / 0 HIGH /
+  0 MEDIUM / 4 LOW findings (tracked).
 
 Live state in [`docs/development/state.md`](docs/development/state.md);
-post-v1.0 demand-gated work in [`docs/development/roadmap.md`](docs/development/roadmap.md).
+sequencing + deferred LSP polish in
+[`docs/development/roadmap.md`](docs/development/roadmap.md).
 
 ## Why "cyim"
 
@@ -38,17 +59,18 @@ A name in the tradition, written in the language of the library.
 ## Build
 
 ```sh
-cyrius deps                              # resolve stdlib deps
+cyrius deps                              # resolve deps (vyakarana + cyim-lsp)
 cyrius build src/main.cyr build/cyim     # compile
 CYRIUS_DCE=1 cyrius build ...            # dead-code-eliminated release build
-cyrius test                              # run tests/*.tcyr + src/test.cyr
+cyrius test                              # 20 .tcyr suites (~973 assertions)
+cyrius fuzz                              # 3 .fcyr harnesses
+cyrius smoke                             # tests/smcyr/lsp_fold.smcyr (real cyrius-lsp)
+cyrius bench tests/perf.bcyr             # gap-buffer / search / render / highlight perf
 cyrius lint src/*.cyr                    # static checks
 cyrius audit                             # full check: self-host, test, fmt, lint
 ```
 
-## CLI surface
-
-Interactive editor:
+## Interactive editor
 
 ```sh
 cyim                                       # open scratch buffer
@@ -58,33 +80,86 @@ cyim --help
 cyim --probe                               # TTY round-trip diagnostic
 ```
 
-Agent-drive (no TTY required — same dispatch chain humans use, but
-piped from stdin / argv):
+Daily-driver bindings (full reference: [`docs/guides/keymap.md`](docs/guides/keymap.md)):
+
+- `h j k l` motions; `0` / `$` line bounds; `w` / `b` words; `gg` / `G` file bounds
+- `i` / `a` / `A` enter INSERT; `Esc` exits; `x` deletes; `u` / `Ctrl-r` undo/redo; `.` repeat
+- `v` / `V` visual + `y` / `d` yank/delete
+- `/` / `?` search; `n` / `N` repeat; `*` / `#` word-search
+- `:e <file>` open; `:ls` / `:bn` / `:bp` / `:b N` switch buffers; `:sp` / `:vsp` split;
+  `Ctrl-w h/j/k/l` window navigation
+- `:w` / `:wq` / `:q` / `:q!` save and quit
+- `gd` / `gr` LSP nav (when cyim-lsp is folded in); `:lsp-status`, `:lsp-restart`,
+  `:lsp-goto-def`, `:lsp-find-refs`
+
+## LSP integration
+
+cyim 1.5.x ships [cyim-lsp 1.2.0](https://github.com/MacCracken/cyim-lsp) folded
+in via the sandhi pattern. With `cyrius-lsp` on PATH (the cyrius toolchain installs
+it at `~/.cyrius/bin/cyrius-lsp`), opening a `.cyr` file lazily spawns the server
+and surfaces:
+
+- **Server-pushed diagnostics** — counts in the status segment (`E:N W:M I:K H:L`)
+  + inline render via cyim's `diagnostic_provider` plugin hook
+- **`gd`** — goto-definition. Same-file: cursor moves; cross-file: file loads + cursor
+  jumps in the new buffer
+- **`gr`** — find-references. Pops a quickfix picker; `j` / `k` navigate, `Enter` jumps
+  to the selected reference, `Esc` / `q` dismiss
+- **`:lsp-restart`**, **`:lsp-status`** — server lifecycle
+- **`:lsp-goto-def`**, **`:lsp-find-refs`** — same as `gd` / `gr`, ex-command form
+
+## Plugin system
+
+Plugins are **AOT-compiled Cyrius bundles** folded into the binary at build time
+via the sandhi pattern (the same pattern vyakarana and niyama use). No `dlopen`,
+no eval, no runtime sandbox. Plugins extend cyim's
+[6-hook ABI](docs/adr/0004-plugin-abi-freeze.md)
+(post_save / post_change / status_segment / diagnostic_provider / normal_key /
+ex_command) and three additive 1.4–1.5 extensions (prefix-keymap, buf_load_file,
+list_display). Built-ins win on conflict per
+[ADR 0003 §3](docs/adr/0003-cyrius-plugin-system.md).
+
+ABI **frozen** at v1.3.6; 1.x-stable. Live consumers:
+
+- [`cyim-lsp`](https://github.com/MacCracken/cyim-lsp) — LSP client
+- [`src/plugins/trailing_ws.cyr`](src/plugins/trailing_ws.cyr) — inline plugin (proves the ABI end-to-end)
+
+Architecture: [`docs/architecture/001-plugin-system.md`](docs/architecture/001-plugin-system.md).
+
+## Agent-drive (no TTY required)
+
+Same dispatch chain humans use, but piped from stdin / argv:
 
 ```sh
-cyim --headless [<file>]                   # keystroke stream over stdin
-cyim --write <file>                        # replace <file> with stdin
-cyim --replace <old> <new> <file>          # substitute first; OLD must be unique
-cyim --replace-all <old> <new> <file>      # substitute every occurrence
-cyim --grep <pattern> <file>               # read-only; emit FILE:N:LINE per hit
+cyim --headless [<file>]                              # keystroke stream over stdin
+cyim --write <file>                                   # replace <file> with stdin
+cyim --replace <old> <new> <file>                     # substitute first; OLD must be unique
+cyim --replace-all <old> <new> <file>                 # substitute every occurrence
+cyim --replace-files <old-file> <new-file> <file>     # OLD/NEW from file contents
+cyim --replace-files-all <old-file> <new-file> <file> # same, every occurrence
+cyim --grep <pattern> <file>                          # FILE:N:LINE per hit
+cyim --grepfiles <pattern> <file...>                  # multi-file grep
+cyim --batch <file>                                   # NUL-separated OLD/NEW pairs from stdin
 ```
 
 Modifiers (parsed in any order between the verb and its positional args):
 
 | Modifier | Applies to | Effect |
 |---|---|---|
-| `--wc[=l\|=long]` | `--write`, `--replace[-all]` | Print `wc(1)` output for the resulting file on success |
-| `--expect=<pat>` | `--write` | Post-save assertion — exit **6** if `<pat>` is missing from the result |
-| `--expect-not=<pat>` | `--write` | Post-save assertion — exit **6** if `<pat>` appears in the result |
-| `--expect-N=<n>` | `--replace[-all]` | Pre-substitution assertion — exit **6** if `OLD` doesn't occur exactly `<n>` times |
-| `--expect-1` | `--replace[-all]` | Sugar for `--expect-N=1` |
+| `--wc[=l\|=long]` | `--write`, `--replace[-all]`, `--batch` | Print `wc(1)` for the resulting file on success |
+| `--expect=<pat>` / `--expect-not=<pat>` | `--write`, `--batch` | Post-save shape assertion (exit **6** on mismatch) |
+| `--expect-N=<n>` / `--expect-1` | `--replace[-all]` | Pre-substitution count assertion |
+| `--all` | `--batch` | Apply each pair via `--replace-all` semantics |
+| `--context=<n>` | `--grep`, `--grepfiles` | `grep -C N` shape with overlap-merge + `--` separators |
+| `--regex=<flavor>` | `--grep`, `--grepfiles`, `--replace[-all]`, `--replace-files[-all]` | Treat pattern as regex; flavor: `ere` / `bre` / `re2` / `pcre` / `vim` / `fuzzy` |
+| `--fuzzy-edits=<n>` | (any verb with `--regex=fuzzy`) | Max edit distance (Levenshtein) |
 
 Exit codes (verb-disambiguated where noted):
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success (or, for `--grep`, ≥1 match) |
-| 1 | Save failed (`--write`/`--replace`) \| no match (`--grep`) |
+| 0 | Success (or, for `--grep[files]`, ≥1 match) |
+| 1 | Save failed (`--write`/`--replace`) \| no match (`--grep[files]`) |
 | 2 | Bad CLI args |
 | 3 | File not found |
 | 4 | OLD not found in FILE (`--replace[-all]`) |
@@ -101,7 +176,8 @@ Configuration: [`docs/guides/cyimrc.md`](docs/guides/cyimrc.md).
 - **Zero attack surface.** No embedded scripting language. Configuration is data, not code.
 - **Refusal as architecture.** Inherits AGNOS [§0 Refusal](https://github.com/MacCracken/agnosticos/blob/main/docs/design-patterns.md) — every layer must justify itself with a living reason.
 - **Reference, don't mimic.** Vim is the reference. cyim is what a modal editor looks like designed today, in a sovereign language, with no carried legacy shape.
-- **Two consumer classes, one grammar.** Humans drive cyim at a TTY. AI agents drive cyim programmatically (`--headless` for full keymap drive; `--write`/`--replace[-all]`/`--grep` for one-shot ops). The modal surface is the API for both.
+- **Two consumer classes, one grammar.** Humans drive cyim at a TTY. AI agents drive cyim programmatically (`--headless` for full keymap drive; `--write`/`--replace[-all]`/`--grep[files]`/`--batch` for one-shot ops). The modal surface is the API for both.
+- **Plugins as bundles, not as scripts.** AOT-compiled Cyrius distfiles fold into the binary at build time via the sandhi pattern. No `dlopen`, no eval. The editor's surface is its binary; the binary is auditable end-to-end.
 
 ## License
 
