@@ -4,6 +4,74 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-05-06
+
+Patch release — **BUG-001 closed**. Cyrius toolchain bump
+5.9.2 → 5.9.13 picks up the upstream `args_init()` fix that landed
+in cyrius 5.9.5 (heap-backed 2 MB buffer, replacing the
+4 KB stack buffer that silently truncated argv reads). cyim's
+`_cli_args_reload_big()` workaround retires; the integration
+smoke regression for BUG-001 stays in place as a guard.
+
+The retirement is purely a code-removal cut on cyim's side: one
+function deleted from `src/cli.cyr` (with its `_CLI_ARGS_BIG_CAP`
+global and explanatory comment block), one call site removed
+from `src/main.cyr`. No behavioral change for end users — the
+`>4064 B <new>` argv path was already working against the
+workaround; now it works against the upstream fix directly.
+
+### Changed
+
+- **Cyrius toolchain pin**: `5.9.2` → `5.9.13` in `cyrius.cyml
+  [package].cyrius`. Picks up cyrius 5.9.5's `args_init()` fix
+  + 5.9.6's `dir_list` use-after-free fix in
+  `lib/fs.cyr` (incidental — cyim doesn't consume `dir_list`,
+  DCE-stripped). Re-vendored `lib/args.cyr` and `lib/fs.cyr`
+  from the new toolchain.
+
+### Removed
+
+- **`_cli_args_reload_big()`** in `src/cli.cyr` (15-line function
+  + `_CLI_ARGS_BIG_CAP` global + 19-line BUG-001 comment block).
+  Replaced unconditional 2 MB heap re-read of `/proc/self/cmdline`
+  with reliance on cyrius 5.9.5+'s upstream-correct `args_init()`.
+- **Workaround call site** in `src/main.cyr:239`:
+  `_cli_args_reload_big();` line removed.
+
+### Closed
+
+- **BUG-001** (filed 2026-04-25, worked around 2026-04-26, fixed
+  upstream 2026-05-06). Resolution lineage tracked in
+  `docs/development/roadmap.md` § Closed Bugs and the archived
+  upstream issue file at
+  `docs/development/issues/archive/2026-05-06-cyrius-args-init-4kb-cap.md`.
+
+### Tests
+
+- All gates green against 5.9.13 with workaround removed: cyrius
+  test 130/130, cli_smoke 118/118, integration smoke (BUG-001
+  regression row included) PASS, cyrius lint 0 warnings.
+- BUG-001 verified retired against three argv sizes — 4063 B,
+  8 KB, 64 KB — all `cyim --replace` invocations succeed
+  cleanly without the workaround helper.
+
+### Notes
+
+- **No 1.3.x roadmap items pending after this cut.** Pre-1.4.0
+  slate: 1.3.4 plugin ABI scaffold (cyim-side hook plumbing per
+  ADR 0003), 1.3.5 trailing-whitespace POC plugin (proves the
+  ABI end-to-end), 1.3.6 ABI freeze in ADR 0004. v1.4.0 ships
+  cyim-lsp as the first real plugin against the frozen ABI.
+
+### Binary
+
+- `build/cyim` — DCE build size: **890,352 B** (−4,400 B from
+  v1.3.2's 894,752 B). The retirement saved ~600 B of
+  `_cli_args_reload_big()` machinery; the rest is downstream
+  benefit from cyrius 5.9.3-5.9.13 stdlib improvements (regex
+  + niyama paths got tightened internally; cyim consumes them
+  unchanged).
+
 ## [1.3.2] — 2026-05-06
 
 Patch release — fuzzy substitute precision + `--fuzzy-edits=<n>`

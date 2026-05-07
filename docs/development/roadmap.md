@@ -232,92 +232,50 @@ the 0-day corpus survey is checked in and referenced from CHANGELOG.
 
 ---
 
-## Active Bugs — v1.0.x patch slate
+## Closed Bugs
 
-### BUG-001 — `cyim --replace` fixed-size `<new>` arg buffer (4064 B) — **FIXED in 1.0.2 (workaround); upstream cyrius fix pending**
+### BUG-001 — `cyim --replace` fixed-size `<new>` arg buffer (4064 B) — **CLOSED in v1.3.3 (2026-05-06)**
 
-**Status (2026-04-26):** worked around in `src/cli.cyr` via
-`_cli_args_reload_big()` — re-reads `/proc/self/cmdline` into a 2 MB
-heap buffer at startup and rebinds `lib/args.cyr`'s `_args_base` /
-`_args_len` globals. Linux ARG_MAX is 2 MB, so the workaround covers
-the full kernel-accepted argv range. Verified at 8 KB and 64 KB
-`<new>`; 256 KB hits the kernel's `MAX_ARG_STRLEN` per-arg cap
-(unrelated to this bug).
+**Resolution lineage:**
+- 2026-04-25 — Discovered + bisected during cyrius v5.7.5 P4.3a
+  refactor (splicing a ~13 KB `TS_LEX_JSX` block via `cyim
+  --replace`). Threshold pinned at the 4063 / 4064 byte boundary.
+- 2026-04-26 — cyim v1.0.2 ships the `_cli_args_reload_big()`
+  workaround: re-reads `/proc/self/cmdline` into a 2 MB heap
+  buffer at startup, rebinds `lib/args.cyr`'s `_args_base` /
+  `_args_len` globals.
+- 2026-05-06 — Filed upstream as
+  [`docs/development/issues/archive/2026-05-06-cyrius-args-init-4kb-cap.md`](issues/archive/2026-05-06-cyrius-args-init-4kb-cap.md).
+  Same day, **upstream fix landed in cyrius 5.9.5** —
+  `lib/args.cyr` switched to a heap-backed 2 MB buffer
+  (`alloc(2097152)`) matching Linux `ARG_MAX`. The new
+  `args_init()` includes a comment block referencing the issue
+  file by name.
+- 2026-05-06 — cyim v1.3.3 bumps the cyrius pin 5.9.2 → 5.9.13
+  (picks up the fix), retires `_cli_args_reload_big()` from
+  `src/cli.cyr` and the call site in `src/main.cyr`. Verified
+  with the workaround removed: 4063 B / 8192 B / 65536 B
+  `<new>` args all succeed against the bare `args_init()`.
 
-The **upstream fix** still needs to land in cyrius/agnosticos
-`lib/args.cyr` — replace the `var buf[4096]` stack buffer in
-`args_init()` with a heap-backed read sized to ARG_MAX. CLAUDE.md
-forbids editing the vendored stdlib from this repo, so the cyim-side
-helper stays in place until cyrius is patched and re-vendored, then
-`_cli_args_reload_big()` can be retired.
+**Severity (was):** P1 (silent failure on a scriptable surface).
+The "usage" message implied "wrong number of args" rather than
+"`<new>` exceeded an internal cap" — exactly the failure mode
+that breaks agent-driven pipelines without surfacing root cause.
 
-**Severity:** P1 (silent failure on a scriptable surface)
+**Threshold (bisected 2026-04-25; for posterity):**
 
-**Symptom.** `cyim --replace <old> <new> <file>` aborts with
-`usage: cyim --replace [--wc[=l]] <old> <new> <file>` (exit 2) when
-the `<new>` arg is **≥ 4064 bytes**. Below 4064 B: succeeds.
+| `<new>` size | pre-fix exit | stderr            | post-fix exit |
+|--------------|--------------|-------------------|---------------|
+| 4063 B       | 0            | (clean)           | 0             |
+| 4064 B       | 2            | `usage: ...`      | 0             |
 
-The "usage" message implies "wrong number of args" — it does **not**
-indicate the real cause is `<new>` exceeding an internal cap. A caller
-sees a usage-shape error and assumes their invocation is wrong.
+`4064 = 4096 − 32` → consistent with the pre-fix `var buf[4096]`
+stack allocation reserving ~32 B for null-terminator overhead.
 
-**Threshold (bisected 2026-04-25):**
-| `<new>` size | exit | stderr |
-|---|---|---|
-| 4063 B | 0 | (clean) |
-| 4064 B | 2 | `usage: ...` |
-
-4064 = 4096 − 32 → strongly suggests a `char buf[4096]` (or equivalent)
-in arg handling with a ~32 B reservation for null terminator / length
-prefix / structural overhead.
-
-**Repro:**
-```sh
-printf 'foo\nold\nbar\n' > /tmp/tgt.txt
-head -c 4063 /dev/urandom | base64 > /tmp/small.txt   # <4064 B
-cyim --replace "old" "$(cat /tmp/small.txt)" /tmp/tgt.txt && echo "small ok"
-head -c 5000 /dev/urandom | base64 > /tmp/big.txt     # >4064 B
-cyim --replace "old" "$(cat /tmp/big.txt)" /tmp/tgt.txt; echo "big exit=$?"
-# small ok
-# usage: cyim --replace [--wc[=l]] <old> <new> <file>
-# big exit=2
-```
-
-**Discovered:** 2026-04-25 during cyrius v5.7.5 P4.3a — splicing a
-~13 KB `TS_LEX_JSX` block into `src/frontend/ts/lex.cyr`. cyim
-`--replace` failed silently (usage error) before the obvious
-hypotheses (shell escaping, backtick expansion, `$` substitution)
-ruled out via `${#NEW}` byte-count + first/last-80-bytes inspection.
-Workaround was `cyim --write` (reads from stdin, no arg-size limit).
-
-**Why this matters.** Per cyim's "Two consumer classes" guiding
-principle: **AI agents drive cyim programmatically — the keymap
-dispatch is the API surface for both humans and agents.** A scripted
-edit surface that silently truncates at 4064 bytes with a misleading
-error is exactly the failure mode that breaks agent-driven pipelines
-without surfacing root cause. Editor edits over 4 KB are common
-(refactor diffs, code generation, large block inserts).
-
-**Fix (suggested):**
-1. **Replace the fixed-size buffer with dynamic allocation** sized to
-   `ARG_MAX` (Linux: 2 MB) or larger via `cyrius alloc`. The
-   underlying syscall surface accepts up to `ARG_MAX`, so cyim's cap
-   should be `ARG_MAX` or unbounded (read into a growable buffer).
-2. **If a cap stays for safety, distinguish the error.** Replace the
-   "usage" fallthrough with a specific message:
-   ```
-   cyim --replace: <new> arg is N bytes (limit: M); use --write for larger replacements
-   ```
-   Exit code distinct from 2 (usage) — e.g. exit 5 (arg-too-large).
-3. **Audit `<old>` and `<file>` for the same cap.** Same buffer
-   pattern likely affects all three positional args. Test all three.
-4. **Add a regression** in `tests/` that runs `cyim --replace` with
-   `<new>` at 4063 B (must succeed), 4064 B (must succeed after fix),
-   65536 B (proves the cap is actually large), and `ARG_MAX − 1024` B
-   (proves we use the full syscall surface).
-
-**Workaround until fixed:** for `<new>` over 4 KB, use
-`cyim --write <file> < input.txt` (stdin, no arg-size constraint).
+**Regression guard:** `tests/integration_smoke.py` retains the
+BUG-001 row — exercises `cyim --replace` with a >4064 B `<new>`
+arg against the bare `args_init()`. Stays in place against future
+toolchain bumps.
 
 ---
 

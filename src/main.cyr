@@ -236,7 +236,6 @@ fn run_editor(file_path) {
 fn main() {
     alloc_init();
     args_init();
-    _cli_args_reload_big();
 
     var ac = argc();
     var fpath = 0;

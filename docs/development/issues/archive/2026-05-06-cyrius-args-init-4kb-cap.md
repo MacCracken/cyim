@@ -5,8 +5,30 @@
 **Target repository:** [MacCracken/cyrius](https://github.com/MacCracken/cyrius)
 **Affects file:** `lib/args.cyr` (line 42)
 **Severity:** P1 — silent argc undercount on a scriptable surface
-**Status:** Open upstream; worked around in cyim 1.0.2+; re-confirmed against cyrius **5.9.4**, 2026-05-06
-**Internal label (cyim):** BUG-001 ([`docs/development/roadmap.md`](../roadmap.md) § Active Bugs)
+**Status:** **RESOLVED upstream in cyrius 5.9.5** (heap-backed 2 MB buffer); verified 2026-05-06 against cyrius 5.9.13. cyim-side workaround `_cli_args_reload_big()` retires in cyim v1.3.3.
+**Internal label (cyim):** BUG-001 ([`../roadmap.md`](../roadmap.md) § Active Bugs)
+
+---
+
+## Resolution (2026-05-06)
+
+Upstream fix landed in **cyrius 5.9.5** — `lib/args.cyr` switched
+to a heap-backed 2 MB buffer (matches Linux ARG_MAX). The new
+`args_init()` includes a comment block explicitly referencing this
+issue file by name and threshold (4063 / 4064 byte boundary). cyim
+verified against cyrius 5.9.13:
+
+- `lib/args.cyr` SHA `cde23315...` (was `7fc65fa1...` through 5.9.4)
+- 4063 B / 8192 B / 65536 B `<new>` arg sizes all succeed with the
+  cyim-side `_cli_args_reload_big()` workaround **disabled**, on a
+  binary built against 5.9.13
+- All cyim test gates still green (cyrius test 130/130, cli_smoke
+  118/118, integration_smoke PASS)
+
+cyim's `_cli_args_reload_big()` workaround retires in cyim v1.3.3
+(separate patch — bumps the cyrius pin and removes the helper +
+its main.cyr call site). The integration_smoke regression for
+BUG-001 stays in place against the upstream fix as a guard.
 
 ---
 
