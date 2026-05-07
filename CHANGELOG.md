@@ -4,6 +4,108 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-05-07
+
+**Minor — `plugin_list_display` ABI: a bottom-anchored popup picker.**
+
+Closes the third deferred ABI from cyim 1.4.2's ADR 0004 amendment
+("`plugin_list_display` is the size of a minor release, not a
+patch — popup-overlay subsystem"). v1.5.0 ships the picker with a
+modest, focused shape: bottom-anchored, j/k/Enter/Esc/q surface,
+single active list at a time, no nested stacking. cyim-lsp 1.1.x
+or 1.2.0 will activate `:lsp-find-refs` as a navigable quickfix
+on top.
+
+### Added — plugin ABI
+
+- `plugin_list_display(s, items, count, on_select)` — display a
+  popup picker over the bottom of the buffer area. Items: a vec
+  of NUL-term cstrings (caller-owned for the lifetime of the
+  picker). on_select signature: `fn(s, index) -> 0`. Storage is
+  module-global — only one list at a time; calling
+  `plugin_list_display` while another list is up replaces the
+  old (the old `on_select` is dropped without firing).
+- `plugin_list_active()` / `_count()` / `_index()` / `_items()` —
+  public accessors. Tests + the render layer use these instead of
+  reaching into the underlying globals.
+- Internal helpers: `_plugin_list_dismiss` / `_plugin_list_next` /
+  `_plugin_list_prev` / `_plugin_list_select(s)`. Driven by
+  `editor_dispatch`'s list-mode interception path; plugins
+  normally don't call these.
+
+### Added — dispatch interception
+
+- `editor_dispatch` (`src/mode.cyr`) — at the very top, before
+  any mode-specific dispatch, when `_plugin_list_active == 1`:
+  - `j` / `k` → next / prev (clamped at 0 and count - 1)
+  - `Enter` / `LF` → fire `on_select(s, current_index)` then dismiss
+  - `Esc` / `q` → dismiss without firing
+  - All other keys swallowed; return ACT_NONE so motion / edit
+    pipelines stay no-ops and the buffer stays clean
+  - **Order matters in `_plugin_list_select`:** dismiss first,
+    then call `on_select` — lets the callback call
+    `plugin_list_display` again for chained pickers without
+    leaking active state.
+- Arrow keys NOT bound at v1.5.0 (would require driver-side
+  `editor_feed` changes). The j/k/Enter/Esc/q surface is the
+  documented input set.
+
+### Added — popup overlay rendering
+
+- `_render_list_overlay(s, rows, cols)` (`src/render.cyr`) —
+  drawn last in `render_frame`, after both buffer rows AND
+  `render_status`. Overlays the bottom of the buffer area
+  (rows-N..rows-1) while leaving the status row (row `rows`)
+  visible. Window-start auto-scrolls to keep the current
+  selection in view; cap at 10 visible rows.
+- Reverse-video on the current row (`\x1b[7m`...`\x1b[0m`),
+  padded to full width so the highlight extends edge-to-edge.
+  Item labels truncated to `cols`.
+- Terminal cursor parked at column 1 of the highlighted row, so
+  the focus indicator matches the visible highlight (the buffer-
+  cursor positioning above is overridden when list is active).
+- Both single-window (`render_frame`) and multi-window
+  (`_render_frame_multi`) paths invoke the overlay before
+  returning.
+
+### Tests
+
+- `tests/plugin.tcyr` extended: 58 → 85 assertions (+27 across
+  12 new groups — display latches state, j/k navigation, clamping,
+  buffer untouched during list mode, Enter / LF fire on_select,
+  Esc / q dismiss without firing, dispatch resumes normal mode
+  after dismiss).
+- `cyrius test` — 20 suites all PASS.
+- `cyrius fuzz` — 3 PASS.
+- `cyrius smoke` — 1 PASS (LSP harness still green).
+- `cyrius lint` — 0 warnings on touched files.
+
+### Verification
+
+- `cyrius build` (DCE) — OK; binary 953,512 B (+3,064 B over
+  v1.4.3's 950,448 B; deltas: list-display ABI + helpers
+  (~600 B), dispatch interception block (~250 B),
+  `_render_list_overlay` (~1.5 KB), padding / accessor
+  scaffolding (~700 B)).
+- `build/cyim --version` — `cyim 1.5.0`.
+- ABI compatibility: `plugin_list_display` is additive — cyim 1.x
+  ABI freeze (ADR 0004) holds. No frozen-from-1.3.6 symbol
+  changed shape.
+
+### Coordination — cyim-lsp 1.1.x / 1.2.0
+
+- Today, `:lsp-find-refs` and `_cyim_lsp_gr` (cyim-lsp 1.1.0)
+  surface only a count in the status bar. With cyim 1.5.0
+  shipping, cyim-lsp can build per-reference cstring labels
+  ("FILE:LINE:COL — preview"), call `plugin_list_display(s,
+  labels, count, on_select)` where `on_select(s, idx)` looks up
+  the corresponding `(uri, line, char)` from a parallel payload
+  vec, calls `plugin_buf_load_file(s, dest_path)`, and
+  `buf_move`s to the destination.
+- Targeting cyim-lsp 1.1.x (additive within the 1.1 series) or
+  1.2.0 (clean signaling that the consumer-side surface grew
+  meaningfully).
+
 ## [1.4.3] — 2026-05-07
 
 **cyim-lsp 1.1.0 pickup — `gd` / `gr` and cross-file goto-def

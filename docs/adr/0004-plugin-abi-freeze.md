@@ -1,6 +1,6 @@
 # ADR 0004 — Plugin ABI freeze (v1.3.6)
 
-**Status:** Accepted (additive extensions in v1.4.2 — see end)
+**Status:** Accepted (additive extensions in v1.4.2 + v1.5.0 — see end)
 **Date:** 2026-05-06 (extended 2026-05-07)
 **Tags:** plugins, abi, stability, sandhi, v1.3.6
 
@@ -10,10 +10,19 @@
 > (`plugin_register_normal_prefix_key`, `plugin_buf_load_file`),
 > one new key constant (`KEY_G`), one new action constant
 > (`ACT_MOVE_FILE_START`), plus the long-stubbed `gg` motion now
-> dispatched via the generalized prefix path. **No frozen-from-1.3.6
-> symbol changed shape**; consumers compiling against the 1.3.6
-> surface continue to compile and run unchanged. See
+> dispatched via the generalized prefix path. See
 > [§ v1.4.2 additive extensions](#v142-additive-extensions-2026-05-07)
+> at the end of this ADR.
+
+> **2026-05-07 — v1.5.0 additive extension:**
+> `plugin_list_display(s, items, count, on_select)` — a
+> bottom-anchored popup picker — ships under the same envelope.
+> Single active list at a time; j/k/Enter/Esc/q surface;
+> dispatch interception at the top of `editor_dispatch` while
+> active. **No frozen-from-1.3.6 symbol changed shape**; consumers
+> compiling against the 1.3.6 surface continue to compile and run
+> unchanged. See
+> [§ v1.5.0 additive extension](#v150-additive-extension-2026-05-07)
 > at the end of this ADR.
 
 ---
@@ -452,3 +461,119 @@ built-in branch declines.
 - cyim 1.4.x stays open for further additive extensions; cyim 1.5.0
   earns its minor bump via `plugin_list_display` (the popup
   subsystem).
+
+## v1.5.0 additive extension (2026-05-07)
+
+The "additions are allowed" envelope continues to cover v1.5.0's
+single new ABI surface: `plugin_list_display`. The earned minor
+bump (vs. another patch) reflects scope — v1.5.0 ships a
+genuinely new editor subsystem (popup overlay rendering + global
+dispatch interception state), not just a registry helper.
+
+### Added — operations
+
+- `plugin_list_display(s, items, count, on_select)` — display a
+  bottom-anchored popup picker. `items` is a `vec<cstring>` of
+  labels; `count` is the item count; `on_select` is
+  `fn(s, index) -> 0` invoked when the user presses Enter / LF.
+  Used by cyim-lsp 1.1.x or 1.2.0 (planned) for `:lsp-find-refs`
+  / `gr` quickfix list — pair the labels vec with a parallel
+  payload vec the on_select callback indexes via `idx`, and
+  call `plugin_buf_load_file` + `buf_move` to land on the
+  selected reference.
+- Public accessors `plugin_list_active() / _count() / _index() /
+  _items()` — for tests and the render layer; plugins typically
+  don't read these.
+
+### Behaviour
+
+- **Single active list at a time.** Storage is module-global
+  (`_plugin_list_active`, `_plugin_list_items`,
+  `_plugin_list_count`, `_plugin_list_index`,
+  `_plugin_list_on_select`). Calling `plugin_list_display` while
+  another list is up replaces the old (the old `on_select` is
+  dropped without firing). v1.5.x can layer state if a real
+  stacked-picker need surfaces.
+- **Items are not copied.** The plugin owns the items vec and
+  the cstring labels for the picker's lifetime. Consistent with
+  the `lsp_doc_send_*` / `_lsp_pos_extract_*` cstring-ownership
+  conventions across the cyim-lsp bundle.
+- **on_select fires AFTER dismiss.** Order is intentional —
+  callbacks can call `plugin_list_display` again for chained
+  pickers (e.g. "pick a file → then pick a function in that
+  file") without leaking active state.
+
+### Dispatch interception
+
+`editor_dispatch` (`src/mode.cyr`) gains a top-of-function check
+that fires when `_plugin_list_active == 1`:
+
+| Key | Action |
+|---|---|
+| `j` (106) | next — clamped at `count - 1` |
+| `k` (107) | prev — clamped at 0 |
+| Enter (13), LF (10) | fire `on_select(s, current_index)`; dismiss |
+| Esc (27), `q` (113) | dismiss without firing |
+| anything else | swallowed (return ACT_NONE) |
+
+All paths return `ACT_NONE` so `motion_apply` / `edit_apply` /
+mode-transition handlers stay no-ops while the picker is up. The
+buffer is not mutated; `buf_version` doesn't change; post_change
+hooks don't fire.
+
+**Arrow keys are NOT bound at v1.5.0.** Arrow input arrives via
+`editor_feed`'s CSI parser and dispatches directly to
+`motion_apply` (cyim's pre-1.5.0 arrow handling); routing arrows
+through the list-mode interception would require driver-side
+changes to `editor_feed`. Documented as the v1.5.0 input surface;
+deferred to v1.5.x or v1.6.0 if a need surfaces.
+
+### Render
+
+`_render_list_overlay(s, rows, cols)` (`src/render.cyr`) runs
+last in `render_frame` (after both buffer rows AND
+`render_status`). Overlays the bottom of the buffer area
+(`rows-N..rows-1`) while leaving the status row (row `rows`)
+visible. Cap at 10 visible rows; window-start auto-scrolls so
+the current selection stays in view. Reverse-video on the current
+row (`\x1b[7m`...`\x1b[0m`) padded to full width. Cursor parked
+at column 1 of the highlighted row.
+
+Both single-window (`render_frame`) and multi-window
+(`_render_frame_multi`) paths invoke the overlay before
+returning.
+
+### Conflict resolution unchanged
+
+The ADR 0003 §3 "built-ins win" rule continues to apply for the
+new dispatch path: when the list is NOT active, normal cyim
+dispatch runs unchanged (no shadowing of built-in keys). When
+the list IS active, NO built-in keymap dispatch runs — the
+list-mode interception captures everything. Documented: opening
+the picker fully captures input until dismissed; this is the
+intended interaction model, not a regression in conflict policy.
+
+### What this *doesn't* do
+
+- **No status-line picker** (`grep -i`-style filtering). The
+  list shows what the plugin gave it; no incremental search.
+  Plugins that want filtering implement it themselves and
+  re-call `plugin_list_display` with the filtered subset.
+- **No multi-select.** `on_select` fires exactly once with one
+  index; the list dismisses afterward. v1.5.x can layer a
+  multi-select API if needed.
+- **No "preview pane".** The status bar remains the only
+  metadata channel during list display. cyim's render
+  doesn't have a split-the-popup-into-two-panes shape.
+
+### Coordination
+
+- cyim-lsp 1.1.x or 1.2.0 will activate `:lsp-find-refs` (and
+  `_cyim_lsp_gr`) as a navigable quickfix using
+  `plugin_list_display` + `plugin_buf_load_file`. Today both
+  surface only a count in the status bar.
+- cyim 1.5.x stays open for further additive extensions (e.g.
+  arrow-key support in list mode if the corner case surfaces).
+- A future cyim 1.6.0 may add a stacked-picker API or filtering
+  hook if real consumer needs accrete; for now the simple
+  shape is enough.

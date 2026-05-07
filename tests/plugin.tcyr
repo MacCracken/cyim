@@ -53,6 +53,11 @@ var _t_post_save_last_path  = 0;
 var _t_prefix_key_calls = 0;
 var _t_prefix_key_last_state = 0;
 
+# v1.5.0 — list-display callback state.
+var _t_list_select_calls    = 0;
+var _t_list_select_last_idx = 0 - 1;
+var _t_list_select_last_s   = 0;
+
 fn _t_cb_post_save(s, path) {
     _t_post_save_calls = _t_post_save_calls + 1;
     _t_post_save_last_state = s;
@@ -94,6 +99,14 @@ fn _t_cb_prefix_gd(s) {
     _t_prefix_key_calls = _t_prefix_key_calls + 1;
     _t_prefix_key_last_state = s;
     return ACT_NONE;
+}
+
+# v1.5.0 — list-display on_select callback.
+fn _t_cb_list_select(s, idx) {
+    _t_list_select_calls = _t_list_select_calls + 1;
+    _t_list_select_last_idx = idx;
+    _t_list_select_last_s = s;
+    return 0;
 }
 
 fn main() {
@@ -323,6 +336,93 @@ fn main() {
     var null_load = plugin_buf_load_file(s6, 0);
     assert_eq(null_load, 0, "null path returns 0");
     assert_eq(editor_last_error(s6), ERR_NO_FILE_NAME, "ERR_NO_FILE_NAME set");
+
+    # === v1.5.0 — plugin_list_display ABI ===
+
+    test_group("plugin_list_display: pre-display state is inactive");
+    assert_eq(plugin_list_active(), 0, "list inactive before display");
+    assert_eq(plugin_list_count(),  0, "count 0");
+    assert_eq(plugin_list_index(),  0, "index 0");
+
+    test_group("plugin_list_display latches state");
+    var s7 = editor_new(buf_new());
+    bl_init(s7, editor_buf(s7));
+    window_init(s7);
+    var items = vec_new();
+    vec_push(items, "alpha");
+    vec_push(items, "beta");
+    vec_push(items, "gamma");
+    plugin_list_display(s7, items, 3, &_t_cb_list_select);
+    assert_eq(plugin_list_active(), 1, "active after display");
+    assert_eq(plugin_list_count(),  3, "count 3");
+    assert_eq(plugin_list_index(),  0, "index starts at 0");
+    assert_eq(plugin_list_items(),  items, "items vec stored");
+
+    test_group("dispatch routes j to list-next");
+    editor_set_mode(s7, MODE_NORMAL);
+    var act_j = editor_dispatch(s7, 106);   # j
+    assert_eq(act_j, ACT_NONE, "j returns ACT_NONE during list mode");
+    assert_eq(plugin_list_index(), 1, "j advanced index to 1");
+    editor_dispatch(s7, 106);
+    assert_eq(plugin_list_index(), 2, "j advanced to 2");
+
+    test_group("list-next clamps at count - 1");
+    editor_dispatch(s7, 106);
+    assert_eq(plugin_list_index(), 2, "j past end stays at count-1");
+
+    test_group("dispatch routes k to list-prev");
+    editor_dispatch(s7, 107);   # k
+    assert_eq(plugin_list_index(), 1, "k decremented to 1");
+    editor_dispatch(s7, 107);
+    assert_eq(plugin_list_index(), 0, "k to 0");
+
+    test_group("list-prev clamps at 0");
+    editor_dispatch(s7, 107);
+    assert_eq(plugin_list_index(), 0, "k below 0 stays at 0");
+
+    test_group("dispatch swallows other keys without buffer mutation");
+    var b7 = editor_buf(s7);
+    var pre_v = buf_version(b7);
+    var act_x = editor_dispatch(s7, 120);   # x — would normally delete
+    assert_eq(act_x, ACT_NONE, "x returns ACT_NONE during list mode");
+    assert_eq(buf_version(b7), pre_v, "buffer unchanged during list mode");
+
+    test_group("Enter fires on_select(s, current_index) then dismisses");
+    editor_dispatch(s7, 106);   # advance to 1
+    var pre_calls = _t_list_select_calls;
+    editor_dispatch(s7, KEY_ENTER);
+    assert_eq(_t_list_select_calls, pre_calls + 1, "on_select fired exactly once");
+    assert_eq(_t_list_select_last_idx, 1, "on_select got index 1");
+    assert_eq(_t_list_select_last_s, s7, "on_select got state ptr");
+    assert_eq(plugin_list_active(), 0, "list dismissed after select");
+
+    test_group("LF (\\n) also fires select");
+    plugin_list_display(s7, items, 3, &_t_cb_list_select);
+    var pre_calls_lf = _t_list_select_calls;
+    editor_dispatch(s7, KEY_LF);
+    assert_eq(_t_list_select_calls, pre_calls_lf + 1, "LF fired on_select");
+    assert_eq(plugin_list_active(), 0, "list dismissed");
+
+    test_group("Esc dismisses without firing on_select");
+    plugin_list_display(s7, items, 3, &_t_cb_list_select);
+    var pre_calls_esc = _t_list_select_calls;
+    editor_dispatch(s7, KEY_ESC);
+    assert_eq(_t_list_select_calls, pre_calls_esc, "Esc did NOT fire on_select");
+    assert_eq(plugin_list_active(), 0, "list dismissed via Esc");
+
+    test_group("q dismisses without firing on_select");
+    plugin_list_display(s7, items, 3, &_t_cb_list_select);
+    var pre_calls_q = _t_list_select_calls;
+    editor_dispatch(s7, 113);   # q
+    assert_eq(_t_list_select_calls, pre_calls_q, "q did NOT fire on_select");
+    assert_eq(plugin_list_active(), 0, "list dismissed via q");
+
+    test_group("dispatch returns to normal mode behaviour after dismiss");
+    # After list dismiss, editor_dispatch should resume routing keys
+    # to the regular NORMAL keymap. h still moves left.
+    editor_set_mode(s7, MODE_NORMAL);
+    var act_h_post = editor_dispatch(s7, 104);
+    assert_eq(act_h_post, ACT_MOVE_LEFT, "h moves left again after dismiss");
 
     return assert_summary();
 }

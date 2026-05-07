@@ -280,6 +280,25 @@ fn _seed_normal_keymap(m) {
 fn editor_dispatch(s, key) {
     var mode = load64(s);
 
+    # v1.5.0: list-display interception. When a plugin has called
+    # plugin_list_display, capture the picker keys (j/k/Enter/Esc/q)
+    # at the very top of dispatch so they don't fall through to the
+    # mode-specific handlers below. All paths return ACT_NONE so
+    # motion_apply / edit_apply / etc are no-ops; the buffer stays
+    # untouched while the picker is up. Arrow keys are NOT bound at
+    # v1.5.0 (would require editor_feed-side wiring); the j/k/Enter/
+    # Esc/q surface is the documented input set.
+    if (_plugin_list_active == 1) {
+        if (key == 106) { _plugin_list_next(); return ACT_NONE; }    # j
+        if (key == 107) { _plugin_list_prev(); return ACT_NONE; }    # k
+        if (key == KEY_ENTER) { _plugin_list_select(s); return ACT_NONE; }
+        if (key == KEY_LF)    { _plugin_list_select(s); return ACT_NONE; }
+        if (key == KEY_ESC)   { _plugin_list_dismiss();  return ACT_NONE; }
+        if (key == 113) { _plugin_list_dismiss();  return ACT_NONE; }   # q
+        # Unmapped keys swallowed — no fall-through.
+        return ACT_NONE;
+    }
+
     # Multi-byte sequence: a previous keystroke set a prefix that the
     # current byte resolves. v1.4.2 generalizes prefix dispatch beyond
     # the original CTRL_W case — built-ins (CTRL_W window-nav, G-prefix

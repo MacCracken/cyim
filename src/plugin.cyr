@@ -22,6 +22,8 @@
 # ABI surface — operations (called by plugins to drive cyim state):
 #   plugin_buf_load_file(s, path)                  # v1.4.2 — load file into new
 #                                                  #   buf + switch active; returns buf or 0
+#   plugin_list_display(s, items, count, on_select)  # v1.5.0 — popup picker;
+#                                                    #   on_select(s, index)
 #
 # ABI surface — fire / lookup (called by cyim's core, not plugins):
 #   _plugin_fire_post_save(s, path)
@@ -65,6 +67,19 @@ var _plugin_diagnostic_provs   = 0;
 # _plugin_render_collect_diagnostics. Tests + future render-side
 # inline highlighting consume this.
 var _plugin_last_diags         = 0;
+
+# v1.5.0 — list-display state. When `plugin_list_display` is called,
+# these globals capture the picker state; editor_dispatch intercepts
+# at the top of every dispatch tick when active so j/k/Enter/Esc/q
+# navigate the list rather than fall through to mode-specific
+# handlers; render_frame draws the bottom-anchored popup overlay.
+# Tests + the LSP refs-quickfix consumer (cyim-lsp 1.1.x or 1.2.0
+# planned) read these.
+var _plugin_list_active    = 0;   # 0 = not displayed, 1 = displayed
+var _plugin_list_items     = 0;   # vec<cstring> labels (caller-owned)
+var _plugin_list_count     = 0;   # number of items
+var _plugin_list_index     = 0;   # 0-based current selection
+var _plugin_list_on_select = 0;   # fp(s, index) -> 0; called on Enter
 
 # v1.3.5: diag severity enum. Higher numerically = more severe.
 # Mirrors LSP's DiagnosticSeverity (1=error..4=hint) inverted so
@@ -391,3 +406,86 @@ fn _plugin_render_collect_diagnostics(s) {
 
 # Public accessor for the most-recent per-frame diag vec.
 fn plugin_last_diags() { return _plugin_last_diags; }
+
+# === v1.5.0 — list-display ABI ===
+#
+# A bottom-anchored popup picker. Plugins call `plugin_list_display`
+# with an items vec (cstring labels), a count, and an on_select
+# callback `fn(s, index) -> 0`. cyim's editor_dispatch intercepts
+# while the list is active: j/down → next, k/up → prev, Enter/LF →
+# fire on_select(s, current_index) then dismiss, Esc/q → dismiss
+# without firing.
+#
+# Storage is module-global, not per-editor — only one list can be
+# displayed at a time. Calling plugin_list_display while another
+# list is active replaces the old list (the on_select for the old
+# list is dropped without firing). v1.5.x can layer state if a real
+# stacked-picker need surfaces.
+#
+# Items are NOT copied. The plugin owns the items vec and the
+# cstring labels for the lifetime of the picker. Reasonable since
+# picker sessions are short and the plugin holds the data anyway
+# (e.g. cyim-lsp's per-URI tuple list).
+#
+# on_select runs AFTER dismiss so it can call plugin_list_display
+# again for chained pickers without leaking active state.
+#
+# Use case: `:lsp-find-refs` quickfix list — items = vec of
+# "FILE:LINE:COL — preview" cstrings, on_select dispatches to
+# `plugin_buf_load_file` + `buf_move`.
+
+fn plugin_list_display(s, items, count, on_select) {
+    _plugin_list_items     = items;
+    _plugin_list_count     = count;
+    _plugin_list_index     = 0;
+    _plugin_list_on_select = on_select;
+    _plugin_list_active    = 1;
+    return 0;
+}
+
+# Public accessors so tests + render code don't reach into globals.
+fn plugin_list_active()    { return _plugin_list_active; }
+fn plugin_list_items()     { return _plugin_list_items; }
+fn plugin_list_count()     { return _plugin_list_count; }
+fn plugin_list_index()     { return _plugin_list_index; }
+
+# Internal helpers — driven by editor_dispatch's list-mode
+# interception path. Plugins normally don't call these; they're
+# invoked indirectly via the user's keystrokes.
+
+fn _plugin_list_dismiss() {
+    _plugin_list_items     = 0;
+    _plugin_list_count     = 0;
+    _plugin_list_index     = 0;
+    _plugin_list_on_select = 0;
+    _plugin_list_active    = 0;
+    return 0;
+}
+
+fn _plugin_list_next() {
+    if (_plugin_list_active == 0) { return 0; }
+    if (_plugin_list_index + 1 < _plugin_list_count) {
+        _plugin_list_index = _plugin_list_index + 1;
+    }
+    return 0;
+}
+
+fn _plugin_list_prev() {
+    if (_plugin_list_active == 0) { return 0; }
+    if (_plugin_list_index > 0) {
+        _plugin_list_index = _plugin_list_index - 1;
+    }
+    return 0;
+}
+
+# Fire on_select(s, index) and dismiss. Order matters: dismiss
+# first so the on_select callback can call plugin_list_display
+# again (chained picker) without leaking active state.
+fn _plugin_list_select(s) {
+    if (_plugin_list_active == 0) { return 0; }
+    var fp = _plugin_list_on_select;
+    var idx = _plugin_list_index;
+    _plugin_list_dismiss();
+    if (fp != 0) { fncall2(fp, s, idx); }
+    return 0;
+}
