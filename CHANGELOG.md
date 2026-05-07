@@ -75,8 +75,16 @@ on top.
   buffer untouched during list mode, Enter / LF fire on_select,
   Esc / q dismiss without firing, dispatch resumes normal mode
   after dismiss).
+- `tests/perf.bcyr` — added `include "src/plugin.cyr"` (was the
+  only test file missing the include; now matches the 15 others)
+  and a `plugin_init()` call in `main()`. Required because
+  `mode.cyr` references `_plugin_list_active` directly — narrow
+  test files that include `mode.cyr` must also include
+  `plugin.cyr` to satisfy the var ref. `cyrius bench tests/perf.bcyr`
+  now runs clean.
 - `cyrius test` — 20 suites all PASS.
 - `cyrius fuzz` — 3 PASS.
+- `cyrius bench` — runs clean across all 9 perf cases.
 - `cyrius smoke` — 1 PASS (LSP harness still green).
 - `cyrius lint` — 0 warnings on touched files.
 

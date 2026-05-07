@@ -11,6 +11,7 @@
 # Numbers from this run land in BENCHMARKS.md as the M5 baseline.
 
 include "src/buffer.cyr"
+include "src/plugin.cyr"
 include "src/mode.cyr"
 include "src/buflist.cyr"
 include "src/window.cyr"
@@ -63,6 +64,11 @@ fn fill_buffer(b, n) {
 
 fn main() {
     alloc_init();
+    # v1.5.1 — initialize plugin registries so dispatch interception
+    # checks (e.g. _plugin_list_active) read 0 cleanly during the
+    # buffer/render perf paths. The bench itself doesn't exercise
+    # plugin hooks, but mode.cyr's dispatch references plugin globals.
+    plugin_init();
 
     syscall(1, 1, "=== gap-buffer fill ===\n", 24);
     var b1 = buf_new();
