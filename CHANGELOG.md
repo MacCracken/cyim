@@ -4,6 +4,81 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-05-07
+
+**Minor release — first non-trivial external plugin folded in.**
+cyim 1.4.0 picks up [cyim-lsp 1.0.2](https://github.com/MacCracken/cyim-lsp)
+via the sandhi pattern: `[deps.cyim-lsp]` in `cyrius.cyml` pulls
+the bundled distfile (`dist/cyim-lsp.cyr`) at tag `1.0.2`;
+`include "lib/cyim-lsp.cyr"` brings the protocol/state code into
+cyim's TU; `src/plugins/lsp_glue.cyr` (cyim-side glue, adapted
+from cyim-lsp's reference at `docs/examples/cyim_glue.cyr`) wires
+six hook callbacks + four `:lsp-*` ex-commands against cyim's
+plugin ABI (frozen at 1.3.6 / ADR 0004).
+
+This is the milestone the 1.3.x ABI work (1.3.4 plugin scaffold →
+1.3.5 hook surface → 1.3.6 ABI freeze → 1.3.7 closeout) was
+building toward. The bundle is genuinely self-contained per
+cyim-lsp's ADR 0001 v1.0.2 amendment — every symbol resolves
+against the bundle + cyrius stdlib with zero references to
+cyim-side editor symbols. Result: narrow tests like
+`tests/buffer.tcyr` continue to compile cleanly even with the
+plugin TU folded in (the structural failure mode of the original
+v1.0.0 fold-in attempt).
+
+### Added
+
+- `[deps.cyim-lsp]` in `cyrius.cyml` — git
+  `https://github.com/MacCracken/cyim-lsp.git`, tag `1.0.2`,
+  modules `["dist/cyim-lsp.cyr"]`. Mirrors the vyakarana entry
+  shape.
+- `lib/cyim-lsp.cyr` — symlink to `~/.cyrius/deps/cyim-lsp/1.0.2/dist/cyim-lsp.cyr`,
+  resolved by `cyrius deps`. SHA recorded in `cyrius.lock`.
+- `src/plugins/lsp_glue.cyr` (382 lines) — cyim-side glue:
+  buffer materialization (`_cyim_lsp_buf_to_flat`), six hook
+  callbacks (`_cyim_lsp_post_save`, `_cyim_lsp_post_change`,
+  `_cyim_lsp_status_segment`, `_cyim_lsp_diagnostic_provider`,
+  `_cyim_lsp_gd`/`_cyim_lsp_gr` reserved), four ex-command
+  handlers (`_cyim_lsp_ex_restart`, `_cyim_lsp_ex_status`,
+  `_cyim_lsp_ex_goto_def`, `_cyim_lsp_ex_find_refs`), and
+  `cyim_lsp_init()` registering them all.
+- `src/main.cyr` includes:
+  - `include "lib/cyim-lsp.cyr"` after `lib/vyakarana.cyr`
+  - `include "src/plugins/lsp_glue.cyr"` after `trailing_ws.cyr`
+  - `cyim_lsp_init()` call after `trailing_ws_init()` in `main()`
+
+### User-visible features
+
+- **Diagnostics** — typing in a `.cyr` file lazily spawns
+  `cyrius-lsp`, sends `textDocument/didOpen` / `didChange`
+  notifications, and renders server-pushed `publishDiagnostics`
+  inline (gutter glyphs / underlines per cyim's existing
+  diagnostic-render layer) and as a status-segment count
+  (`E:N W:M I:K H:L`).
+- **`:lsp-restart`** — kill + respawn `cyrius-lsp`. Useful after
+  upgrading the cyrius toolchain.
+- **`:lsp-status`** — print server pid + describe state.
+- **`:lsp-goto-def`** — `textDocument/definition` request,
+  same-file cursor jump on response (cross-file deferred until
+  cyim ships a `plugin-buf-load-file` ABI).
+- **`:lsp-find-refs`** — `textDocument/references` request,
+  status-bar count of reference sites (quickfix list deferred
+  until cyim ships a `plugin-list-display` ABI).
+
+### Tests / verification
+
+- `cyrius test` — 20 suites all PASS (driver: 61, plugin: 33,
+  trailing_ws: 24, plus 17 narrow .tcyr suites). Critical
+  assertion: narrow tests like `tests/buffer.tcyr` compile
+  cleanly with `lib/cyim-lsp.cyr` in the TU — the
+  structural failure that blocked the v1.0.0 fold-in attempt
+  is gone.
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 0 warnings on all touched files (one
+  pre-existing line-length warning in `src/cli.cyr` unchanged).
+- `cyrius build` (DCE) — OK; `build/cyim 1.4.0` resolves
+  `--version` correctly via the regenerated `src/version_str.cyr`.
+
 ## [1.3.7] — 2026-05-06
 
 Patch release — **closeout pass before v1.4.0**. Final cyim-side

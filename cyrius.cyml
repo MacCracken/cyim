@@ -65,3 +65,14 @@ stdlib = [
 git = "https://github.com/MacCracken/vyakarana.git"
 tag = "1.0.2"
 modules = ["dist/vyakarana.cyr"]
+
+# cyim-lsp — LSP client plugin. v1.0.2 ships a self-contained
+# bundle (per its ADR 0001 v1.0.2 amendment): every symbol resolves
+# against the bundle + cyrius stdlib, with zero references to
+# cyim-side editor symbols. Consumer-side hook registration lives
+# in `src/plugins/lsp_glue.cyr`, adapted from cyim-lsp's
+# `docs/examples/cyim_glue.cyr` reference.
+[deps.cyim-lsp]
+git = "https://github.com/MacCracken/cyim-lsp.git"
+tag = "1.0.2"
+modules = ["dist/cyim-lsp.cyr"]
