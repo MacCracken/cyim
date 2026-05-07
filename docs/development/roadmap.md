@@ -330,4 +330,4 @@ in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-05-06 (v1.3.2 shipped: fuzzy substitute precision via post-match candidate-length walk + `--fuzzy-edits=<n>` modifier across all six pattern verbs + closeout pass. LSP client promoted from demand-gated to v1.4.0 since cyrius-lsp is stable in the toolchain.).*
+*Last updated: 2026-05-06 (v1.3.4 shipped: plugin ABI scaffold per ADR 0003. `src/plugin.cyr` lands 6-hook registry + register/fire/lookup/collect API; post_save and post_change wired into core dispatch. v1.3.5 plan: trailing-whitespace POC plugin to prove ABI end-to-end (status_segment + diagnostic_provider hooks). v1.3.6: ADR 0004 freezes the ABI surface. v1.4.0: cyim-lsp as first non-trivial plugin.).*

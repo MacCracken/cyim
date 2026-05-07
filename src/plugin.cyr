@@ -1,0 +1,263 @@
+# plugin.cyr — Cyrius plugin ABI scaffold (v1.3.4)
+#
+# Per ADR 0003, cyim accepts AOT-compiled Cyrius plugins folded into
+# the binary at build time (sandhi pattern). Plugins extend cyim's
+# dispatch table — they do not extend the modal grammar.
+#
+# This file defines the public ABI surface. It is the contract a
+# plugin author writes against. Function names listed here are
+# stable across cyim minor versions per the freeze-on-first-real-
+# consumer rule (ADR 0004 will pin the surface once cyim-lsp
+# ships at v1.4.0).
+#
+# ABI surface — registration:
+#   plugin_register_post_save_hook(fp)        # fp: fn(s, path) -> 0
+#   plugin_register_post_change_hook(fp)      # fp: fn(s) -> 0
+#   plugin_register_status_segment(fp)        # fp: fn(s) -> str_ptr (heap, NUL-term)
+#   plugin_register_normal_key(key, fp)       # fp: fn(s) -> action_id
+#   plugin_register_ex_command(name, fp)      # fp: fn(s) -> exit_code
+#   plugin_register_diagnostic_provider(fp)   # fp: fn(s, b, out_vec) -> 0
+#
+# ABI surface — fire / lookup (called by cyim's core, not plugins):
+#   _plugin_fire_post_save(s, path)
+#   _plugin_fire_post_change(s)
+#   _plugin_lookup_normal_key(key)            # returns fp or 0
+#   _plugin_lookup_ex_command(name)           # returns fp or 0
+#   _plugin_collect_status_segments(s, out)   # appends each segment
+#   _plugin_collect_diagnostics(s, b, out)    # appends each provider's diags
+#
+# Hook semantics:
+#   - Simple fire-and-forget hooks (post_save, post_change) call every
+#     registered fp in registration order; return value is ignored.
+#   - Keyed hooks (normal_key, ex_command) walk for a name match;
+#     first registered wins on duplicate keys.
+#   - Producer hooks (status_segment, diagnostic_provider) call every
+#     registered fp and accumulate output.
+#
+# Registry layout: 6 vec globals, each storing i64 slots. Simple +
+# producer hooks store fp directly. Keyed hooks store a pointer to
+# a 24 B record { name_ptr, name_len, fp }.
+#
+# v1.3.4 wires only post_save + post_change fire-points into cyim's
+# core dispatch (the obviously-shaped ones). The other 4 hooks have
+# their lookup / collect helpers in place but are not yet called
+# from cyim's render / mode-dispatch / command paths — those wire-
+# ups land at v1.3.5+ when a real plugin (cyim-lsp at v1.4.0)
+# surfaces what it actually needs.
+
+# Per-hook registries. Initialized lazily by plugin_init() so the
+# global initializer phase doesn't run alloc().
+var _plugin_post_save_hooks    = 0;
+var _plugin_post_change_hooks  = 0;
+var _plugin_status_segments    = 0;
+var _plugin_normal_keys        = 0;
+var _plugin_ex_commands        = 0;
+var _plugin_diagnostic_provs   = 0;
+
+# Initialize all six registries. Called once from main(), after
+# alloc_init() / args_init() and before any plugin-init code runs.
+# Idempotent — safe to call twice (defensive against future
+# refactors).
+fn plugin_init() {
+    if (_plugin_post_save_hooks   == 0) { _plugin_post_save_hooks   = vec_new(); }
+    if (_plugin_post_change_hooks == 0) { _plugin_post_change_hooks = vec_new(); }
+    if (_plugin_status_segments   == 0) { _plugin_status_segments   = vec_new(); }
+    if (_plugin_normal_keys       == 0) { _plugin_normal_keys       = vec_new(); }
+    if (_plugin_ex_commands       == 0) { _plugin_ex_commands       = vec_new(); }
+    if (_plugin_diagnostic_provs  == 0) { _plugin_diagnostic_provs  = vec_new(); }
+    return 0;
+}
+
+# === Registration API (called by plugins, typically at top-level
+# init time inside the plugin's own setup function which a plugin
+# author wires from a dedicated cyim-side init hook in v1.4.0+).
+# For v1.3.4 we expose the registration API and exercise it from
+# tests; production plugin-init wiring lands when a real plugin
+# arrives. ===
+
+fn plugin_register_post_save_hook(fp) {
+    if (_plugin_post_save_hooks == 0) { return 0 - 1; }
+    vec_push(_plugin_post_save_hooks, fp);
+    return 0;
+}
+
+fn plugin_register_post_change_hook(fp) {
+    if (_plugin_post_change_hooks == 0) { return 0 - 1; }
+    vec_push(_plugin_post_change_hooks, fp);
+    return 0;
+}
+
+fn plugin_register_status_segment(fp) {
+    if (_plugin_status_segments == 0) { return 0 - 1; }
+    vec_push(_plugin_status_segments, fp);
+    return 0;
+}
+
+fn plugin_register_diagnostic_provider(fp) {
+    if (_plugin_diagnostic_provs == 0) { return 0 - 1; }
+    vec_push(_plugin_diagnostic_provs, fp);
+    return 0;
+}
+
+# Keyed registrations allocate a 24 B record:
+#   +0  key_or_name_ptr  (NUL-term cstring for ex_command; 1-byte
+#                         key for normal_key, NUL-padded)
+#   +8  name_len         (strlen for ex_command; 1 for normal_key)
+#   +16 fp               function pointer
+fn _plugin_keyed_record_new(name_ptr, name_len, fp) {
+    var rec = alloc(24);
+    if (rec == 0) { return 0; }
+    store64(rec,      name_ptr);
+    store64(rec + 8,  name_len);
+    store64(rec + 16, fp);
+    return rec;
+}
+
+# Register a NORMAL-mode key handler. `key` is a single-byte int
+# (e.g. ascii 'F' for `F`-prefix-style sequences). Plugin keymaps
+# coexist with cyim's built-in NORMAL keymap; built-ins win on
+# conflict (cyim's modal grammar is the inheritance — plugins
+# extend, never override).
+fn plugin_register_normal_key(key, fp) {
+    if (_plugin_normal_keys == 0) { return 0 - 1; }
+    var rec = _plugin_keyed_record_new(key, 1, fp);
+    if (rec == 0) { return 0 - 1; }
+    vec_push(_plugin_normal_keys, rec);
+    return 0;
+}
+
+# Register an ex-mode command (`:foo`, `:foo-bar`). `name` is a
+# NUL-terminated cstring. Plugin commands coexist with cyim's
+# built-ins; built-ins win on conflict, same as normal_key.
+fn plugin_register_ex_command(name, fp) {
+    if (_plugin_ex_commands == 0) { return 0 - 1; }
+    var rec = _plugin_keyed_record_new(name, strlen(name), fp);
+    if (rec == 0) { return 0 - 1; }
+    vec_push(_plugin_ex_commands, rec);
+    return 0;
+}
+
+# === Fire-points (called by cyim's core) ===
+
+fn _plugin_fire_post_save(s, path) {
+    if (_plugin_post_save_hooks == 0) { return 0; }
+    var n = vec_len(_plugin_post_save_hooks);
+    var i = 0;
+    while (i < n) {
+        var fp = vec_get(_plugin_post_save_hooks, i);
+        if (fp != 0) { fncall2(fp, s, path); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _plugin_fire_post_change(s) {
+    if (_plugin_post_change_hooks == 0) { return 0; }
+    var n = vec_len(_plugin_post_change_hooks);
+    var i = 0;
+    while (i < n) {
+        var fp = vec_get(_plugin_post_change_hooks, i);
+        if (fp != 0) { fncall1(fp, s); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# === Lookup helpers for keyed hooks (returns fp or 0). ===
+
+fn _plugin_lookup_normal_key(key) {
+    if (_plugin_normal_keys == 0) { return 0; }
+    var n = vec_len(_plugin_normal_keys);
+    var i = 0;
+    while (i < n) {
+        var rec = vec_get(_plugin_normal_keys, i);
+        if (rec != 0) {
+            if (load64(rec) == key) { return load64(rec + 16); }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Byte-compare a registered ex-command name (rec+0, rec+8) against
+# `name` (NUL-term). Returns 1 on match, 0 otherwise.
+fn _plugin_ex_name_eq(rec, name) {
+    var rec_ptr = load64(rec);
+    var rec_len = load64(rec + 8);
+    var name_len = strlen(name);
+    if (rec_len != name_len) { return 0; }
+    var i = 0;
+    while (i < rec_len) {
+        if (load8(rec_ptr + i) != load8(name + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn _plugin_lookup_ex_command(name) {
+    if (_plugin_ex_commands == 0) { return 0; }
+    var n = vec_len(_plugin_ex_commands);
+    var i = 0;
+    while (i < n) {
+        var rec = vec_get(_plugin_ex_commands, i);
+        if (rec != 0) {
+            if (_plugin_ex_name_eq(rec, name) == 1) { return load64(rec + 16); }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# === Producer hooks — collect outputs from each registered fp. ===
+
+# Run every status-segment producer; each returns a NUL-term cstring
+# whose bytes are appended to `out_buf` separated by " | ". Caller
+# owns out_buf (e.g. render_status's right-aligned slot). Returns
+# the count of segments emitted.
+# Append a NUL-term cstring's bytes into a gap-buffer. cyim's
+# buffer.cyr exposes buf_insert_byte for single bytes and buf_insert
+# for byte-runs of known length; cstrings need a strlen pass first.
+fn _plugin_buf_append_cstr(b, s) {
+    if (s == 0) { return 0; }
+    var len = strlen(s);
+    if (len > 0) { buf_insert(b, s, len); }
+    return 0;
+}
+
+fn _plugin_collect_status_segments(s, out_buf) {
+    if (_plugin_status_segments == 0) { return 0; }
+    var n = vec_len(_plugin_status_segments);
+    var emitted = 0;
+    var i = 0;
+    while (i < n) {
+        var fp = vec_get(_plugin_status_segments, i);
+        if (fp != 0) {
+            var seg = fncall1(fp, s);
+            if (seg != 0) {
+                if (emitted > 0) { _plugin_buf_append_cstr(out_buf, " | "); }
+                _plugin_buf_append_cstr(out_buf, seg);
+                emitted = emitted + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return emitted;
+}
+
+# Run every diagnostic provider; each appends entries to `out_vec`
+# (a vec the caller owns; entries are heap-allocated 24 B records
+# of {line, severity, msg_ptr} per a future ADR — shape pinned in
+# v1.3.5+ when the first provider lands). For v1.3.4 we just call
+# each provider and let it own the entry shape; cyim's render layer
+# walks the vec and paints whatever it finds.
+fn _plugin_collect_diagnostics(s, b, out_vec) {
+    if (_plugin_diagnostic_provs == 0) { return 0; }
+    var n = vec_len(_plugin_diagnostic_provs);
+    var i = 0;
+    while (i < n) {
+        var fp = vec_get(_plugin_diagnostic_provs, i);
+        if (fp != 0) { fncall3(fp, s, b, out_vec); }
+        i = i + 1;
+    }
+    return 0;
+}

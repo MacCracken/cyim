@@ -109,6 +109,10 @@ fn _cmd_w(s, cb, arg_start, arg_len) {
         return 0 - 1;
     }
     editor_set_modified(s, 0);
+    # v1.3.4: fire post_save hooks for any registered plugins.
+    # No-op when no plugin registered. cyim-lsp at v1.4.0 will
+    # use this for textDocument/didSave.
+    _plugin_fire_post_save(s, path);
     return 0;
 }
 

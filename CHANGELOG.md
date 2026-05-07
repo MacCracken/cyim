@@ -4,6 +4,98 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.4] — 2026-05-06
+
+Patch release — **plugin ABI scaffold** per [ADR 0003](docs/adr/0003-cyrius-plugin-system.md).
+cyim is now plugin-ready: hook registries, register/fire/lookup
+helpers, and post_save / post_change fire-points are wired into
+cyim's core dispatch. No external plugin yet; the scaffold compiles
+cleanly into the binary and exercises end-to-end via a new
+`tests/plugin.tcyr` (27 assertions across 8 groups). The four
+non-wired hooks (status_segment, normal_key, ex_command,
+diagnostic_provider) have register / lookup / collect helpers in
+place but no fire-point — those wire up in v1.3.5+ when a real
+plugin (cyim-lsp at v1.4.0) surfaces what each hook needs.
+
+The ABI surface is **provisional**, not frozen. ADR 0004 (planned
+1.3.5+) freezes it after the first real consumer (cyim-lsp) drives
+the design choices.
+
+### Added
+
+- **`src/plugin.cyr`** — 6-hook registry + register/fire/lookup/
+  collect API per ADR 0003 §2. 230 lines. Hook types:
+  `post_save_hook`, `post_change_hook`, `status_segment`,
+  `normal_key`, `ex_command`, `diagnostic_provider`. Lazy-init
+  via `plugin_init()` (idempotent). Keyed hooks store 24 B
+  records `{key/name_ptr, len, fp}`; simple hooks store fp
+  directly as i64.
+- **`plugin_init()`** call in `src/main.cyr:main()` after
+  `args_init()`, before any cyim setup.
+- **`_plugin_fire_post_save(s, path)`** wired into `_cmd_w` after
+  `editor_set_modified(s, 0)` in `src/command.cyr`. Fires for
+  every successful `:w` / `:wq` / `:e <new-path>` save.
+- **`_plugin_fire_post_change(s)`** wired into `editor_step` in
+  `src/driver.cyr`. Fires only when `buf_version` increments
+  during the step — non-mutating presses (motions, mode toggles)
+  don't trigger.
+- **`tests/plugin.tcyr`** (160 lines) — registers per-hook
+  counter callbacks, drives editor sequences, asserts hooks
+  fired (or didn't, for non-mutating cases). 27 assertions
+  covering: registry init, registration append, post_change on
+  insert, post_change quiet on motion, post_save arg threading,
+  keyed lookup hit/miss, status_segment collection
+  ("TEST" → 4 bytes appended), diagnostic provider walk,
+  `plugin_init` idempotence.
+- **`docs/architecture/001-plugin-system.md`** — first entry in
+  the architecture series; documents ABI invariants, storage
+  shape, fire-point semantics, post_change firing rule
+  (`buf_version` delta), trust model, hook expansion policy.
+
+### Changed
+
+- **8 test files (`tests/{visual,buflist,dot,insert,command,search,window,undo}.tcyr`)**
+  added `include "src/plugin.cyr"` immediately before
+  `include "src/command.cyr"`. Cyrius is single-pass; the
+  fire-point references in command.cyr need plugin.cyr's
+  function definitions to come earlier in the translation unit.
+  Existing test assertions unchanged.
+- `src/driver.cyr:editor_step` captures `buf_version` pre-dispatch
+  and compares post-apply for the post_change firing decision.
+  Pure addition — no existing dispatch behaviour changed.
+
+### Tests
+
+- `tests/plugin.tcyr` — new file, 27 assertions all PASS.
+- `cyrius test` — 9 test files (was 8) including the new
+  plugin.tcyr; all PASS.
+- Driver smoke (`run_*` bench / dispatch test): 19 PASS (was 18).
+- `tests/cli_smoke.sh` 118/118 unchanged. `integration_smoke.py`
+  PASS unchanged. `cyrius lint` 0 warnings.
+
+### Notes
+
+- **No cyrius toolchain bump.** Pin stays at 5.9.13 (set in
+  v1.3.3).
+- **No external plugin in this release.** v1.3.5 plan: trailing-
+  whitespace POC plugin to prove the ABI end-to-end (validates
+  status_segment + diagnostic_provider hooks). v1.3.6 plan: ADR
+  0004 freezes the ABI surface based on what 1.3.5 needed.
+  v1.4.0: cyim-lsp as the first non-trivial plugin.
+- **Refusal §0 unchanged.** A Cyrius plugin is AOT-compiled and
+  treated identically to cyim's own code — not an embedded
+  scripting language. The cyim binary still has no interpreter,
+  no eval, no plugin VM.
+
+### Binary
+
+- `build/cyim` — DCE build size: **894,896 B** (+4,544 B over
+  v1.3.3's 890,352 B). Plugin scaffold (`src/plugin.cyr`) +
+  fire-point wiring (~30 LOC across `command.cyr` and
+  `driver.cyr`) accounts for the delta. The four non-wired
+  hooks' register/lookup/collect helpers are linked but
+  DCE-stripped until a plugin uses them.
+
 ## [1.3.3] — 2026-05-06
 
 Patch release — **BUG-001 closed**. Cyrius toolchain bump

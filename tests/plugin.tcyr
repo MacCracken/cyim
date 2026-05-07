@@ -1,0 +1,170 @@
+# tests/plugin.tcyr — plugin ABI scaffold (v1.3.4)
+#
+# Proves the registration → fire-point cycle works without any
+# external plugin. Each hook type:
+#   1. plugin_register_<hook> appends to its registry
+#   2. cyim's core invokes the corresponding _plugin_fire_<hook>
+#      at the right point in editor flow
+#   3. registered fp gets called with the documented args
+#
+# Per ADR 0003, only post_save + post_change are wired into cyim's
+# dispatch in v1.3.4. The other hooks (status_segment, normal_key,
+# ex_command, diagnostic_provider) have register/lookup/collect
+# helpers in place but no fire-point yet — those wire up in v1.3.5+
+# when a real plugin (cyim-lsp at v1.4.0) surfaces what it needs.
+#
+# Per-test counter globals are the simplest way to verify a callback
+# fired without needing test_state plumbing — Cyrius lets us reach
+# globals from fn pointers via direct load64/store64.
+
+include "src/buffer.cyr"
+include "src/highlight.cyr"
+include "src/lang.cyr"
+include "src/cyimrc.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/plugin.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+
+# Per-callback counters. The fp-fired callback bumps a counter so the
+# test main() can assert "this hook fired N times".
+var _t_post_save_calls   = 0;
+var _t_post_change_calls = 0;
+var _t_status_calls      = 0;
+var _t_diag_calls        = 0;
+var _t_normal_key_calls  = 0;
+var _t_ex_cmd_calls      = 0;
+
+# Last-args capture for post_save (state ptr + path ptr) — verifies
+# fp signature matches plugin_register_post_save_hook's documented
+# fp shape `fn(state, path) -> 0`.
+var _t_post_save_last_state = 0;
+var _t_post_save_last_path  = 0;
+
+fn _t_cb_post_save(s, path) {
+    _t_post_save_calls = _t_post_save_calls + 1;
+    _t_post_save_last_state = s;
+    _t_post_save_last_path = path;
+    return 0;
+}
+
+fn _t_cb_post_change(s) {
+    _t_post_change_calls = _t_post_change_calls + 1;
+    return 0;
+}
+
+# Returns a NUL-term cstring; cyim's _plugin_collect_status_segments
+# appends its bytes to a passed-in gap buffer.
+fn _t_cb_status(s) {
+    _t_status_calls = _t_status_calls + 1;
+    return "TEST";
+}
+
+fn _t_cb_diag(s, b, out) {
+    _t_diag_calls = _t_diag_calls + 1;
+    return 0;
+}
+
+fn _t_cb_normal_key(s) {
+    _t_normal_key_calls = _t_normal_key_calls + 1;
+    return ACT_NONE;
+}
+
+fn _t_cb_ex_cmd(s) {
+    _t_ex_cmd_calls = _t_ex_cmd_calls + 1;
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    plugin_init();
+
+    test_group("plugin_init initializes empty registries");
+    assert_neq(_plugin_post_save_hooks,   0, "post_save vec init");
+    assert_neq(_plugin_post_change_hooks, 0, "post_change vec init");
+    assert_neq(_plugin_status_segments,   0, "status_segment vec init");
+    assert_neq(_plugin_normal_keys,       0, "normal_key vec init");
+    assert_neq(_plugin_ex_commands,       0, "ex_command vec init");
+    assert_neq(_plugin_diagnostic_provs,  0, "diagnostic_provider vec init");
+    assert_eq(vec_len(_plugin_post_save_hooks), 0, "post_save empty");
+
+    test_group("registration appends to vec");
+    plugin_register_post_save_hook(&_t_cb_post_save);
+    plugin_register_post_change_hook(&_t_cb_post_change);
+    plugin_register_status_segment(&_t_cb_status);
+    plugin_register_diagnostic_provider(&_t_cb_diag);
+    plugin_register_normal_key(90, &_t_cb_normal_key);  # 'Z'
+    plugin_register_ex_command("test-ex", &_t_cb_ex_cmd);
+    assert_eq(vec_len(_plugin_post_save_hooks),   1, "post_save 1 reg");
+    assert_eq(vec_len(_plugin_post_change_hooks), 1, "post_change 1 reg");
+    assert_eq(vec_len(_plugin_status_segments),   1, "status 1 reg");
+    assert_eq(vec_len(_plugin_normal_keys),       1, "normal_key 1 reg");
+    assert_eq(vec_len(_plugin_ex_commands),       1, "ex_cmd 1 reg");
+    assert_eq(vec_len(_plugin_diagnostic_provs),  1, "diag 1 reg");
+
+    test_group("post_change fires on buffer mutation via editor_step");
+    var b = buf_new();
+    var s = editor_new(b);
+    bl_init(s, b);
+    window_init(s);
+    editor_set_mode(s, MODE_INSERT);
+    var pre = _t_post_change_calls;
+    editor_step(s, 65);    # insert 'A' — bumps buf version
+    assert_eq(_t_post_change_calls, pre + 1, "post_change fired on insert");
+
+    test_group("post_change does NOT fire on non-mutating step");
+    editor_set_mode(s, MODE_NORMAL);
+    var pre2 = _t_post_change_calls;
+    editor_step(s, 104);   # NORMAL 'h' motion — no buf mutation
+    assert_eq(_t_post_change_calls, pre2, "post_change quiet on motion");
+
+    test_group("_plugin_fire_post_save direct invocation passes args through");
+    var path_str = "/tmp/test-plugin.txt";
+    _t_post_save_last_state = 0;
+    _t_post_save_last_path = 0;
+    var pre3 = _t_post_save_calls;
+    _plugin_fire_post_save(s, path_str);
+    assert_eq(_t_post_save_calls, pre3 + 1, "post_save fired");
+    assert_eq(_t_post_save_last_state, s, "state arg threaded");
+    assert_eq(_t_post_save_last_path,  path_str, "path arg threaded");
+
+    test_group("lookup helpers find registered keyed hooks");
+    var nk_fp = _plugin_lookup_normal_key(90);   # 'Z'
+    assert_eq(nk_fp, &_t_cb_normal_key, "normal_key Z resolves to fp");
+    var nk_miss = _plugin_lookup_normal_key(81); # 'Q'
+    assert_eq(nk_miss, 0, "normal_key Q misses (returns 0)");
+
+    var ex_fp = _plugin_lookup_ex_command("test-ex");
+    assert_eq(ex_fp, &_t_cb_ex_cmd, "ex_cmd test-ex resolves to fp");
+    var ex_miss = _plugin_lookup_ex_command("unknown");
+    assert_eq(ex_miss, 0, "ex_cmd unknown misses");
+
+    test_group("collect helpers walk registries");
+    var seg_buf = buf_new();
+    var emitted = _plugin_collect_status_segments(s, seg_buf);
+    assert_eq(emitted, 1, "1 segment emitted");
+    assert_eq(_t_status_calls, 1, "status cb called");
+    assert_eq(buf_len(seg_buf), 4, "4 bytes (TEST) appended");
+
+    var diag_vec = vec_new();
+    _plugin_collect_diagnostics(s, b, diag_vec);
+    assert_eq(_t_diag_calls, 1, "diagnostic provider called");
+
+    test_group("plugin_init is idempotent");
+    var len_before = vec_len(_plugin_post_save_hooks);
+    plugin_init();
+    assert_eq(vec_len(_plugin_post_save_hooks), len_before, "double-init preserves registrations");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -81,6 +81,13 @@ fn editor_step(s, key) {
     # message set by the previous command stays visible for exactly
     # one render frame.
     editor_set_status(s, 0);
+    # v1.3.4: capture buffer version before dispatch so we can detect
+    # mutations and fire post_change to registered plugins. Every cyim
+    # mutating op (insert_byte / delete_left / delete_right / clear)
+    # bumps `b + 32` via buf_bump_version; cyim has no mutating path
+    # that bypasses these primitives (substitute / paste / dot-replay
+    # all funnel through buf_insert / buf_delete_*).
+    var _plugin_pre_ver = buf_version(editor_buf(s));
     var action = editor_dispatch(s, key);
 
     # Dot-repeat short-circuits the regular apply chain — the recursive
@@ -126,6 +133,13 @@ fn editor_step(s, key) {
     search_apply(s, action, key);
     undo_apply(s, action);
     visual_apply(s, action);
+
+    # v1.3.4: fire post_change if the active buffer mutated during
+    # this step. cyim-lsp at v1.4.0 will use this for
+    # textDocument/didChange. No-op when no plugin registered.
+    if (buf_version(editor_buf(s)) != _plugin_pre_ver) {
+        _plugin_fire_post_change(s);
+    }
     return action;
 }
 

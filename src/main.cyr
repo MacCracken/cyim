@@ -18,6 +18,13 @@
 # the same teardown path.
 
 include "lib/vyakarana.cyr"
+# Plugin ABI scaffold (v1.3.4) — registry + register/fire/lookup
+# helpers. Per ADR 0003, plugins extend the dispatch table via
+# explicit hook points, not the modal grammar. v1.3.4 wires
+# post_save + post_change fire-points; other hooks have helpers
+# in place but are not yet called from cyim's render / mode-
+# dispatch / command paths.
+include "src/plugin.cyr"
 # niyama 1.0.1 folded into cyrius stdlib at 5.9.0 (sandhi-pattern):
 # vendored as `lib/niyama.cyr` byte-identical from niyama's
 # `dist/niyama.cyr`. Pulled here via explicit include rather than
@@ -236,6 +243,7 @@ fn run_editor(file_path) {
 fn main() {
     alloc_init();
     args_init();
+    plugin_init();
 
     var ac = argc();
     var fpath = 0;
