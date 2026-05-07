@@ -4,6 +4,100 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.7] — 2026-05-06
+
+Patch release — **closeout pass before v1.4.0**. Final cyim-side
+audit per CLAUDE.md's Closeout Pass policy ("Run a closeout pass
+before tagging X.Y.0 ... Ship as the last patch of the current
+minor"). No code changes — pure verification + dead-code-floor
+record + doc sync. The 1.3.x ABI work (1.3.0 niyama flavors →
+1.3.6 ABI freeze) is now closed out and v1.4.0 has a clean base
+for cyim-lsp pickup.
+
+cyim-lsp v0.1.0 scaffolded today as a sibling repo (`MacCracken/cyim-lsp`)
+following the sandhi pattern; v1.4.0 picks it up once cyim-lsp's
+v0.5.0 (publishDiagnostics → diagnostic_provider) ships per the
+cyim-lsp roadmap.
+
+### Closeout audit summary
+
+All 11 closeout steps per CLAUDE.md passed:
+
+1. **Full test + fuzz** — clean tree (`rm -rf build && cyrius
+   deps && CYRIUS_DCE=1 cyrius build`); cyrius test 14 suites
+   all PASS, driver smoke 20/20, cli_smoke 118/118, integration
+   smoke PASS, cyrius fuzz 3/3, cyrius lint 0 warnings.
+2. **Benchmark baseline** — deferred (cyim has no
+   bench harness; benchmarks land at the v1.4.x perf-pass).
+3. **Dead code audit** — see § Dead-code floor below.
+4. **Refactor pass** — none warranted; 1.3.x additions occupy
+   bounded slots (six `_dispatch_<verb>` parsers parallel-by-
+   design; `_re_*` flavor dispatch is DCE-friendly; plugin
+   fire-points are distinct).
+5. **Code review** — walked diff `1.3.0..HEAD` end-to-end;
+   no missed guards, off-by-ones, silently-ignored errors.
+6. **Cleanup sweep** — no stale comments, no orphaned files,
+   no unused includes. Empty `docs/development/issues/`
+   (only `archive/` subdir from BUG-001 retirement).
+7. **Security re-scan** — no new `sys_system` / `exec` /
+   unchecked syscalls in 1.3.x diffs. 3 new `var buf[N]`
+   declarations (all in `src/plugins/trailing_ws.cyr` and
+   `src/render.cyr`), all bounded with documented use.
+8. **Downstream check** — agnoshi / aethersafha still
+   "Planned" in state.md consumers table; cyim-lsp v0.1.0
+   is now the first realised plugin consumer (scaffold
+   only at this version).
+9. **Doc sync** — CHANGELOG / roadmap / state / CLAUDE.md
+   all current and consistent through this entry.
+10. **Version verify** — `VERSION` 1.3.7, `cyrius.cyml`
+    indirection via `${file:VERSION}`, `src/version_str.cyr`
+    `_VERSION_STR_CYIM = "cyim 1.3.7\n"`, CHANGELOG header,
+    intended git tag `1.3.7` all match.
+11. **Full clean build** — passed (binary 899,488 B, byte-
+    identical to v1.3.6).
+
+### Dead-code floor
+
+24 cyim-source functions are DCE-stripped from the binary as of
+v1.3.7. Categorised:
+
+**7 plugin ABI public surface** (intentional — frozen at ADR 0004
+for plugin authors; cyim itself doesn't call these):
+`diag_line`, `diag_msg`, `diag_severity`, `plugin_last_diags`,
+`plugin_register_ex_command`, `plugin_register_normal_key`,
+`plugin_register_post_save_hook`, `_plugin_keyed_record_new`.
+
+**17 legacy helpers** held over from M2-M4, stable across many
+minors (kept; CLAUDE.md "wait for the third instance"):
+`buf_cap`, `buf_gap`, `editor_cfg_line_numbers`,
+`editor_cfg_tabstop`, `editor_drive`, `editor_last_error`,
+`editor_run`, `editor_set_mode`, `lang_index`, `lang_is_valid`,
+`motion_file_start`, `tty_cursor_hide`, `tty_cursor_show`,
+`visual_selection_hi`, `visual_selection_lo`,
+`window_count_leaves`.
+
+No removals — both groups have plausible future consumers
+(plugin authors for the public ABI; cyim's own future features
+or cyim-lsp's eventual cursor-during-fetch indicator etc. for
+the legacy helpers). Recording the floor here so future closeout
+passes can compare.
+
+### Notes
+
+- **No source changes.** Pure verification cut.
+- **No cyrius toolchain bump.** Pin stays at 5.9.16 (set in
+  v1.3.6).
+- **v1.4.0 unblocked, awaiting cyim-lsp v0.5.0.** The cyim-side
+  pickup will be a 2-line change: `[plugins.cyim-lsp]` block in
+  `cyrius.cyml` + `include "lib/cyim-lsp.cyr"` in `src/main.cyr`
+  + `cyim_lsp_init()` call in `main()` after `plugin_init()` and
+  `trailing_ws_init()`.
+
+### Binary
+
+- `build/cyim` — DCE build size: **899,488 B** (byte-identical
+  to v1.3.6). No source changes; toolchain unchanged.
+
 ## [1.3.6] — 2026-05-06
 
 Patch release — **plugin ABI frozen + cyrius pin 5.9.13 → 5.9.16**.
