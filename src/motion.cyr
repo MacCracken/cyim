@@ -141,8 +141,10 @@ fn motion_file_end(b) {
     return buf_pos_of_line(b, total - 1);
 }
 
-# gg — start of file. Multi-byte input dispatch is not yet wired in mode.cyr,
-# but the function itself exists so once gg lands it has somewhere to call.
+# gg — start of file. Wired in mode.cyr at v1.4.2 via the
+# generalized prefix dispatch: NORMAL `g` sets editor_prefix to
+# KEY_G; the next `g` resolves to ACT_MOVE_FILE_START which
+# motion_apply routes here.
 fn motion_file_start(b) {
     return 0;
 }
@@ -164,6 +166,7 @@ fn motion_apply(s, action) {
     if (action == ACT_MOVE_WORD_FWD)   { new_pos = motion_word_fwd(b, pos); }
     if (action == ACT_MOVE_WORD_BACK)  { new_pos = motion_word_back(b, pos); }
     if (action == ACT_MOVE_FILE_END)   { new_pos = motion_file_end(b); }
+    if (action == ACT_MOVE_FILE_START) { new_pos = motion_file_start(b); }
     buf_move(b, new_pos);
     return new_pos;
 }

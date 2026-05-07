@@ -11,20 +11,26 @@
 # ships at v1.4.0).
 #
 # ABI surface — registration:
-#   plugin_register_post_save_hook(fp)        # fp: fn(s, path) -> 0
-#   plugin_register_post_change_hook(fp)      # fp: fn(s) -> 0
-#   plugin_register_status_segment(fp)        # fp: fn(s) -> str_ptr (heap, NUL-term)
-#   plugin_register_normal_key(key, fp)       # fp: fn(s) -> action_id
-#   plugin_register_ex_command(name, fp)      # fp: fn(s) -> exit_code
-#   plugin_register_diagnostic_provider(fp)   # fp: fn(s, b, out_vec) -> 0
+#   plugin_register_post_save_hook(fp)             # fp: fn(s, path) -> 0
+#   plugin_register_post_change_hook(fp)           # fp: fn(s) -> 0
+#   plugin_register_status_segment(fp)             # fp: fn(s) -> str_ptr (heap, NUL-term)
+#   plugin_register_normal_key(key, fp)            # fp: fn(s) -> action_id
+#   plugin_register_normal_prefix_key(prefix, key, fp)  # v1.4.2 — fp: fn(s) -> action_id
+#   plugin_register_ex_command(name, fp)           # fp: fn(s) -> exit_code
+#   plugin_register_diagnostic_provider(fp)        # fp: fn(s, b, out_vec) -> 0
+#
+# ABI surface — operations (called by plugins to drive cyim state):
+#   plugin_buf_load_file(s, path)                  # v1.4.2 — load file into new
+#                                                  #   buf + switch active; returns buf or 0
 #
 # ABI surface — fire / lookup (called by cyim's core, not plugins):
 #   _plugin_fire_post_save(s, path)
 #   _plugin_fire_post_change(s)
-#   _plugin_lookup_normal_key(key)            # returns fp or 0
-#   _plugin_lookup_ex_command(name)           # returns fp or 0
-#   _plugin_collect_status_segments(s, out)   # appends each segment
-#   _plugin_collect_diagnostics(s, b, out)    # appends each provider's diags
+#   _plugin_lookup_normal_key(key)                 # returns fp or 0
+#   _plugin_lookup_normal_prefix_key(prefix, key)  # v1.4.2 — returns fp or 0
+#   _plugin_lookup_ex_command(name)                # returns fp or 0
+#   _plugin_collect_status_segments(s, out)        # appends each segment
+#   _plugin_collect_diagnostics(s, b, out)         # appends each provider's diags
 #
 # Hook semantics:
 #   - Simple fire-and-forget hooks (post_save, post_change) call every
@@ -51,6 +57,7 @@ var _plugin_post_save_hooks    = 0;
 var _plugin_post_change_hooks  = 0;
 var _plugin_status_segments    = 0;
 var _plugin_normal_keys        = 0;
+var _plugin_normal_prefix_keys = 0;   # v1.4.2 — vec<{prefix, key, fp}>
 var _plugin_ex_commands        = 0;
 var _plugin_diagnostic_provs   = 0;
 
@@ -74,12 +81,13 @@ var DIAG_ERROR   = 3;
 # Idempotent — safe to call twice (defensive against future
 # refactors).
 fn plugin_init() {
-    if (_plugin_post_save_hooks   == 0) { _plugin_post_save_hooks   = vec_new(); }
-    if (_plugin_post_change_hooks == 0) { _plugin_post_change_hooks = vec_new(); }
-    if (_plugin_status_segments   == 0) { _plugin_status_segments   = vec_new(); }
-    if (_plugin_normal_keys       == 0) { _plugin_normal_keys       = vec_new(); }
-    if (_plugin_ex_commands       == 0) { _plugin_ex_commands       = vec_new(); }
-    if (_plugin_diagnostic_provs  == 0) { _plugin_diagnostic_provs  = vec_new(); }
+    if (_plugin_post_save_hooks    == 0) { _plugin_post_save_hooks    = vec_new(); }
+    if (_plugin_post_change_hooks  == 0) { _plugin_post_change_hooks  = vec_new(); }
+    if (_plugin_status_segments    == 0) { _plugin_status_segments    = vec_new(); }
+    if (_plugin_normal_keys        == 0) { _plugin_normal_keys        = vec_new(); }
+    if (_plugin_normal_prefix_keys == 0) { _plugin_normal_prefix_keys = vec_new(); }
+    if (_plugin_ex_commands        == 0) { _plugin_ex_commands        = vec_new(); }
+    if (_plugin_diagnostic_provs   == 0) { _plugin_diagnostic_provs   = vec_new(); }
     return 0;
 }
 
@@ -152,6 +160,64 @@ fn plugin_register_ex_command(name, fp) {
     return 0;
 }
 
+# v1.4.2 — Register a NORMAL-mode prefix-key handler. Two-byte
+# sequence: when the editor's pending prefix matches `prefix` and
+# the next byte equals `key`, the registered fp is invoked with
+# the editor state and its returned action id flows through cyim's
+# motion / edit / mode-transition pipelines.
+#
+# Built-ins win on conflict. cyim 1.4.2 wires `KEY_G` (`g`) as a
+# prefix at the dispatch layer; `gg` is built-in (ACT_MOVE_FILE_START).
+# A plugin registering `(KEY_G, 'g', fp)` will be shadowed by the
+# built-in; `(KEY_G, 'd', fp)` resolves to the plugin since `gd`
+# isn't a built-in.
+#
+# Record layout (24 B):
+#   +0   prefix       i64  prefix byte (e.g. KEY_G = 103)
+#   +8   key          i64  follow-up byte (e.g. 'd' = 100)
+#   +16  fp           i64  callback function pointer
+fn _plugin_prefix_record_new(prefix, key, fp) {
+    var rec = alloc(24);
+    if (rec == 0) { return 0; }
+    store64(rec,      prefix);
+    store64(rec + 8,  key);
+    store64(rec + 16, fp);
+    return rec;
+}
+
+fn plugin_register_normal_prefix_key(prefix, key, fp) {
+    if (_plugin_normal_prefix_keys == 0) { return 0 - 1; }
+    var rec = _plugin_prefix_record_new(prefix, key, fp);
+    if (rec == 0) { return 0 - 1; }
+    vec_push(_plugin_normal_prefix_keys, rec);
+    return 0;
+}
+
+# v1.4.2 — Load a file into a new buffer + switch the editor's
+# active buffer to it. Wrapper around the same dedup + buflist +
+# window-update bookkeeping `:e <file>` uses (see
+# `_buf_load_file_into_active` in command.cyr).
+#
+# Arguments:
+#   s     editor state pointer
+#   path  NUL-terminated cstring; caller-owned, lifetime must
+#         outlast the buflist entry that retains the path pointer
+#         (typically a heap-alloc'd cstring or a literal).
+#
+# Returns:
+#   buf ptr on success; 0 on failure (path == 0, file missing,
+#   file too large, or read error). On failure the editor's
+#   `last_error` is set so the caller can surface a typed error
+#   via `editor_last_error(s)`.
+#
+# Use case: cyim-lsp 1.1.0+ cross-file goto-def — given a
+# destination URI from `textDocument/definition`, the consumer
+# strips the `file://` prefix and calls plugin_buf_load_file to
+# open the destination, then `buf_move(b, dest_offset)` to jump.
+fn plugin_buf_load_file(s, path) {
+    return _buf_load_file_into_active(s, path);
+}
+
 # === Fire-points (called by cyim's core) ===
 
 fn _plugin_fire_post_save(s, path) {
@@ -188,6 +254,23 @@ fn _plugin_lookup_normal_key(key) {
         var rec = vec_get(_plugin_normal_keys, i);
         if (rec != 0) {
             if (load64(rec) == key) { return load64(rec + 16); }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# v1.4.2 — Two-byte prefix-key lookup. Returns fp or 0.
+fn _plugin_lookup_normal_prefix_key(prefix, key) {
+    if (_plugin_normal_prefix_keys == 0) { return 0; }
+    var n = vec_len(_plugin_normal_prefix_keys);
+    var i = 0;
+    while (i < n) {
+        var rec = vec_get(_plugin_normal_prefix_keys, i);
+        if (rec != 0) {
+            if (load64(rec) == prefix) {
+                if (load64(rec + 8) == key) { return load64(rec + 16); }
+            }
         }
         i = i + 1;
     }

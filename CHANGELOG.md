@@ -4,6 +4,107 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-05-07
+
+**Plugin ABI extensions — additive surface for cyim-lsp 1.1.0
+to consume.** Two new public registrations + one operation,
+plus the long-stubbed `gg` motion finally lands. All additive
+per ADR 0004's freeze terms — no breaking changes to the 1.x
+ABI surface.
+
+### Added — plugin ABI
+
+- `plugin_register_normal_prefix_key(prefix, key, fp)` — register
+  a two-byte NORMAL-mode sequence (e.g. `(KEY_G, 'd')` → fp).
+  Plugin fp signature: `fn(s) -> action_id`. Plugin-returned
+  actions flow through cyim's standard motion / edit pipelines
+  in `editor_step`. Built-ins win on conflict per ADR 0003 §3.
+  Plugin prefix-keys are not permitted to drive mode transitions
+  (the prefix dispatch returns immediately, bypassing
+  MODE_NORMAL's transition guards) — plugins that need mode
+  changes register an `ex_command` instead. Storage: 24 B record
+  `{prefix, key, fp}` in `_plugin_normal_prefix_keys` vec.
+- `plugin_buf_load_file(s, path)` — load a NUL-term cstring
+  path into a new buffer + switch the editor's active buffer to
+  it. Wraps the same dedup / buflist / window-update bookkeeping
+  `:e <file>` uses. Returns the buf ptr on success, 0 on failure
+  (sets `editor_last_error` for typed reporting:
+  `ERR_NO_FILE_NAME`, `ERR_FILE_NOT_FOUND`, `ERR_FILE_TOO_LARGE`).
+  Use case: cyim-lsp 1.1.0+ cross-file goto-def.
+
+### Added — built-ins
+
+- `ACT_MOVE_FILE_START = 109` — finally wired. `motion_apply`
+  routes it to `motion_file_start` (returns position 0). The
+  function existed since M1 as a stub; multi-byte input
+  dispatch needed the v1.4.2 prefix-dispatch generalization
+  before `gg` could resolve.
+- `KEY_G = 103` — new prefix constant. NORMAL-mode `g` sets
+  `editor_prefix(s)`; the next byte resolves: `gg` →
+  `ACT_MOVE_FILE_START` (built-in), anything else falls
+  through to plugin lookup.
+
+### Changed — internals
+
+- `editor_dispatch` (`src/mode.cyr`) — prefix handling
+  generalized beyond the original Ctrl-W special case. When
+  `editor_prefix(s)` is non-zero, dispatch on the prefix value:
+  Ctrl-W → window navigation (unchanged); KEY_G → built-in `gg`
+  + plugin lookup; any other prefix → plugin lookup only. The
+  `if (editor_prefix(s) == KEY_CTRL_W)` block became
+  `if (editor_prefix(s) != 0)` with branches per prefix value.
+- `_buf_load_file_into_active(s, path)` (`src/command.cyr`,
+  new) — extracted from `_cmd_e` so both `:e <file>` and
+  `plugin_buf_load_file` share the dedup + load + buflist +
+  window-update bookkeeping. `_cmd_e` now thin-wraps the
+  helper. Behaviour-neutral refactor.
+- `motion_file_start(b)` comment updated to reflect that
+  multi-byte dispatch IS now wired (was: "not yet wired in
+  mode.cyr").
+
+### Tests
+
+- `tests/plugin.tcyr` extended: 33 → 58 assertions (+25 across
+  9 new test groups — prefix-key registration, lookup,
+  dispatch flow, conflict resolution, plugin_buf_load_file
+  load + dedup + missing-file + null-path error paths).
+- `cyrius test` — 20 suites all PASS.
+- `cyrius fuzz` — 3 PASS.
+- `cyrius smoke` — 1 PASS (the cyim-lsp protocol harness from
+  1.4.1 still green).
+- `cyrius lint` — 0 warnings (touched files); pre-existing
+  `src/cli.cyr` line-length warning unchanged.
+
+### Verification
+
+- `cyrius build` (DCE) — OK; binary 949,888 B (+1,872 B over
+  v1.4.1's 948,016 B; deltas: prefix-key registry vec + record
+  helper + lookup walker (~600 B), generalized dispatch path
+  (~400 B), `_buf_load_file_into_active` extraction +
+  plugin_buf_load_file wrapper (~700 B), wired
+  ACT_MOVE_FILE_START / `motion_file_start` cases (~150 B)).
+- `build/cyim --version` — `cyim 1.4.2`.
+- ABI compatibility: cyim-lsp 1.0.3 (the live consumer) doesn't
+  use the new ABIs yet; the additive surface is unlinked-but-
+  present until cyim-lsp 1.1.0 picks it up. DCE will keep it
+  out of the binary if no consumer references it (current
+  binary delta reflects the test fixtures + extracted helper,
+  not registry surface that has no caller).
+
+### Coordination with cyim-lsp
+
+- cyim-lsp 1.1.0 (planned next) will activate `gd` / `gr` via
+  `plugin_register_normal_prefix_key(KEY_G, 'd', ...)` and
+  `plugin_register_normal_prefix_key(KEY_G, 'r', ...)`, plus
+  cross-file goto-def via `plugin_buf_load_file`. The current
+  consumer-glue stubs (`_cyim_lsp_gd`, `_cyim_lsp_gr`) and the
+  cross-file deferred path in `_cyim_lsp_ex_goto_def` become
+  active.
+- Reference quickfix list (`:lsp-find-refs` showing a
+  navigable list) waits for cyim 1.5.0's `plugin_list_display`
+  ABI — the popup-overlay subsystem is the size of a minor
+  release, not a patch.
+
 ## [1.4.1] — 2026-05-07
 
 **Patch — picks up cyim-lsp 1.0.3's subprocess env fix; first

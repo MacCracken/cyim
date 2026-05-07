@@ -49,6 +49,10 @@ var _t_ex_cmd_calls      = 0;
 var _t_post_save_last_state = 0;
 var _t_post_save_last_path  = 0;
 
+# v1.4.2 — prefix-key callback counters.
+var _t_prefix_key_calls = 0;
+var _t_prefix_key_last_state = 0;
+
 fn _t_cb_post_save(s, path) {
     _t_post_save_calls = _t_post_save_calls + 1;
     _t_post_save_last_state = s;
@@ -81,6 +85,15 @@ fn _t_cb_normal_key(s) {
 fn _t_cb_ex_cmd(s) {
     _t_ex_cmd_calls = _t_ex_cmd_calls + 1;
     return 0;
+}
+
+# v1.4.2 — `gd` plugin handler. Returns ACT_NONE so the action
+# pipeline stays well-defined; tests that need to observe the
+# call use the counter / last-state globals.
+fn _t_cb_prefix_gd(s) {
+    _t_prefix_key_calls = _t_prefix_key_calls + 1;
+    _t_prefix_key_last_state = s;
+    return ACT_NONE;
 }
 
 fn main() {
@@ -217,6 +230,99 @@ fn main() {
     var pre_ex2 = _t_ex_cmd_calls;
     command_execute(s4);
     assert_eq(_t_ex_cmd_calls, pre_ex2, "plugin ex_command NOT called for built-in :q");
+
+    # === v1.4.2 — prefix-key ABI ===
+
+    test_group("prefix-key registration appends to vec");
+    var pre_pkn = vec_len(_plugin_normal_prefix_keys);
+    plugin_register_normal_prefix_key(KEY_G, 100, &_t_cb_prefix_gd);   # 'd' = 100
+    assert_eq(vec_len(_plugin_normal_prefix_keys), pre_pkn + 1,
+              "_plugin_normal_prefix_keys grew by 1");
+
+    test_group("_plugin_lookup_normal_prefix_key finds registered combo");
+    var hit = _plugin_lookup_normal_prefix_key(KEY_G, 100);
+    assert_neq(hit, 0, "lookup returns non-null fp");
+    var miss_key = _plugin_lookup_normal_prefix_key(KEY_G, 114);   # 'r' unregistered
+    assert_eq(miss_key, 0, "unregistered (KEY_G, 'r') misses");
+    var miss_prefix = _plugin_lookup_normal_prefix_key(99, 100);   # ('c', 'd') unreg
+    assert_eq(miss_prefix, 0, "unregistered prefix misses");
+
+    test_group("editor_dispatch routes (g, d) through plugin");
+    var s5 = editor_new(buf_new());
+    bl_init(s5, editor_buf(s5));
+    window_init(s5);
+    editor_set_mode(s5, MODE_NORMAL);
+    var pre_pk = _t_prefix_key_calls;
+    # g sets prefix...
+    var act_g = editor_dispatch(s5, 103);
+    assert_eq(act_g, ACT_NONE, "g returns ACT_NONE (prefix set, awaits next)");
+    assert_eq(editor_prefix(s5), KEY_G, "prefix latched to KEY_G");
+    # ...then d resolves to plugin
+    var act_d = editor_dispatch(s5, 100);
+    assert_eq(act_d, ACT_NONE, "(g,d) plugin returned ACT_NONE");
+    assert_eq(_t_prefix_key_calls, pre_pk + 1, "plugin gd handler fired exactly once");
+    assert_eq(_t_prefix_key_last_state, s5, "handler received correct state ptr");
+    assert_eq(editor_prefix(s5), 0, "prefix cleared after resolution");
+
+    test_group("built-in gg wins over plugin (g, g) conflict");
+    # Register a colliding (KEY_G, 'g') plugin handler — built-in
+    # ACT_MOVE_FILE_START should still take precedence.
+    plugin_register_normal_prefix_key(KEY_G, 103, &_t_cb_prefix_gd);   # 'g'
+    var pre_pk2 = _t_prefix_key_calls;
+    editor_dispatch(s5, 103);                         # g (sets prefix)
+    var act_gg = editor_dispatch(s5, 103);            # g (resolves)
+    assert_eq(act_gg, ACT_MOVE_FILE_START, "built-in gg returned ACT_MOVE_FILE_START");
+    assert_eq(_t_prefix_key_calls, pre_pk2, "plugin gg handler NOT called (built-in won)");
+
+    test_group("unregistered prefix follow-up returns ACT_NONE");
+    # (KEY_G, 'r') has no built-in, no plugin in this test → ACT_NONE.
+    editor_dispatch(s5, 103);                # g
+    var act_gr = editor_dispatch(s5, 114);   # r — neither built-in nor plugin
+    assert_eq(act_gr, ACT_NONE, "unregistered (g, r) → ACT_NONE");
+    assert_eq(editor_prefix(s5), 0, "prefix still cleared after miss");
+
+    test_group("unrelated NORMAL keys still dispatch normally");
+    # h still moves left even after the prefix-dispatch generalization.
+    var act_h_after = editor_dispatch(s5, 104);   # h
+    assert_eq(act_h_after, ACT_MOVE_LEFT, "h still maps to ACT_MOVE_LEFT");
+
+    # === v1.4.2 — plugin_buf_load_file ABI ===
+
+    test_group("plugin_buf_load_file loads file and switches active");
+    # Write a tiny fixture.
+    var fix_path = "/tmp/cyim-plugin-buf-load.txt";
+    var fix_fd = sys_open(fix_path, 65, 420);   # O_WRONLY|O_CREAT, 0644
+    if (fix_fd >= 0) {
+        var content = "hello\n";
+        sys_write(fix_fd, content, 6);
+        sys_close(fix_fd);
+    }
+    var s6 = editor_new(buf_new());
+    bl_init(s6, editor_buf(s6));
+    window_init(s6);
+    var pre_count = bl_count(s6);
+    var loaded = plugin_buf_load_file(s6, fix_path);
+    assert_neq(loaded, 0, "plugin_buf_load_file returned non-null buf");
+    assert_eq(bl_count(s6), pre_count + 1, "buflist grew by 1");
+    assert_eq(editor_buf(s6), loaded, "active buffer == loaded buf");
+    assert_eq(buf_len(loaded), 6, "loaded buffer has 6 bytes (hello\\n)");
+
+    test_group("plugin_buf_load_file dedups: second call returns same buf");
+    var loaded2 = plugin_buf_load_file(s6, fix_path);
+    assert_eq(loaded2, loaded, "second call returned same buf (dedup)");
+    assert_eq(bl_count(s6), pre_count + 1, "buflist did not grow on second call");
+
+    test_group("plugin_buf_load_file: missing file returns 0 + sets last_error");
+    editor_set_last_error(s6, ERR_NONE);
+    var miss = plugin_buf_load_file(s6, "/tmp/cyim-does-not-exist-12345");
+    assert_eq(miss, 0, "non-existent path returns 0");
+    assert_eq(editor_last_error(s6), ERR_FILE_NOT_FOUND, "ERR_FILE_NOT_FOUND set");
+
+    test_group("plugin_buf_load_file: NULL path returns 0 + ERR_NO_FILE_NAME");
+    editor_set_last_error(s6, ERR_NONE);
+    var null_load = plugin_buf_load_file(s6, 0);
+    assert_eq(null_load, 0, "null path returns 0");
+    assert_eq(editor_last_error(s6), ERR_NO_FILE_NAME, "ERR_NO_FILE_NAME set");
 
     return assert_summary();
 }

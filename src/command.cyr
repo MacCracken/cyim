@@ -365,43 +365,63 @@ fn _cmd_file_size(path) {
 # M7 audit F-2 — size pre-check: refuse files larger than
 # `editor_cfg_max_filesize(s)` with `ERR_FILE_TOO_LARGE`. The cap
 # is configurable via `:set maxfilesize=N` (bytes); default 100 MB.
-fn _cmd_e(s, cb, arg_start, arg_len) {
-    if (arg_len <= 0) {
+# Load `path` (NUL-term cstring; caller-owned, lifetime must outlast
+# the buflist entry which keeps the path pointer) into a buffer +
+# switch the editor's active buffer to it. Dedups: if `path` is
+# already in the buflist, switches to the existing entry. Returns
+# the buf ptr on success, 0 on failure (file missing / too large /
+# read error). Sets editor_last_error so callers can surface a
+# typed error.
+#
+# Used by `:e <file>` (via _cmd_e) and by plugin_buf_load_file
+# (v1.4.2). Extracted so both paths share the dedup + buflist +
+# window-update bookkeeping.
+fn _buf_load_file_into_active(s, path) {
+    if (path == 0) {
         editor_set_last_error(s, ERR_NO_FILE_NAME);
-        return 0 - 1;
+        return 0;
     }
-    var path = _cmd_arg_dup(cb, arg_start, arg_len);
-
     bl_init(s, editor_buf(s));
     var existing = _cmd_find_path(s, path);
     if (existing >= 0) {
         bl_set_active(s, existing);
         var leaf_a = editor_active_leaf(s);
         if (leaf_a != 0) { window_set_buf_idx(leaf_a, existing); }
-        return 0;
+        return bl_buf(s, existing);
     }
 
     var size = _cmd_file_size(path);
     if (size < 0) {
         editor_set_last_error(s, ERR_FILE_NOT_FOUND);
-        return 0 - 1;
+        return 0;
     }
     if (size > editor_cfg_max_filesize(s)) {
         editor_set_last_error(s, ERR_FILE_TOO_LARGE);
-        return 0 - 1;
+        return 0;
     }
 
     var nb = buf_new();
     var n = buf_load_file(nb, path);
     if (n < 0) {
         editor_set_last_error(s, ERR_FILE_NOT_FOUND);
-        return 0 - 1;
+        return 0;
     }
     buf_move(nb, 0);
     var idx = bl_add(s, nb, path);
     bl_set_active(s, idx);
     var leaf_b = editor_active_leaf(s);
     if (leaf_b != 0) { window_set_buf_idx(leaf_b, idx); }
+    return nb;
+}
+
+fn _cmd_e(s, cb, arg_start, arg_len) {
+    if (arg_len <= 0) {
+        editor_set_last_error(s, ERR_NO_FILE_NAME);
+        return 0 - 1;
+    }
+    var path = _cmd_arg_dup(cb, arg_start, arg_len);
+    var b = _buf_load_file_into_active(s, path);
+    if (b == 0) { return 0 - 1; }
     return 0;
 }
 

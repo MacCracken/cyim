@@ -1,8 +1,20 @@
 # ADR 0004 — Plugin ABI freeze (v1.3.6)
 
-**Status:** Accepted
-**Date:** 2026-05-06
+**Status:** Accepted (additive extensions in v1.4.2 — see end)
+**Date:** 2026-05-06 (extended 2026-05-07)
 **Tags:** plugins, abi, stability, sandhi, v1.3.6
+
+> **2026-05-07 — v1.4.2 additive extensions:** the freeze's
+> "additions are allowed" envelope (see Decision § below) covers
+> the v1.4.2 surfaces. Two new public symbols
+> (`plugin_register_normal_prefix_key`, `plugin_buf_load_file`),
+> one new key constant (`KEY_G`), one new action constant
+> (`ACT_MOVE_FILE_START`), plus the long-stubbed `gg` motion now
+> dispatched via the generalized prefix path. **No frozen-from-1.3.6
+> symbol changed shape**; consumers compiling against the 1.3.6
+> surface continue to compile and run unchanged. See
+> [§ v1.4.2 additive extensions](#v142-additive-extensions-2026-05-07)
+> at the end of this ADR.
 
 ---
 
@@ -348,3 +360,95 @@ should have a documented answer, not a "probably yes, ask
   [`tests/trailing_ws.tcyr`](../../tests/trailing_ws.tcyr) (the
   test-side expression of the frozen contract; regressions
   here are ABI breakages within 1.x)
+
+## v1.4.2 additive extensions (2026-05-07)
+
+The freeze's "additions are allowed" envelope explicitly permits
+new helper functions, new severity values, and new hook types
+without bumping to 2.0. v1.4.2 exercises that envelope to give
+cyim-lsp 1.1.0 the surfaces it needs to activate features that
+were stubbed at 1.0.x:
+
+### Added — registration
+
+- `plugin_register_normal_prefix_key(prefix, key, fp)` — register
+  a two-byte NORMAL-mode sequence. Used by cyim-lsp 1.1.0 to bind
+  `gd` (`(KEY_G, 'd', _cyim_lsp_gd)`) and `gr` (`(KEY_G, 'r',
+  _cyim_lsp_gr)`). The fp signature mirrors `plugin_register_normal_key`:
+  `fn(s) -> action_id`. Plugin-returned actions flow through
+  cyim's standard motion / edit pipelines via `editor_step`.
+- Constraint: plugin prefix-keys cannot drive mode transitions
+  (the prefix dispatch path returns immediately, bypassing the
+  MODE_NORMAL transition guards). Plugins needing mode changes
+  use `plugin_register_ex_command`. Documented in `src/mode.cyr`'s
+  `editor_dispatch` comment block.
+
+### Added — operations
+
+- `plugin_buf_load_file(s, path)` — load a NUL-terminated cstring
+  path into a new buffer + switch the editor's active buffer to
+  it. Wraps the same dedup / buflist / window-update bookkeeping
+  `:e <file>` uses; both paths share the new
+  `_buf_load_file_into_active(s, path)` helper extracted from
+  `_cmd_e` (behaviour-neutral refactor). Returns buf ptr on
+  success, 0 on failure with `editor_last_error` set
+  (`ERR_NO_FILE_NAME`, `ERR_FILE_NOT_FOUND`, `ERR_FILE_TOO_LARGE`).
+  Used by cyim-lsp 1.1.0's cross-file goto-def: load the destination
+  file from the LSP response URI, then `buf_move(b, dest_offset)`
+  to jump.
+
+### Added — built-ins
+
+- `KEY_G = 103` — new prefix constant for the generalized
+  prefix-dispatch path.
+- `ACT_MOVE_FILE_START = 109` — finally wired (the function
+  `motion_file_start` shipped as a stub in M1 with the comment
+  "Multi-byte input dispatch is not yet wired"; v1.4.2's
+  generalization closes that). `motion_apply` routes
+  `ACT_MOVE_FILE_START` to `motion_file_start`.
+
+### Changed — internals only
+
+- `editor_dispatch` (`src/mode.cyr`) — prefix handling
+  generalized from the special-case `if (editor_prefix(s) ==
+  KEY_CTRL_W) { ... }` to `if (editor_prefix(s) != 0) { ... }`
+  with branches per latched prefix value (Ctrl-W → window nav,
+  KEY_G → built-in `gg` + plugin lookup, anything else → plugin
+  lookup only). Built-ins still win on conflict per ADR 0003 §3
+  — verified by test: registering `(KEY_G, 'g', fp)` is shadowed
+  by the built-in `ACT_MOVE_FILE_START`.
+
+### Conflict resolution unchanged
+
+The ADR 0003 §3 rule "built-ins always win" carries over to
+prefix-keys. v1.4.2 wires it the same way as single-byte
+NORMAL-mode keys: the dispatch path checks the built-in first
+(currently `gg`), and only consults the plugin lookup if the
+built-in branch declines.
+
+### What this *doesn't* do
+
+- **No popup / list-display ABI.** cyim-lsp 1.1.0+'s `:lsp-find-refs`
+  quickfix list still surfaces the count in the status bar only.
+  The popup-overlay subsystem (`plugin_list_display`) needs a new
+  mode + render-time overlay drawing + j/k/Enter/Esc key handling
+  — that's the size of a minor release, not a patch. Targeted for
+  cyim 1.5.0.
+- **No new diag severity values.** `DIAG_*` enum unchanged at
+  v1.4.2.
+- **No new hook types.** The six hooks frozen in v1.3.6 remain
+  the canonical surface; v1.4.2's additions are *registrations*
+  against existing hook types (the prefix-key extension lives
+  alongside `plugin_register_normal_key`) and an *operation*
+  (`plugin_buf_load_file`).
+
+### Coordination
+
+- cyim-lsp 1.1.0 picks up these surfaces via the bundled
+  `lib/cyim-lsp.cyr` distfile (which doesn't itself change at
+  1.0.3 → 1.1.0; the change is in the consumer-side glue
+  `src/plugins/lsp_glue.cyr` that calls `plugin_register_normal_prefix_key`
+  / `plugin_buf_load_file` from `cyim_lsp_init()`).
+- cyim 1.4.x stays open for further additive extensions; cyim 1.5.0
+  earns its minor bump via `plugin_list_display` (the popup
+  subsystem).

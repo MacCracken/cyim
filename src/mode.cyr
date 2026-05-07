@@ -74,6 +74,7 @@ var ACT_MOVE_LINE_END     = 105;
 var ACT_MOVE_WORD_FWD     = 106;
 var ACT_MOVE_WORD_BACK    = 107;
 var ACT_MOVE_FILE_END     = 108;
+var ACT_MOVE_FILE_START   = 109;   # v1.4.2 — gg motion, dispatched via g-prefix
 
 # NORMAL-mode edits.
 var ACT_DELETE_RIGHT      = 200;
@@ -105,6 +106,7 @@ var KEY_BACKSPACE = 8;
 var KEY_DEL       = 127;
 var KEY_CTRL_W    = 23;
 var KEY_CTRL_R    = 18;
+var KEY_G         = 103;   # v1.4.2 — prefix for `gg` + plugin normal_prefix_key
 
 # ──── Error codes (set into state.last_error)
 var ERR_NONE            = 0;
@@ -279,24 +281,58 @@ fn editor_dispatch(s, key) {
     var mode = load64(s);
 
     # Multi-byte sequence: a previous keystroke set a prefix that the
-    # current byte resolves. Today only Ctrl-w (window navigation) uses
-    # this; clearing the prefix is unconditional so an unmapped follow-up
-    # is silently swallowed (prefix consumed → ACT_NONE).
+    # current byte resolves. v1.4.2 generalizes prefix dispatch beyond
+    # the original CTRL_W case — built-ins (CTRL_W window-nav, G-prefix
+    # `gg`) handle their own follow-up; anything else falls through to
+    # plugin lookup via _plugin_lookup_normal_prefix_key.
+    #
+    # Built-ins win on conflict (ADR 0003 §3): plugin lookup is only
+    # consulted after the built-in branch decides not to handle the
+    # follow-up. Plugin-returned actions flow through cyim's standard
+    # action pipelines (motion / edit / etc) at driver.cyr's
+    # editor_step, but plugin prefix-keys are NOT permitted to drive
+    # mode transitions — the prefix path returns immediately, bypassing
+    # the mode-transition guards at the bottom of MODE_NORMAL dispatch.
+    # Plugins that need mode changes register an ex_command instead.
+    #
     # CSI escape sequences (arrow keys etc., ESC [ <final>) are parsed
     # at the driver layer in editor_feed(), not here — keeps dispatch
     # byte-token-clean and lets ESC stay an immediate mode-exit.
-    if (editor_prefix(s) == KEY_CTRL_W) {
+    if (editor_prefix(s) != 0) {
+        var prev_prefix = editor_prefix(s);
         editor_set_prefix(s, 0);
-        if (key == 104) { return ACT_WIN_LEFT; }
-        if (key == 106) { return ACT_WIN_DOWN; }
-        if (key == 107) { return ACT_WIN_UP; }
-        if (key == 108) { return ACT_WIN_RIGHT; }
+
+        # Built-in: Ctrl-W window navigation.
+        if (prev_prefix == KEY_CTRL_W) {
+            if (key == 104) { return ACT_WIN_LEFT; }
+            if (key == 106) { return ACT_WIN_DOWN; }
+            if (key == 107) { return ACT_WIN_UP; }
+            if (key == 108) { return ACT_WIN_RIGHT; }
+            return ACT_NONE;
+        }
+
+        # Built-in: g-prefix. `gg` -> ACT_MOVE_FILE_START; everything
+        # else for the g-prefix falls through to plugin lookup.
+        if (prev_prefix == KEY_G) {
+            if (key == 103) { return ACT_MOVE_FILE_START; }
+            var pfp_g = _plugin_lookup_normal_prefix_key(prev_prefix, key);
+            if (pfp_g != 0) { return fncall1(pfp_g, s); }
+            return ACT_NONE;
+        }
+
+        # Generic plugin lookup for any other registered prefix.
+        var pfp = _plugin_lookup_normal_prefix_key(prev_prefix, key);
+        if (pfp != 0) { return fncall1(pfp, s); }
         return ACT_NONE;
     }
 
     if (mode == MODE_NORMAL) {
         if (key == KEY_CTRL_W) {
             editor_set_prefix(s, KEY_CTRL_W);
+            return ACT_NONE;
+        }
+        if (key == KEY_G) {
+            editor_set_prefix(s, KEY_G);
             return ACT_NONE;
         }
         var act = map_u64_get(load64(s + 16), key);
