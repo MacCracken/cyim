@@ -54,6 +54,10 @@ include "src/buffer.cyr"
 include "src/highlight.cyr"
 include "src/lang.cyr"
 include "src/cyimrc.cyr"
+# v1.6.0 — marks (m<letter> / '<letter>). Module-local storage;
+# mode.cyr's prefix dispatch calls marks_set / marks_get from
+# the KEY_M / KEY_QUOTE branches, so marks.cyr must come before it.
+include "src/marks.cyr"
 include "src/mode.cyr"
 include "src/buflist.cyr"
 include "src/window.cyr"
@@ -260,6 +264,7 @@ fn main() {
     plugin_init();
     trailing_ws_init();
     cyim_lsp_init();
+    marks_init();
 
     var ac = argc();
     var fpath = 0;

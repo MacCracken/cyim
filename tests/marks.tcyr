@@ -1,0 +1,171 @@
+# tests/marks.tcyr — VIM-style marks (v1.6.0)
+#
+# Covers the per-buffer + global mark storage and the mode-dispatch
+# integration (KEY_M / KEY_QUOTE prefix sequences).
+
+include "src/buffer.cyr"
+include "src/plugin.cyr"
+include "src/marks.cyr"
+include "src/highlight.cyr"
+include "src/lang.cyr"
+include "src/cyimrc.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+
+fn main() {
+    alloc_init();
+    plugin_init();
+    marks_init();
+
+    test_group("marks_init: empty state");
+    var b1 = buf_new();
+    var b2 = buf_new();
+    assert_eq(marks_count(b1), 0, "no marks on fresh init");
+    assert_eq(marks_count(b2), 0, "no marks on b2");
+    assert_eq(marks_get(b1, 97), 0 - 1, "unset 'a' returns -1");
+    assert_eq(marks_get_global(65), 0, "unset 'A' returns 0");
+
+    test_group("per-buffer set + get round-trip");
+    marks_set(b1, 97, 42);   # 'a' = 97
+    assert_eq(marks_get(b1, 97), 42, "'a' -> 42");
+    assert_eq(marks_count(b1), 1, "count = 1");
+
+    test_group("multiple per-buffer marks coexist");
+    marks_set(b1, 98, 100);  # 'b'
+    marks_set(b1, 122, 200); # 'z'
+    assert_eq(marks_get(b1, 97), 42, "'a' still 42");
+    assert_eq(marks_get(b1, 98), 100, "'b' = 100");
+    assert_eq(marks_get(b1, 122), 200, "'z' = 200");
+    assert_eq(marks_count(b1), 3, "count = 3");
+
+    test_group("overwrite existing per-buffer mark");
+    marks_set(b1, 97, 999);
+    assert_eq(marks_get(b1, 97), 999, "'a' overwritten to 999");
+    assert_eq(marks_count(b1), 3, "count still 3 (no duplicate record)");
+
+    test_group("per-buffer marks isolated across buffers");
+    marks_set(b2, 97, 7);
+    assert_eq(marks_get(b1, 97), 999, "b1 'a' unaffected");
+    assert_eq(marks_get(b2, 97), 7, "b2 'a' = 7");
+    assert_eq(marks_count(b2), 1, "b2 count = 1");
+
+    test_group("per-buffer set rejects out-of-range key");
+    assert_eq(marks_set(b1, 65, 0), 0 - 1, "'A' rejected (uppercase)");
+    assert_eq(marks_set(b1, 48, 0), 0 - 1, "'0' rejected (digit)");
+    assert_eq(marks_set(b1, 96, 0), 0 - 1, "'`' (96) rejected");
+    assert_eq(marks_set(b1, 123, 0), 0 - 1, "'{' (123) rejected");
+
+    test_group("per-buffer get of unset key returns -1");
+    assert_eq(marks_get(b1, 99), 0 - 1, "'c' unset -> -1");
+
+    test_group("global set + get round-trip");
+    marks_set_global(65, b1, 100);   # 'A' -> b1, off=100
+    var rec_a = marks_get_global(65);
+    assert_neq(rec_a, 0, "'A' record non-null");
+    assert_eq(load64(rec_a), b1, "'A' -> b1");
+    assert_eq(load64(rec_a + 8), 100, "'A' offset = 100");
+
+    test_group("global override");
+    marks_set_global(65, b2, 200);
+    var rec_a2 = marks_get_global(65);
+    assert_eq(load64(rec_a2), b2, "'A' overwritten to b2");
+    assert_eq(load64(rec_a2 + 8), 200, "'A' offset = 200");
+
+    test_group("global set rejects out-of-range key");
+    assert_eq(marks_set_global(97, b1, 0), 0 - 1, "'a' rejected (lowercase)");
+    assert_eq(marks_set_global(48, b1, 0), 0 - 1, "'0' rejected");
+    assert_eq(marks_set_global(64, b1, 0), 0 - 1, "'@' (64) rejected");
+    assert_eq(marks_set_global(91, b1, 0), 0 - 1, "'[' (91) rejected");
+
+    test_group("global get of unset key returns 0");
+    assert_eq(marks_get_global(66), 0, "'B' unset -> 0");
+
+    # === Dispatch integration ===
+
+    test_group("dispatch: m<letter> latches KEY_M then sets per-buffer mark");
+    var s = editor_new(buf_new());
+    bl_init(s, editor_buf(s));
+    window_init(s);
+    var b = editor_buf(s);
+    # Put some content in the buffer + move cursor to a known position.
+    buf_insert(b, "hello world", 11);
+    buf_move(b, 6);   # cursor at offset 6 ('w')
+    editor_set_mode(s, MODE_NORMAL);
+    var pre_count = marks_count(b);
+    var act1 = editor_dispatch(s, KEY_M);
+    assert_eq(act1, ACT_NONE, "m latches prefix, returns ACT_NONE");
+    assert_eq(editor_prefix(s), KEY_M, "prefix latched to KEY_M");
+    var act2 = editor_dispatch(s, 109);   # 'm' as the letter (any a-z)
+    assert_eq(act2, ACT_NONE, "follow-up returns ACT_NONE");
+    assert_eq(editor_prefix(s), 0, "prefix cleared");
+    assert_eq(marks_get(b, 109), 6, "mark 'm' set to cursor offset 6");
+    assert_eq(marks_count(b), pre_count + 1, "count incremented");
+
+    test_group("dispatch: '<letter> latches KEY_QUOTE then jumps cursor");
+    # Move cursor away, then jump back via the mark.
+    buf_move(b, 0);
+    assert_eq(buf_cursor(b), 0, "cursor at 0 pre-jump");
+    editor_dispatch(s, KEY_QUOTE);
+    assert_eq(editor_prefix(s), KEY_QUOTE, "prefix latched to KEY_QUOTE");
+    editor_dispatch(s, 109);   # 'm'
+    assert_eq(editor_prefix(s), 0, "prefix cleared after jump");
+    assert_eq(buf_cursor(b), 6, "cursor jumped to mark 'm' offset 6");
+
+    test_group("dispatch: '<letter> for unset mark is a no-op");
+    buf_move(b, 3);
+    editor_dispatch(s, KEY_QUOTE);
+    editor_dispatch(s, 122);   # 'z' — never set
+    assert_eq(buf_cursor(b), 3, "cursor unchanged on unset-mark jump");
+
+    test_group("dispatch: post-EOF mark clamped to buf_len on jump");
+    # Set a mark at offset 99 (past EOF — buffer is 11 bytes).
+    marks_set(b, 99, 9999);   # 'c' = 99
+    var blen = buf_len(b);
+    editor_dispatch(s, KEY_QUOTE);
+    editor_dispatch(s, 99);   # 'c'
+    assert_eq(buf_cursor(b), blen, "out-of-range mark clamped to buf_len");
+
+    test_group("dispatch: m<digit> swallowed (no mark set, prefix cleared)");
+    var pre_c = marks_count(b);
+    editor_dispatch(s, KEY_M);
+    editor_dispatch(s, 48);   # '0' — invalid mark name
+    assert_eq(editor_prefix(s), 0, "prefix cleared");
+    assert_eq(marks_count(b), pre_c, "no mark added");
+
+    test_group("dispatch: '<digit> swallowed (no jump, prefix cleared)");
+    buf_move(b, 4);
+    editor_dispatch(s, KEY_QUOTE);
+    editor_dispatch(s, 48);   # '0'
+    assert_eq(editor_prefix(s), 0, "prefix cleared");
+    assert_eq(buf_cursor(b), 4, "cursor unchanged");
+
+    test_group("dispatch: m<UPPER> sets a global mark");
+    var b_g1 = editor_buf(s);
+    buf_move(b_g1, 5);
+    editor_dispatch(s, KEY_M);
+    editor_dispatch(s, 70);   # 'F' — global mark
+    var rec_F = marks_get_global(70);
+    assert_neq(rec_F, 0, "'F' set");
+    assert_eq(load64(rec_F), b_g1, "'F' buf matches");
+    assert_eq(load64(rec_F + 8), 5, "'F' offset = 5");
+
+    test_group("dispatch: '<UPPER> jumps within same buffer");
+    buf_move(b_g1, 0);
+    editor_dispatch(s, KEY_QUOTE);
+    editor_dispatch(s, 70);   # 'F'
+    assert_eq(buf_cursor(b_g1), 5, "cursor at global F");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

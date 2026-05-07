@@ -100,6 +100,21 @@ fn bl_buf(s, i)       { var r = bl_get(s, i); if (r == 0) { return 0; } return _
 fn bl_path(s, i)      { var r = bl_get(s, i); if (r == 0) { return 0; } return _bl_rec_path(r); }
 fn bl_modified(s, i)  { var r = bl_get(s, i); if (r == 0) { return 0; } return _bl_rec_modified(r); }
 
+# v1.6.0 — reverse lookup: find the buflist index whose record's
+# buf_ptr matches `b`. Used by global-mark cross-buffer jumps to
+# resolve `bl_set_active` from a stored buf pointer. Returns -1 if
+# `b` isn't in the buflist (e.g. was closed).
+fn bl_find_by_buf(s, b) {
+    if (b == 0) { return 0 - 1; }
+    var n = bl_count(s);
+    var i = 0;
+    while (i < n) {
+        if (bl_buf(s, i) == b) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
 # Append a new entry. Returns the new index. Does NOT switch active.
 fn bl_add(s, buf, path) {
     bl_init(s, editor_buf(s));   # late-init guard for callers who skip the explicit init

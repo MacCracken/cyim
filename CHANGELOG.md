@@ -4,6 +4,127 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-05-07
+
+**Minor — VIM-style marks (`m<letter>` / `'<letter>`).**
+
+The first feature minor of the post-1.5.x cycle. Single theme:
+marks. Per-buffer (a-z) and global (A-Z) namespaces, set via
+`m<letter>` and jumped via `'<letter>`. Vim-muscle-memory feature
+that vim users miss within ~2 days. ~150 LOC plus tests.
+
+### Added
+
+- `src/marks.cyr` — new module. Per-buffer marks: vec of 24 B
+  records `{buf_ptr, key, offset}`; linear lookup (max 26
+  entries per buffer × few buffers — small enough for naive
+  walk). Global marks: 26 × 16 B static array indexed by
+  `key - 'A'`; each slot is `{buf_ptr, offset}`. Sentinel for
+  "unset" is `buf_ptr == 0` — the static array's default-zero
+  state is therefore already valid as "all unset", so callers
+  that skip `marks_init()` (e.g. fuzz harnesses) see a coherent
+  state.
+- Public API: `marks_init()` / `marks_set(b, key, offset)` /
+  `marks_get(b, key) -> off or -1` /
+  `marks_set_global(key, b, offset)` /
+  `marks_get_global(key) -> rec ptr or 0` / `marks_count(b)`.
+- `KEY_M = 109` and `KEY_QUOTE = 39` constants in `src/mode.cyr`
+  — joins the existing `KEY_CTRL_W` / `KEY_G` prefix family.
+- `bl_find_by_buf(s, b)` helper in `src/buflist.cyr` — reverse
+  lookup from buf pointer to buflist index (used by global-mark
+  cross-buffer jumps to resolve `bl_set_active`).
+
+### Changed — `src/mode.cyr`
+
+- NORMAL-mode dispatch now latches `m` and `'` as prefixes
+  (alongside `Ctrl-W` and `g`). Generalized prefix-resolution
+  branch handles all four:
+  - `m<a-z>` → `marks_set(editor_buf(s), key, buf_cursor(...))`
+  - `m<A-Z>` → `marks_set_global(key, editor_buf(s), buf_cursor(...))`
+  - `'<a-z>` → `buf_move` to `marks_get(b, key)`, clamped to
+    `buf_len(b)` defensively (post-delete drift safety)
+  - `'<A-Z>` → resolve global mark; if buffer differs, switch
+    via `bl_find_by_buf` + `bl_set_active` + `window_set_buf_idx`,
+    then `buf_move`. Defensive guard: only proceed if `target_b`
+    is non-zero (defends against stale buf pointers from closed
+    buffers).
+- All four mark dispatches return `ACT_NONE`. Marks don't
+  participate in the action pipeline — the mode-dispatch path
+  performs the work directly.
+
+### Wiring — `src/main.cyr`
+
+- `include "src/marks.cyr"` after `cyimrc.cyr`, before `mode.cyr`
+  (mode.cyr's prefix dispatch calls `marks_set` / `marks_get`,
+  so marks.cyr must come first in the TU).
+- `marks_init()` called from `main()` after `cyim_lsp_init()`.
+
+### Tests
+
+- New `tests/marks.tcyr` — 50 assertions across 19 test groups:
+  init / round-trip / multiple marks / overwrite / cross-buffer
+  isolation / out-of-range key rejection / unset-key sentinel /
+  global set + get + override / global out-of-range / dispatch
+  integration (m<letter> sets at cursor; '<letter> jumps;
+  unset-mark jump no-op; post-EOF mark clamped to buf_len;
+  m<digit> swallowed; '<digit> swallowed; m<UPPER> sets global;
+  '<UPPER> jumps within same buffer).
+- `fuzz/driver.fcyr` — added `include "src/marks.cyr"` before
+  `mode.cyr`. Fuzz exercises the new prefix dispatch under
+  random keystrokes; surfaced (and fixed) a NULL-buf-ptr corner
+  case where `marks_get_global` would return a stale-zero record
+  if `marks_init` hadn't run. Fix: changed sentinel from
+  `offset == -1` to `buf_ptr != 0`; added defensive
+  `target_b != 0` guard in mode.cyr's `'<UPPER>` branch.
+
+### Verification
+
+- `cyrius build` (DCE) — OK; binary 965,432 B (+7,712 B over
+  v1.5.3's 957,720 B; deltas: marks.cyr (~3.5 KB after DCE) +
+  mode.cyr prefix branches (~2 KB) + bl_find_by_buf (~200 B) +
+  marks_init wiring (~50 B) + tests aren't in the binary).
+- `cyrius test` — **21 suites all PASS** (+1 marks.tcyr; 50 new
+  assertions). 88 plugin assertions unchanged.
+- `cyrius fuzz` — 3 PASS (driver fuzz exercises the new prefix
+  paths against 5K random keystrokes).
+- `cyrius smoke` — 1 PASS (LSP harness still green).
+- `cyrius bench` — perf within noise of v1.5.3 (mark ops aren't
+  in any benched workload; binary growth is +7.7 KB).
+- `cyrius lint` — 0 warnings on touched files.
+- `build/cyim --version` — `cyim 1.6.0`.
+
+### Plugin ABI freeze unchanged
+
+No plugin ABI surface changes. `KEY_M` / `KEY_QUOTE` join the
+constant family but don't shift any existing symbol. Mark
+storage is module-internal; not part of the plugin ABI. Plugin
+prefix-keys (`plugin_register_normal_prefix_key`) continue to
+work — built-ins (Ctrl-W, gg, m, ') still win on conflict per
+ADR 0003 §3.
+
+### Limitations / future work
+
+- **No edit-time mark adjustment.** Vim shifts marks across
+  edits (insertion shifts later marks forward; deletion shifts
+  back; deletion crossing a mark invalidates it). cyim 1.6.0
+  stores raw offsets and clamps to `buf_len(b)` on jump
+  (defensive against post-delete drift). Edit-tracking is a
+  1.6.x patch candidate.
+- **No persistence** (vim's `viminfo`). Marks live in memory
+  for the cyim session. Persistence is post-1.6 if the surface
+  earns it.
+- **No special marks** (`'.` last-edit, `''` last-jump,
+  `'<` / `'>` selection bounds, etc.). Vim's special-mark set
+  is large; cyim 1.6.0 ships only the named marks (a-z A-Z).
+- **No backtick variant** (`` `<letter> `` for exact column
+  vs. `'<letter>` for line). cyim's `'<letter>` already lands
+  at the exact recorded offset (cyim is byte-oriented; "line"
+  vs "exact column" is a non-distinction). Single primitive
+  is enough.
+- **No `:marks` ex-command** to list all set marks. `marks_count`
+  + a future iteration helper would back this; deferred to
+  1.6.x if asked.
+
 ## [1.5.3] — 2026-05-07
 
 **Closes 3 of 4 LOW closeout findings from v1.5.2's audit.**

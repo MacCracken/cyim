@@ -1,0 +1,157 @@
+# marks.cyr — VIM-style marks (v1.6.0)
+#
+# Two namespaces:
+#   - **Per-buffer marks** (a-z): each buffer gets its own a..z slots.
+#     Set with `m<letter>`, jump with `'<letter>`. Stored as a vec of
+#     24 B records {buf_ptr, key, offset}. Linear lookup (max 26
+#     entries per buffer, few buffers — small enough for naive walk).
+#   - **Global marks** (A-Z): cross-buffer marks. Set with `m<LETTER>`,
+#     jump with `'<LETTER>`. Storage is a flat 26 × 16 B array indexed
+#     by `key - 'A'`; each slot is `{buf_ptr, offset}`. -1 in offset
+#     means unset.
+#
+# Mark offsets are stored raw — no edit-time adjustment in v1.6.0.
+# Vim shifts marks across edits (insertions move later marks forward;
+# deletions move them back, with cross-mark deletions invalidating the
+# mark). cyim 1.6.0 keeps it simple: marks are byte offsets at set
+# time, defensively clamped to `buf_len(b)` on jump (so a mark that
+# now points past EOF lands at EOF rather than reading garbage).
+# Edit-tracking is queued for a future 1.6.x patch.
+#
+# No persistence — marks live in memory for the cyim session. Vim's
+# `viminfo` is post-1.6 (deferred until persistence earns its keep).
+#
+# Public API:
+#   marks_init()                       -> 0     # alloc storage; called from main()
+#   marks_set(b, key, offset)          -> 0/-1  # per-buffer (key 'a'-'z')
+#   marks_get(b, key)                  -> i64   # offset or -1 if unset
+#   marks_set_global(key, b, offset)   -> 0/-1  # cross-buffer (key 'A'-'Z')
+#   marks_get_global(key)              -> ptr   # 16 B record {buf, off} or 0
+#   marks_count(b)                     -> i64   # per-buffer mark count
+
+# Per-buffer marks vec. Lazy-init in marks_init().
+var _marks_per_buf = 0;
+
+# Global marks: 26 slots × 16 B = 416 bytes. Indexed by key - 'A'.
+# Layout per slot: +0 buf_ptr (or 0 = unset), +8 offset (or -1 = unset).
+var _marks_global[416];
+
+fn marks_init() {
+    if (_marks_per_buf == 0) { _marks_per_buf = vec_new(); }
+    # Global slots: the sentinel for "unset" is `buf_ptr == 0` (not
+    # `offset == -1`) — marks_set_global rejects b == 0, so a non-zero
+    # buf_ptr is the load-bearing "set" indicator. The static array's
+    # default-zero state is therefore already valid as "all unset",
+    # which means callers (e.g. fuzz harnesses) that skip marks_init
+    # still see a coherent state. We zero explicitly here as
+    # belt-and-suspenders.
+    var i = 0;
+    while (i < 26) {
+        store64(&_marks_global + i * 16,     0);
+        store64(&_marks_global + i * 16 + 8, 0);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Per-buffer set. `key` must be 'a'..'z' (97..122); silently no-op
+# otherwise. Overwrites if (b, key) already exists.
+fn marks_set(b, key, offset) {
+    if (_marks_per_buf == 0) { return 0 - 1; }
+    if (b == 0) { return 0 - 1; }
+    if (key < 97)  { return 0 - 1; }
+    if (key > 122) { return 0 - 1; }
+    var n = vec_len(_marks_per_buf);
+    var i = 0;
+    var found = 0;
+    while (i < n) {
+        if (found == 0) {
+            var rec = vec_get(_marks_per_buf, i);
+            if (rec != 0) {
+                if (load64(rec) == b) {
+                    if (load64(rec + 8) == key) {
+                        store64(rec + 16, offset);
+                        found = 1;
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    if (found == 0) {
+        var rec = alloc(24);
+        if (rec == 0) { return 0 - 1; }
+        store64(rec,      b);
+        store64(rec + 8,  key);
+        store64(rec + 16, offset);
+        vec_push(_marks_per_buf, rec);
+    }
+    return 0;
+}
+
+# Per-buffer get. Returns the recorded offset, or -1 if unset.
+# `key` out of range ('a'..'z') returns -1.
+fn marks_get(b, key) {
+    if (_marks_per_buf == 0) { return 0 - 1; }
+    if (b == 0) { return 0 - 1; }
+    if (key < 97)  { return 0 - 1; }
+    if (key > 122) { return 0 - 1; }
+    var n = vec_len(_marks_per_buf);
+    var i = 0;
+    while (i < n) {
+        var rec = vec_get(_marks_per_buf, i);
+        if (rec != 0) {
+            if (load64(rec) == b) {
+                if (load64(rec + 8) == key) {
+                    return load64(rec + 16);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+# Global set. `key` must be 'A'..'Z' (65..90); silently no-op otherwise.
+fn marks_set_global(key, b, offset) {
+    if (key < 65) { return 0 - 1; }
+    if (key > 90) { return 0 - 1; }
+    if (b == 0)   { return 0 - 1; }
+    var idx = key - 65;
+    store64(&_marks_global + idx * 16,     b);
+    store64(&_marks_global + idx * 16 + 8, offset);
+    return 0;
+}
+
+# Global get. Returns a pointer to the 16 B record on success
+# ({buf_ptr, offset}); returns 0 if unset or out of range.
+# Sentinel: buf_ptr == 0 means unset (marks_set_global rejects
+# b == 0, so a non-zero buf_ptr is the "set" indicator). This
+# choice means the default-zero static array state is already
+# "all unset" without requiring marks_init().
+fn marks_get_global(key) {
+    if (key < 65) { return 0; }
+    if (key > 90) { return 0; }
+    var idx = key - 65;
+    var b = load64(&_marks_global + idx * 16);
+    if (b == 0) { return 0; }
+    return &_marks_global + idx * 16;
+}
+
+# Count per-buffer marks for `b`. Used by tests + a future ":marks"
+# command (deferred to 1.6.x).
+fn marks_count(b) {
+    if (_marks_per_buf == 0) { return 0; }
+    if (b == 0) { return 0; }
+    var n = vec_len(_marks_per_buf);
+    var c = 0;
+    var i = 0;
+    while (i < n) {
+        var rec = vec_get(_marks_per_buf, i);
+        if (rec != 0) {
+            if (load64(rec) == b) { c = c + 1; }
+        }
+        i = i + 1;
+    }
+    return c;
+}

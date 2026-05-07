@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.5.2 — released.** The 1.x series shipped:
+**1.6.0 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -46,6 +46,10 @@ for humanity. Consumers:
   `gr` into a navigable quickfix list.
 - **v1.5.2** — closeout cut for the 1.5.x cycle. 0 CRITICAL / 0 HIGH /
   0 MEDIUM / 4 LOW findings (tracked).
+- **v1.5.3** — closes 3 of 4 LOW closeout findings (multi-iter bench,
+  prefix-clear hardening, URL-decode for `file://` URIs via cyim-lsp 1.2.1).
+- **v1.6.0** — VIM-style marks (`m<letter>` / `'<letter>`; per-buffer
+  a-z + global A-Z). First feature minor of the post-1.5.x cycle.
 
 Live state in [`docs/development/state.md`](docs/development/state.md);
 sequencing + deferred LSP polish in
@@ -83,6 +87,7 @@ cyim --probe                               # TTY round-trip diagnostic
 Daily-driver bindings (full reference: [`docs/guides/keymap.md`](docs/guides/keymap.md)):
 
 - `h j k l` motions; `0` / `$` line bounds; `w` / `b` words; `gg` / `G` file bounds
+- `m<letter>` set mark; `'<letter>` jump to mark (per-buffer a-z + global A-Z)
 - `i` / `a` / `A` enter INSERT; `Esc` exits; `x` deletes; `u` / `Ctrl-r` undo/redo; `.` repeat
 - `v` / `V` visual + `y` / `d` yank/delete
 - `/` / `?` search; `n` / `N` repeat; `*` / `#` word-search

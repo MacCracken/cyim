@@ -34,11 +34,12 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.5.3** (see [`state.md`](state.md)). The full LSP
-user-visible surface — diagnostics, `gd` goto-def (same-file +
-cross-file), `gr` references quickfix, `:lsp-*` ex-commands — is
-active via cyim-lsp 1.2.1. URL-encoded `file://` URIs (paths with
-spaces, non-ASCII, percent escapes) load correctly as of 1.5.3.
+cyim is at **1.6.0** (see [`state.md`](state.md)). VIM-style
+marks (`m<letter>` / `'<letter>`) shipped as the first feature
+minor of the post-1.5.x cycle. The full LSP user-visible surface
+remains active via cyim-lsp 1.2.1 (diagnostics, `gd` goto-def
+same-file + cross-file, `gr` references quickfix, `:lsp-*`
+ex-commands, URL-decoded `file://` paths).
 
 The 1.x plugin ABI freeze (1.3.6 / [ADR 0004](../adr/0004-plugin-abi-freeze.md))
 holds across all 1.4.x and 1.5.x extensions. Three additive
@@ -75,6 +76,7 @@ this is a sequencing index.
 | **v1.5.1** — cyim-lsp 1.2.0 pickup (refs quickfix activates) | Shipped 2026-05-07 |
 | **v1.5.2** — closeout audit (pre-1.6.0; all 11 steps PASS, 4 LOW findings tracked) | Shipped 2026-05-07 |
 | **v1.5.3** — closes 3 of 4 LOW closeout findings (F-CO-1 multi-iter bench, F-CO-3 prefix-clear, F-CO-4 URL-decode via cyim-lsp 1.2.1) | Shipped 2026-05-07 |
+| **v1.6.0** — VIM-style marks (`m<letter>` / `'<letter>`; per-buffer a-z + global A-Z) | Shipped 2026-05-07 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -131,7 +133,6 @@ not slated.
 | **Terminal emulator embed** | Third user asks for `:term` | Until then, `Ctrl-z` + shell is fine. |
 | **Macros** (`q<reg>` recording) | Recurring user need surfaces | Vim's macro DSL is a sequence-replay primitive, not a scripting language — fits the no-embedded-scripting refusal. |
 | **Folding** (`zM` / `zR` / `:foldenable`) | User asks while editing > 1 KLOC source | Range-marked spans + render skip; structural folds (function / block) require a vyakarana-style structural marker pass. |
-| **Marks** (`m<a-z>` / `'<a-z>`) | User asks (vim users miss this within ~2 days typically) | Per-buffer + global; small storage; mostly a keymap + lookup table. |
 | **`:make` / `:cnext` quickfix flow** | User asks | Native compiler-driven flow is what `gr` already prototypes. `:make` runs an external compiler, captures stderr, parses error format, populates the same `plugin_list_display` machinery. Consumer-side patch (no cyim ABI change). |
 | **Plugin system beyond sandhi** | Probably never | Refusal §0 — the sandhi pattern (vendored bundle + cyim-side glue) is already "the plugin system". Nothing beyond it earns its keep. |
 
@@ -176,6 +177,8 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-05-07 (v1.5.3 — 3 of 4 closeout LOWs
-closed. Roadmap reflects the closures; remaining 1.5.x deferred
-polish items are carry-over candidates. 1.6.0 may now open.)*
+*Last updated: 2026-05-07 (v1.6.0 — VIM-style marks shipped.
+Marks row removed from demand-gated table; remaining 1.5.x
+deferred polish items are carry-over candidates for 1.6.x
+patches. Next minor's theme is open — macros, folding, or
+something else demand-gated.)*

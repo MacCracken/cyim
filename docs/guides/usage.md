@@ -277,6 +277,10 @@ $             jump to end of line
 w b           next / previous word (whitespace + class boundaries)
 gg            first line, col 0  (two-byte sequence — g latches the prefix)
 G             last line, col 0
+m<a-z>        set per-buffer mark
+m<A-Z>        set global mark (cross-buffer)
+'<a-z>        jump to per-buffer mark
+'<A-Z>        jump to global mark (switches buffer if needed)
 x             delete byte under cursor
 i             enter INSERT at cursor
 a             enter INSERT one byte right of cursor
@@ -400,6 +404,43 @@ shown in reverse video.
 `:e <path>` on a dirty buffer is *not* refused — instead, the previous
 buffer is preserved in the registry (you can come back via `:b N`). The
 new buffer becomes active.
+
+---
+
+## Marks
+
+VIM-style marks landed at v1.6.0. Two namespaces:
+
+```
+m<a-z>    set per-buffer mark <a-z> at cursor
+m<A-Z>    set global mark <A-Z> at cursor (cross-buffer)
+'<a-z>    jump cursor to per-buffer mark <a-z>
+'<A-Z>    jump to global mark <A-Z> (switches buffer if needed)
+```
+
+**Per-buffer marks** stay with their buffer. `ma` in `foo.cyr`
+and `ma` in `bar.cyr` are independent slots; switching between
+the buffers preserves both.
+
+**Global marks** record both the buffer + offset. `'A` from any
+buffer jumps to wherever `mA` was last set (and switches buffer
+if the mark lives elsewhere).
+
+```
+ma                 # in foo.cyr at line 42
+:e bar.cyr         # switch buffers
+mA                 # in bar.cyr at line 7 — global mark A
+'a                 # no-op in bar.cyr — buffer-local 'a' isn't set here
+:e foo.cyr         # back to foo
+'a                 # jumps to line 42
+'A                 # jumps to bar.cyr line 7 (switches buffer)
+```
+
+`m` / `'` followed by anything other than a letter (digits,
+punctuation) is silently swallowed. Unset marks are no-ops on
+jump. `:marks` listing not in 1.6.0; see
+[`docs/development/roadmap.md`](../development/roadmap.md) for
+deferred mark items.
 
 ---
 

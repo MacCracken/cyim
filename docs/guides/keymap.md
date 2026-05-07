@@ -109,6 +109,44 @@ in (cyim 1.4.0+, default with the `[deps.cyim-lsp]` block in
 respectively; the prefix-keymap is the muscle-memory surface, the
 ex-commands are the typed-out form.
 
+### Marks (v1.6.0)
+
+Two new prefixes join the family at v1.6.0: `m` (set mark) and
+`'` (jump to mark). VIM's mark grammar with one simplification —
+cyim's `'<letter>` lands at the exact recorded byte offset
+(cyim is byte-oriented; vim's `'<letter>` line vs. `` `<letter> ``
+column distinction collapses).
+
+| Sequence | Bytes | Action |
+|----------|-------|--------|
+| `m<a-z>` | 109, 97-122 | Set per-buffer mark `<a-z>` at cursor |
+| `m<A-Z>` | 109, 65-90  | Set global mark `<A-Z>` at cursor (cross-buffer) |
+| `'<a-z>` | 39, 97-122  | Jump cursor to per-buffer mark `<a-z>` |
+| `'<A-Z>` | 39, 65-90   | Jump to global mark — switches buffer if needed |
+
+`m`/`'` followed by anything else (digits, punctuation, etc.)
+is silently swallowed and the prefix clears. Marks not yet set
+are no-ops on jump.
+
+**Per-buffer marks** are isolated per buffer — setting `ma` in
+buffer A doesn't affect buffer B. Up to 26 per-buffer marks per
+buffer.
+
+**Global marks** record both the buffer identity and offset.
+Jumping to a global mark switches the active buffer (via
+`bl_set_active`) before moving the cursor. Up to 26 global
+marks shared across all buffers.
+
+Mark offsets are clamped to `buf_len(b)` on jump — defensive
+against post-delete drift (cyim 1.6.0 doesn't yet adjust marks
+across edits; if you set a mark at offset 100 and then delete
+50 bytes earlier in the buffer, the mark still points at 100,
+which now corresponds to a different position. Edit-tracking is
+queued for a future 1.6.x patch).
+
+No persistence (vim's `viminfo`) — marks live for the cyim
+session.
+
 ### LSP ex-commands
 
 Registered by [cyim-lsp](https://github.com/MacCracken/cyim-lsp)'s

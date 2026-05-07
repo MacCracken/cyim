@@ -107,6 +107,8 @@ var KEY_DEL       = 127;
 var KEY_CTRL_W    = 23;
 var KEY_CTRL_R    = 18;
 var KEY_G         = 103;   # v1.4.2 — prefix for `gg` + plugin normal_prefix_key
+var KEY_M         = 109;   # v1.6.0 — prefix for `m<letter>` (set mark)
+var KEY_QUOTE     = 39;    # v1.6.0 — prefix for `'<letter>` (jump to mark)
 
 # ──── Error codes (set into state.last_error)
 var ERR_NONE            = 0;
@@ -339,6 +341,80 @@ fn editor_dispatch(s, key) {
             return ACT_NONE;
         }
 
+        # v1.6.0 — m-prefix: set mark.
+        # `m<a-z>` sets a per-buffer mark at the cursor.
+        # `m<A-Z>` sets a global mark (cross-buffer).
+        # Any other follow-up byte is a no-op (silent).
+        if (prev_prefix == KEY_M) {
+            var b_m = editor_buf(s);
+            if (b_m != 0) {
+                if (key >= 97) {
+                    if (key <= 122) {   # 'a'-'z'
+                        marks_set(b_m, key, buf_cursor(b_m));
+                    }
+                }
+                if (key >= 65) {
+                    if (key <= 90) {    # 'A'-'Z'
+                        marks_set_global(key, b_m, buf_cursor(b_m));
+                    }
+                }
+            }
+            return ACT_NONE;
+        }
+
+        # v1.6.0 — '-prefix: jump to mark.
+        # `'<a-z>` jumps to a per-buffer mark in the current buffer.
+        # `'<A-Z>` jumps to a global mark (may switch buffers).
+        # Any other follow-up byte is a no-op (silent). Mark offsets
+        # are clamped to buf_len defensively (post-delete drift safety).
+        if (prev_prefix == KEY_QUOTE) {
+            if (key >= 97) {
+                if (key <= 122) {   # 'a'-'z'
+                    var b_q = editor_buf(s);
+                    if (b_q != 0) {
+                        var off_q = marks_get(b_q, key);
+                        if (off_q >= 0) {
+                            var blen_q = buf_len(b_q);
+                            if (off_q > blen_q) { off_q = blen_q; }
+                            buf_move(b_q, off_q);
+                        }
+                    }
+                }
+            }
+            if (key >= 65) {
+                if (key <= 90) {    # 'A'-'Z'
+                    var rec_g = marks_get_global(key);
+                    if (rec_g != 0) {
+                        var target_b   = load64(rec_g);
+                        var target_off = load64(rec_g + 8);
+                        # Defense-in-depth: only proceed with a real
+                        # buffer pointer. marks_get_global already
+                        # filters buf_ptr == 0; this guards against
+                        # a stale pointer from a buffer that was
+                        # closed since the mark was set (cyim doesn't
+                        # currently implement :bd, but defensive).
+                        if (target_b != 0) {
+                            # If the mark's buffer isn't active, switch.
+                            if (target_b != editor_buf(s)) {
+                                var bl_idx = bl_find_by_buf(s, target_b);
+                                if (bl_idx >= 0) {
+                                    bl_set_active(s, bl_idx);
+                                    var leaf_g = editor_active_leaf(s);
+                                    if (leaf_g != 0) {
+                                        window_set_buf_idx(leaf_g, bl_idx);
+                                    }
+                                }
+                            }
+                            var blen_g = buf_len(target_b);
+                            if (target_off > blen_g) { target_off = blen_g; }
+                            buf_move(target_b, target_off);
+                        }
+                    }
+                }
+            }
+            return ACT_NONE;
+        }
+
         # Generic plugin lookup for any other registered prefix.
         var pfp = _plugin_lookup_normal_prefix_key(prev_prefix, key);
         if (pfp != 0) { return fncall1(pfp, s); }
@@ -352,6 +428,14 @@ fn editor_dispatch(s, key) {
         }
         if (key == KEY_G) {
             editor_set_prefix(s, KEY_G);
+            return ACT_NONE;
+        }
+        if (key == KEY_M) {
+            editor_set_prefix(s, KEY_M);
+            return ACT_NONE;
+        }
+        if (key == KEY_QUOTE) {
+            editor_set_prefix(s, KEY_QUOTE);
             return ACT_NONE;
         }
         var act = map_u64_get(load64(s + 16), key);
