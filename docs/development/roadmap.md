@@ -1,9 +1,9 @@
 # cyim — Roadmap
 
-A phased plan for building cyim from scaffold to a daily-driver modal
-text editor. Each milestone is independently shippable and adds a
-coherent layer. The goal is to have something a user can actually edit
-text with at the end of every phase past M1.
+A phased plan for building cyim from scaffold to a daily-driver
+modal text editor. **Current state lives in
+[`state.md`](state.md);** this file is the sequencing — what
+ships next, what's deferred, and what's refused.
 
 ---
 
@@ -20,300 +20,160 @@ text with at the end of every phase past M1.
   modal editor looks like designed today, in a sovereign language,
   without the carried legacy of `:set compatible` and 30-year `.vimrc`
   shapes.
-- **Two consumer classes, designed in parallel.** Humans drive cyim at
-  a TTY. AI agents (daimon-orchestrated, Claude-style assistants
+- **Two consumer classes, designed in parallel.** Humans drive cyim
+  at a TTY. AI agents (daimon-orchestrated, Claude-style assistants
   included) drive cyim programmatically. The modal grammar is the
   same; the I/O harness differs. Don't retrofit headless drive — the
   keymap dispatch is the API surface for both.
 - **Every milestone is dogfoodable.** From M1 onward, the user should
-  be able to open this very file in cyim and edit it. M0 is the only
-  exception — it just boots and exits.
-- **Defer what you can.** LSP, tree-sitter equivalents, plugin
-  systems, terminal emulator embedding, clipboards — all post-v1.0.
+  be able to open this very file in cyim and edit it.
+- **Defer what you can.** Clipboard, terminal embed, macros, anything
+  that doesn't earn its keep — gated on real demand.
 
 ---
 
-## Milestone 0 — Scaffold (this release, v0.1.0)
+## Status
 
-**Goal:** the repo exists, compiles, builds clean.
+cyim is at **1.5.2** (see [`state.md`](state.md)) — closeout
+audit just shipped. The full LSP user-visible surface —
+diagnostics, `gd` goto-def (same-file + cross-file), `gr`
+references quickfix, `:lsp-*` ex-commands — is active via
+cyim-lsp 1.2.0.
 
-- Project structure: `src/`, `tests/`, `docs/`, `lib/` (vendored stdlib)
-- `cyrius.cyml` with stdlib footprint chosen for the modal-editor arc
-  (`fs`, `hashmap`, `args`, `vec`, `string`, `str`, `io`, `fmt`)
-- `cyim --version`, `cyim --help` (stub)
-- CI builds, tests pass
-
-**Done when:** `cyrius build` succeeds and `./build/cyim` exits 0.
-
----
-
-## Milestone 1 — Modal core
-
-**Goal:** the editor works end-to-end on one buffer. Proves the runtime shape.
-
-- **Gap-buffer** primitive (`src/buffer.cyr`) — insert/delete/move-cursor
-- **Raw-mode TTY** (`src/tty.cyr`) — termios via syscalls, alternate screen, no curses dep
-- **Modal dispatch** (`src/mode.cyr`) — normal/insert/command tables in `hashmap`
-- Normal-mode motions: `h j k l w b 0 $ gg G`
-- Insert-mode: type to insert, `Esc` to exit
-- Command-mode: `:q` / `:q!` / `:w` / `:wq` / `:e <file>`
-- `cyim <file>` opens; `cyim` opens scratch
-- Coverage invariant: round-trip read → buffer → write is byte-identical
-
-**Done when:** you can edit `src/main.cyr` in cyim, save, and the
-diff is exactly your edits.
+The 1.x plugin ABI freeze (1.3.6 / [ADR 0004](../adr/0004-plugin-abi-freeze.md))
+holds across all 1.4.x and 1.5.x extensions. Three additive
+extensions (`plugin_register_normal_prefix_key`, `plugin_buf_load_file`
+in 1.4.2; `plugin_list_display` in 1.5.0) all landed under the
+"additions allowed" envelope.
 
 ---
 
-## Milestone 2 — Syntax highlighting via vyakarana
+## Closed Milestones
 
-**Goal:** color shows up. Proves the consumer relationship with vyakarana.
+Through-the-fingers list. CHANGELOG.md is the canonical record;
+this is a sequencing index.
 
-- Add `[deps.vyakarana]` to `cyrius.cyml`
-- `src/highlight.cyr` — call `tokenize_source(buf, lang)`, map kinds to
-  ANSI palette
-- Detect language from file extension (vyakarana already exposes this)
-- Configurable palette via `.cyimrc` (data, not code)
-- Repaint on edit — no incremental retokenize yet, full-buffer is fine
-  for M2
+| Phase | Status |
+|---|---|
+| **M0** — scaffold | Done |
+| **M1** — modal core (gap-buffer, raw-mode TTY, modal dispatch) | Done |
+| **M2** — syntax highlighting via vyakarana | Done |
+| **M3** — multi-buffer + splits + window navigation | Done |
+| **M4** — search, undo, visual, `.` repeat, `:set` + `.cyimrc` | Done |
+| **M5** — polish: docs, perf benchmarks, fuzz, receipts | Done |
+| **M6** — P(-1) hardening (cleanliness, refactor, dead-code) | Done |
+| **M7** — Security audit + 0-day corpus survey | Done (0 CRITICAL / 0 HIGH / 0 MEDIUM at v1.0) |
+| **v1.0** | Shipped 2026-04-25 |
+| **v1.0.x / v1.1.x** — agent-drive CLI surface | Shipped 2026-04-26+ (--write/--replace/--grep/--batch/--replace-files/--context/--regex flavors) |
+| **v1.2.x** — `--regex=ere` Pike NFA via cyrius stdlib | Shipped 2026-04-28 |
+| **v1.3.x** — niyama fold + 6 regex flavors + plugin ABI scaffold + freeze | Shipped 2026-05-06 (1.3.0 → 1.3.7 closeout) |
+| **v1.4.0** — first non-trivial external plugin folded in (cyim-lsp 1.0.2) | Shipped 2026-05-07 |
+| **v1.4.1** — cyim-lsp 1.0.3 env-passthrough fix + first `cyrius smoke` harness | Shipped 2026-05-07 |
+| **v1.4.2** — additive plugin ABIs (`plugin_register_normal_prefix_key`, `plugin_buf_load_file`) + `gg` motion wired | Shipped 2026-05-07 |
+| **v1.4.3** — cyim-lsp 1.1.0 pickup (gd/gr keymap + cross-file goto-def) | Shipped 2026-05-07 |
+| **v1.5.0** — `plugin_list_display` ABI (popup picker subsystem) | Shipped 2026-05-07 |
+| **v1.5.1** — cyim-lsp 1.2.0 pickup (refs quickfix activates) | Shipped 2026-05-07 |
+| **v1.5.2** — closeout audit (pre-1.6.0; all 11 steps PASS, 4 LOW findings tracked) | Shipped 2026-05-07 |
 
-**Done when:** opening `src/buffer.cyr` shows Cyrius highlighting
-matching vyakarana's reference output.
-
----
-
-## Milestone 3 — Multi-buffer & splits
-
-**Goal:** real editing day, not toy demo.
-
-- Buffer list (`:ls`, `:b <n>`, `:bn`, `:bp`)
-- Horizontal split (`:sp`), vertical split (`:vsp`)
-- Window navigation (`Ctrl-w h/j/k/l`)
-- `:e <file>` opens into current window
-- Status line per window (filename, modified flag, line/col)
-- Close-on-`:q` cascades correctly when last window closes
-
-**Done when:** you can hold three files open in two splits and
-navigate without losing state.
-
----
-
-## Milestone 4 — Search, undo, config
-
-**Goal:** the editor *feels* like vim under your fingers.
-
-- `/pattern` and `?pattern` search; `n`/`N` repeat; `*`/`#` word search
-- Undo tree (gap-buffer snapshots) — `u` undo, `Ctrl-r` redo
-- `.cyimrc` (CYML) — keymaps, palette, tab width, line numbers
-- Visual mode (`v`, `V`, `Ctrl-v`) + yank/paste registers (one register,
-  no system clipboard yet — that's post-v1.0)
-- Repeat (`.`)
-- `:set` for runtime toggles backed by the `.cyimrc` schema
-
-**Done when:** muscle memory from vim survives the switch for a full
-editing session.
+Verbose milestone descriptions for M0–M7 lived here in the v1.x
+era; trimmed at v1.5.x cycle cleanup. The full record is in
+CHANGELOG.md and the per-version state.md narrative.
 
 ---
 
-## Milestone 5 — Polish
+## v1.5.x Cycle — Deferred Polish (before 1.6.0)
 
-**Goal:** the editor stops surprising you. Edges smoothed, perf measured,
-fuzz catches the next class of bugs.
+The 1.4.x → 1.5.x arc lit up the full LSP user-visible surface.
+Two classes of items remain in the cycle before opening 1.6.0:
 
-- **Documentation pass**:
-  - `docs/usage.md` — getting started; day-1 vim user moving to cyim
-  - `docs/keymap.md` — full reference (NORMAL / INSERT / COMMAND /
-    SEARCH / VISUAL keymaps; Ctrl-w prefix; `:` ex-style commands)
-  - `docs/cyimrc.md` — config schema; every `:set` option; palette
-    overrides; bundled-grammar list
-  - `docs/architecture/` ADRs as earned during the loop
-- **Performance pass**:
-  - Large-file fixtures: 1 MB / 10 MB / 100 MB
-  - Open + load + render-frame cost (per-leaf retokenize is the obvious
-    M5 hot-path candidate; M2 left a "deferred until perf surfaces"
-    note specifically here)
-  - Search latency on 100 MB
-  - Track in `BENCHMARKS.md`; numbers vs. claims in CHANGELOG
-- **Stability pass**:
-  - Fuzz the tokenizer → highlighter pipeline (random bytes; vyakarana
-    already ships fuzz infra to borrow against)
-  - Fuzz the gap-buffer (random `insert`/`delete`/`move` sequences)
-  - Fuzz the `editor_step` driver (random keystroke sequences against
-    random fixtures — exercises the dispatch / undo / dot interactions)
-- **Receipts**: lines-of-code, binary size, .tcyr assertion count,
-  PTY-smoke check count, all vs. `vim`/`neovim` baselines
+1. **Deferred LSP polish** — items deferred during the 1.4.x /
+   1.5.x feature work because they were below the activation
+   bar. None are load-bearing.
+2. **Closeout findings** — surfaced by the
+   [2026-05-07 closeout audit](../audit/2026-05-07-1.5x-closeout.md)
+   (shipped as v1.5.2). All LOW; all patch-sized.
 
-**Done when:** docs read end-to-end, benchmarks land in `BENCHMARKS.md`,
-fuzz harnesses run clean for a sustained run.
+All items below are patch-sized; each lands independently when
+its corner case surfaces or someone picks it up. None block
+1.6.0 if the user explicitly defers — but the cycle stays
+"open" until they're addressed or accepted as carry-overs.
 
-> **Consumer integration** (`agnoshi`, `aethersafha`) is owner-driven
-> from the consumer side and tracked in those projects — when each
-> consumer is ready to embed cyim, that work happens there, not here.
+### Deferred LSP polish
 
----
+| Item | Trigger | Scope |
+|---|---|---|
+| **URL-decoded `file://` URIs** ⚠ overlaps with closeout F-CO-4 | Path with spaces / non-ASCII / percent-encoded bytes appears in a goto-def or refs response | Add a `_cyim_lsp_uri_decode(uri)` helper to the consumer glue (cyim-side AND cyim-lsp's reference). Patch in both repos. Today the dest-path is a direct byte-7 slice. Cyim 1.5.x patch + cyim-lsp 1.2.x patch. |
+| **Reference previews** | User asks for "what's at this reference" without jumping | Append a source-line snippet to each `_cyim_lsp_label_for_ref` cstring. Requires fetching the line from disk (or buf if open) and truncating to popup width. Cyim-lsp 1.2.x patch (no cyim ABI change needed). |
+| **Open-in-split** | User wants to keep current buffer visible while jumping | New plugin ABI `plugin_buf_load_file_split(s, path, direction)` (additive); consumer passes a "split" hint to on_select. Cyim 1.5.x patch (additive ABI) + cyim-lsp 1.2.x or 1.3.0 patch. |
+| **Arrow keys in list mode** | A user complains that j/k feels off | Wire up arrow handling in `editor_feed`'s CSI parser to route to `_plugin_list_next` / `_plugin_list_prev` when `_plugin_list_active`. Driver-side change in cyim. Cyim 1.5.x patch. |
 
-## Milestone 6 — P(-1) Hardening
+### Closeout findings (from v1.5.2 audit)
 
-**Goal:** internal review pass before going public — per CLAUDE.md's
-P(-1) discipline, applied to the whole codebase now that the editor is
-feature-complete.
+All LOW per the audit's severity triage. Tracked here so
+"closeout shipped" doesn't mean "findings forgotten."
 
-- **Cleanliness gate**: `cyrius build`, `cyrius lint`, `cyrius audit`
-  all clean on every source file
-- **Internal deep review** — gaps, optimizations, correctness, docs;
-  walk every module end-to-end with a fresh head
-- **Performance deltas vs. M5 baseline** — prove the wins from any
-  M6 changes against the M5 numbers, or accept the cost in writing
-- **Refactor pass** — consolidate parallel codepaths that accreted
-  through M1–M4 (e.g. the per-mode dispatch arms in `editor_dispatch`,
-  the duplicated cmdline-prefix render arms in `render.cyr`)
-- **Dead code audit** — record the floor in CHANGELOG; remove
-  unreferenced helpers
-- **Additional tests / benchmarks** from review findings
-- **Documentation audit** — ADRs for decisions made during the
-  hardening loop; source citations for any non-obvious algorithm or
-  reference; user-facing guides updated
+| ID | Class | Description | Action |
+|---|---|---|---|
+| **F-CO-1** | perf | `render_build_line_80c × 1000` measured 252 μs at 1.5.1 vs. 214 μs historical baseline (+18%). Render layer hasn't changed since 1.5.0 and the 1.5.0 → 1.5.1 delta in `render.cyr` is zero — likely 1-iter sampling noise. | Re-run `cyrius bench` with multi-iter sampling (the bench harness supports it) and update [`BENCHMARKS.md`](../../BENCHMARKS.md) with the multi-iter result. If the regression persists, bisect the render path. Cyim 1.5.x patch. |
+| **F-CO-2** | refactor | "Load uri + jump to lc" pattern is duplicated between `_cyim_lsp_ex_goto_def` cross-file branch (1.4.3) and `_cyim_lsp_on_ref_select` (1.5.1). Two instances; identical modulo error message. | Per cyim's "wait for the third instance" rule, **do not extract yet**. Action: when cyim-lsp grows `:lsp-implementation` or `:lsp-type-definition`, extract `_cyim_lsp_jump_to_uri_lc(s, uri, line, char, err_msg)` then. **Informational; not blocking 1.6.0.** |
+| **F-CO-3** | defense-in-depth | If a user types `g` (latches `KEY_G` prefix) and a plugin synchronously calls `plugin_list_display` before the next keystroke, the prefix stays latched while the picker is active. On dismiss, the next NORMAL key still sees the prefix. | Unreachable today (the only `plugin_list_display` call site is `:lsp-find-refs` / `gr` ex-command paths, which complete dispatch before yielding). Future hardening: clear `editor_set_prefix(s, 0)` on `plugin_list_display` entry. Patch-sized. Cyim 1.5.x patch. |
+| **F-CO-4** | UX | URL-encoded `file://` URIs are not percent-decoded (same item as the deferred LSP polish row above). Files with spaces / non-ASCII paths fail to load via cross-file goto-def or refs quickfix. | See the deferred-polish row. Single patch addresses both. |
 
-**Done when:** the internal review notebook is empty; perf is justified
-or improved; refactor pass produces zero behavior change.
+Note: F-CO-4 dedups with the URL-decode row in deferred polish —
+shipping that one patch closes both. F-CO-2 is informational
+(no action until 3rd consumer); the actionable closeout findings
+are F-CO-1, F-CO-3, F-CO-4.
+
+### Closeout Pass — ✅ shipped 2026-05-07 as v1.5.2
+
+[Audit doc](../audit/2026-05-07-1.5x-closeout.md). Pure
+verification cut; no runtime code changes (binary byte-identical
+to 1.5.1 modulo the regenerated `_VERSION_STR_CYIM`). All 11
+CLAUDE.md closeout steps PASS. 0 CRITICAL / 0 HIGH / 0 MEDIUM /
+4 LOW (tracked above).
 
 ---
 
-## Milestone 7 — Security Audit
+## Post-1.5.x — Demand-Gated
 
-**Goal:** external CVE corpus review + security findings filed.
-The "external research around 0-days and CVEs" half of P(-1), elevated
-to its own milestone because the editor's threat model deserves a
-dedicated drill.
+Truly-future work. Each is gated on a real trigger; deliberately
+not slated.
 
-- **External research**:
-  - vim CVE history — modeline RCE, escape-sequence injection, regex
-    catastrophic backtracking, integer overflow in Ex-mode
-  - neovim CVE history — Lua sandbox escapes (N/A for cyim by design,
-    but instructive for the no-embedded-scripting refusal)
-  - terminal-app CVE patterns — escape-sequence handling, large-input
-    DoS, paste-as-command attacks
-  - File the corpus survey in `docs/security/0day-corpus-YYYY-MM-DD.md`
-- **Security audit** per CLAUDE.md's security-hardening checklist:
-  1. **Input validation** — file content, key escape sequences, command-
-     mode input all bounds-checked
-  2. **Buffer safety** — every `var buf[N]` verified; gap-buffer bounds
-     tested at edges; no memory-corrupting overruns
-  3. **Syscall review** — termios, read/write, fs syscalls all checked:
-     args, return values, error paths
-  4. **Pointer validation** — no raw pointer dereference of untrusted
-     input without bounds
-  5. **No command injection** — no `:!cmd` shipped (still); confirm
-     `exec_vec()` if it ever lands; never `sys_system()` with
-     unsanitized input
-  6. **No path traversal** — `:e <path>` validates if a restricted-
-     mode lands; document the assumed trust model
-  7. **Document findings** in `docs/audit/YYYY-MM-DD-audit.md` with
-     severity (CRITICAL / HIGH / MEDIUM / LOW)
-  8. **Triage**: CRITICAL / HIGH MUST be fixed before v1.0; MEDIUM /
-     LOW tracked with explicit rationale
-
-**Done when:** audit report filed; all CRITICAL / HIGH findings closed;
-the 0-day corpus survey is checked in and referenced from CHANGELOG.
-
----
-
-## Milestone v1.0 — Release ✅ *Done — 2026-04-25*
-
-**Goal:** ship.
-
-- ✅ `VERSION` = `1.0.0`
-- ✅ All M0–M7 work landed, audited, documented
-- ✅ CHANGELOG header in sync; closeout pass per CLAUDE.md run end-to-end
-- ✅ DCE binary 274,656 B; 847 .tcyr assertions; 14 PTY E2E; 3 fuzz; 9 benches; all green from a fresh `rm -rf build && cyrius deps && cyrius build`
-- ✅ Security audit: 0 CRITICAL / 0 HIGH / 0 MEDIUM at v1.0
-- Tag + release notes pushed; downstream consumers (`agnoshi`,
-  `aethersafha`, `daimon`-orchestrated agents) take over from here
+| Feature | Trigger | Notes |
+|---|---|---|
+| **System clipboard** | Wayland integration via `aethersafha` | Belongs in compositor layer, not editor. cyim's yank/paste single-register stays the in-editor primitive. |
+| **Terminal emulator embed** | Third user asks for `:term` | Until then, `Ctrl-z` + shell is fine. |
+| **Macros** (`q<reg>` recording) | Recurring user need surfaces | Vim's macro DSL is a sequence-replay primitive, not a scripting language — fits the no-embedded-scripting refusal. |
+| **Folding** (`zM` / `zR` / `:foldenable`) | User asks while editing > 1 KLOC source | Range-marked spans + render skip; structural folds (function / block) require a vyakarana-style structural marker pass. |
+| **Marks** (`m<a-z>` / `'<a-z>`) | User asks (vim users miss this within ~2 days typically) | Per-buffer + global; small storage; mostly a keymap + lookup table. |
+| **`:make` / `:cnext` quickfix flow** | User asks | Native compiler-driven flow is what `gr` already prototypes. `:make` runs an external compiler, captures stderr, parses error format, populates the same `plugin_list_display` machinery. Consumer-side patch (no cyim ABI change). |
+| **Plugin system beyond sandhi** | Probably never | Refusal §0 — the sandhi pattern (vendored bundle + cyim-side glue) is already "the plugin system". Nothing beyond it earns its keep. |
 
 ---
 
 ## Closed Bugs
 
-### BUG-001 — `cyim --replace` fixed-size `<new>` arg buffer (4064 B) — **CLOSED in v1.3.3 (2026-05-06)**
+### BUG-001 — `cyim --replace` 4 KB `<new>` arg cap (CLOSED v1.3.3, 2026-05-06)
 
-**Resolution lineage:**
-- 2026-04-25 — Discovered + bisected during cyrius v5.7.5 P4.3a
-  refactor (splicing a ~13 KB `TS_LEX_JSX` block via `cyim
-  --replace`). Threshold pinned at the 4063 / 4064 byte boundary.
-- 2026-04-26 — cyim v1.0.2 ships the `_cli_args_reload_big()`
-  workaround: re-reads `/proc/self/cmdline` into a 2 MB heap
-  buffer at startup, rebinds `lib/args.cyr`'s `_args_base` /
-  `_args_len` globals.
-- 2026-05-06 — Filed upstream as
-  [`docs/development/issues/archive/2026-05-06-cyrius-args-init-4kb-cap.md`](issues/archive/2026-05-06-cyrius-args-init-4kb-cap.md).
-  Same day, **upstream fix landed in cyrius 5.9.5** —
-  `lib/args.cyr` switched to a heap-backed 2 MB buffer
-  (`alloc(2097152)`) matching Linux `ARG_MAX`. The new
-  `args_init()` includes a comment block referencing the issue
-  file by name.
-- 2026-05-06 — cyim v1.3.3 bumps the cyrius pin 5.9.2 → 5.9.13
-  (picks up the fix), retires `_cli_args_reload_big()` from
-  `src/cli.cyr` and the call site in `src/main.cyr`. Verified
-  with the workaround removed: 4063 B / 8192 B / 65536 B
-  `<new>` args all succeed against the bare `args_init()`.
-
-**Severity (was):** P1 (silent failure on a scriptable surface).
-The "usage" message implied "wrong number of args" rather than
-"`<new>` exceeded an internal cap" — exactly the failure mode
-that breaks agent-driven pipelines without surfacing root cause.
-
-**Threshold (bisected 2026-04-25; for posterity):**
-
-| `<new>` size | pre-fix exit | stderr            | post-fix exit |
-|--------------|--------------|-------------------|---------------|
-| 4063 B       | 0            | (clean)           | 0             |
-| 4064 B       | 2            | `usage: ...`      | 0             |
-
-`4064 = 4096 − 32` → consistent with the pre-fix `var buf[4096]`
-stack allocation reserving ~32 B for null-terminator overhead.
-
-**Regression guard:** `tests/integration_smoke.py` retains the
-BUG-001 row — exercises `cyim --replace` with a >4064 B `<new>`
-arg against the bare `args_init()`. Stays in place against future
-toolchain bumps.
-
----
-
-## v1.0.x / v1.1.x — Shipped
-
-| Version | Date | Scope |
-|---------|------|-------|
-| **v1.0.1** | 2026-04-25 | Agent-drive CLI surface in-binary: `--headless`, `--write`, `--replace`, `--replace-all` (`src/cli.cyr` lands). |
-| **v1.0.2** | 2026-04-26 | `--wc[=l|=long]` modifier on agent-drive ops + BUG-001 fix (cyrius `args_init` 4 KB stack-buffer truncation, worked around with a 2 MB heap re-read of `/proc/self/cmdline`). |
-| **v1.1.0** | 2026-04-26 | Structural-invariant primitives: `cyim --grep <pattern> <file>` (read-only line scan, `FILE:N:LINE` per `grep -n`); `--expect=<pat>` / `--expect-not=<pat>` modifiers on `--write` (post-save shape assertion, exit 6); `--expect-N=<n>` / `--expect-1` modifiers on `--replace[-all]` (pre-substitution count assertion, exit 6). Closes the "tool boundary jump" — agent-driven flows assert shape and count without leaving the binary. |
-| **v1.1.1** | 2026-04-26 | Agent-drive CLI flag-parser fix: modifiers parse in any position after the verb, including interleaved with or after positionals. |
-| **v1.1.2** | 2026-04-26 | `--batch` agent-drive verb (NUL-separated multi-pair stdin substitutions, atomic). Cyrius pin 5.7.1 → 5.7.7. |
-| **v1.1.3** | 2026-04-26 | Agent-drive paper cuts: duplicate modifier flags refused with exit 2 across all four verbs (was: silent last-wins); `--grep` `--help` clarifies "literal substring, not regex". |
-| **v1.1.4** | 2026-04-27 | Grep-surface expansion (split out of regex bundle, ahead of upstream-gated regex piece) + dogfood-driven file-source replace: `cyim --grepfiles <pattern> <file...>` (multi-file grep, `FILE:N:LINE` shape, exit 0/1/2/3 per `grep` convention); `--context=<n>` modifier on `--grep`/`--grepfiles` (`grep -C N` shape, overlap-merge, `--` between non-adjacent groups and between files); `cyim --replace-files OLD_FILE NEW_FILE FILE` and `--replace-files-all` (OLD/NEW from file contents instead of argv — closes shell-escape friction surfaced in the v1.1.4 dogfood loop when splicing multi-line edits via `--batch`). Cyrius pin 5.7.7 → 5.7.13 (5.7.13 ships `lib/regex.cyr` as glob-only, *not* the planned NFA ABI — `--regex=<flavor>` stays gated, escalated to hard pre-cyrius-5.7.x-EOL target). |
-
----
-
-## Post-v1.0 — Demand-Gated
-
-| Feature | Trigger | Notes |
-|---------|---------|-------|
-| **Headless / agent-drive mode** | daimon agent first calls cyim non-interactively | *Shipped in v1.0.1.* Same keymap dispatch, no TTY harness. |
-| **Agent-drive ergonomics** | Workflow surfaces a missing primitive | *Shipped iteratively:* `--write`/`--replace`/`--replace-all` (1.0.1), `--wc` + BUG-001 (1.0.2), `--grep` + `--expect[-not]` + `--expect-N` (1.1.0), interspersed-modifier parser (1.1.1), `--batch` (1.1.2), duplicate-flag refusal (1.1.3), `--grepfiles` + `--context=N` + `--replace-files[-all]` (1.1.4). Continue per-need. |
-| **`--regex=<flavor>` modifier on grep/replace verbs** | *Shipped: v1.2.0 (ere), v1.3.0 (bre/re2/pcre/vim), v1.3.1 (fuzzy with plen-approximation), v1.3.2 (fuzzy precision + `--fuzzy-edits=<n>`).* All six niyama flavors live across all six pattern verbs. Backreferences (`\1`-style) still deferred per niyama's long-term security-against-misuse plan. Surfaced in `cyim --help`. | v1.3.2 tightened fuzzy substitute span via post-match candidate-length walk scored by `niyama_fuzzy_distance` (tie-break smallest L → newline preservation on deletion edits). Added `--fuzzy-edits=<n>` modifier on all six pattern verbs; encoding stores k+1 in `RegexOpts +8` so `k=0` (exact-fuzzy) is distinguishable from "user didn't set". Backref support added when surface demand shows. |
-| **System clipboard** | Wayland integration via `aethersafha` | Belongs in compositor layer, not editor |
-| **LSP client** | *Scaffolded 2026-05-06 as `MacCracken/cyim-lsp` v0.1.0 (sandhi pattern). cyim 1.4.0 picks up the `[plugins.cyim-lsp]` entry once the v0.2.0 LSP behaviour lands.* `cyrius-lsp` server is stable in the cyrius toolchain (`programs/cyrius-lsp.cyr`; JSON-RPC 2.0 over stdin/stdout). cyim-lsp v0.1.0 ships the plugin's structure + dist concatenation order with no-op hook stubs; v0.2.0+ fills in subprocess spawn, JSON-RPC framing, diagnostic rendering, keymap for `gd` / `gr`. The `cyrius-plugins` marketplace at `MacCracken/cyrius-plugins` packages cyrius-lsp for **Claude Code's** LSP wiring — separate consumer; cyim's LSP client (this row) is its own plugin. | Two-repo work (cyim + cyim-lsp). v1.3.7 closeout pass lands first as the final pre-fold cut; v1.4.0 picks up the cyim-lsp plugin once v0.2.0 is ready. |
-| **Terminal emulator embed** | Third user asks for `:term` | Until then, `Ctrl-z` + shell is fine |
-| **Macros** | Recurring need surfaces | `q<reg>` recording; not v1.0 scope |
-| **Plugin system** | Probably never | Refusal §0 — if cyim needs to do X, cyim should do X |
+cyrius `args_init`'s 4 KB stack-buffer truncated `<new>`
+arguments at the 4063 / 4064 byte boundary, breaking
+agent-driven `--replace` pipelines that spliced large blocks.
+Worked around in v1.0.2 with `_cli_args_reload_big()` (2 MB
+heap re-read of `/proc/self/cmdline`). **Upstream fix landed in
+cyrius 5.9.5** (heap-backed 2 MB args buffer matching Linux
+`ARG_MAX`); v1.3.3 retired the workaround. Issue archive:
+[`issues/archive/2026-05-06-cyrius-args-init-4kb-cap.md`](issues/archive/2026-05-06-cyrius-args-init-4kb-cap.md).
+Regression guard: `tests/integration_smoke.py` retains the
+BUG-001 row.
 
 ---
 
 ## Non-Goals
 
-- **No Vimscript / Lua / Python / any embedded scripting.** This is
-  the load-bearing constraint of the project. If a feature requires a
-  language to express, the feature gets data syntax or doesn't ship.
-- **No `:set compatible`.** We are not a vim clone. We are a modal
+- **No Vimscript / Lua / Python / any embedded scripting.** Load-
+  bearing constraint. If a feature requires a language to express,
+  the feature gets data syntax or doesn't ship.
+- **No `:set compatible`.** This is not a vim clone. It is a modal
   editor in the lineage.
 - **No GUI.** cyim is a TTY editor. The compositor (`aethersafha`)
   hosts a terminal; the editor is in the terminal.
@@ -325,9 +185,12 @@ toolchain bumps.
 
 ## Naming
 
-`cy` (Cyrius) + `im` (the lineage `vi → vim → nvim → cyim`). A name
-in the tradition, written in the language of the library.
+`cy` (Cyrius) + `im` (the lineage `vi → vim → nvim → cyim`). A
+name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-05-06 (v1.3.7 shipped: closeout pass before v1.4.0. All 11 CLAUDE.md closeout steps passed; dead-code floor recorded (24 cyim-source functions: 7 intentional plugin ABI public surface, 17 legacy helpers); no source changes; binary byte-identical to v1.3.6. cyim-lsp v0.1.0 scaffolded as sibling repo (sandhi pattern). v1.4.0 picks up cyim-lsp v0.5.0 once publishDiagnostics behaviour ships per cyim-lsp's roadmap.).*
+*Last updated: 2026-05-07 (v1.5.2 — closeout pass shipped.
+Roadmap rewrite: closed-milestones trimmed; deferred LSP polish
++ closeout findings organized as v1.5.x cycle items before
+1.6.0; demand-gated table refreshed.)*

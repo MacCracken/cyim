@@ -107,11 +107,10 @@ fn plugin_init() {
 }
 
 # === Registration API (called by plugins, typically at top-level
-# init time inside the plugin's own setup function which a plugin
-# author wires from a dedicated cyim-side init hook in v1.4.0+).
-# For v1.3.4 we expose the registration API and exercise it from
-# tests; production plugin-init wiring lands when a real plugin
-# arrives. ===
+# init time inside the plugin's own `<plugin>_init()` setup
+# function which is wired from cyim's main(). Production
+# consumers since v1.4.0: trailing_ws (inline), cyim-lsp (sandhi-
+# pattern external bundle). ===
 
 fn plugin_register_post_save_hook(fp) {
     if (_plugin_post_save_hooks == 0) { return 0 - 1; }
@@ -392,10 +391,11 @@ fn diag_msg(d)      { return load64(d + 16); }
 
 # Called once per render frame from render_frame. Allocates a fresh
 # diag vec, walks every registered provider, stashes the result for
-# inspection. v1.3.5 doesn't paint diags inline yet — that lands when
-# cyim-lsp at v1.4.0 needs the visual surface; until then, status_segment
-# hooks (e.g. trailing_ws's "TWS:N") show counts via the human-readable
-# path and tests read `plugin_last_diags()` for assertions.
+# inspection. Inline diag painting is provider-specific: cyim-lsp's
+# diagnostic_provider feeds publishDiagnostics tuples here; render
+# layer surfaces them (gutter glyphs, inline marks, status counts
+# via the parallel status_segment hook). Tests read
+# `plugin_last_diags()` for assertions on the per-frame collection.
 fn _plugin_render_collect_diagnostics(s) {
     var v = vec_new();
     var b = editor_buf(s);

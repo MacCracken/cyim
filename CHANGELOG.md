@@ -4,6 +4,103 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.2] — 2026-05-07
+
+**Closeout cut for the 1.5.x cycle. Pure verification — no
+runtime behaviour changes.**
+
+Per cyim's CLAUDE.md "Closeout Pass" policy ("Run a closeout
+pass before tagging X.Y.0 or X.0.0. Ship as the last patch of
+the current minor"). All 11 audit steps walked end-to-end;
+findings filed in
+[`docs/audit/2026-05-07-1.5x-closeout.md`](docs/audit/2026-05-07-1.5x-closeout.md).
+
+### Closeout audit summary
+
+All 11 CLAUDE.md closeout steps PASS:
+
+1. **Full clean test + fuzz + smoke** — `rm -rf build && cyrius
+   deps && cyrius build` clean; `cyrius test` 20 suites, ~973
+   assertions across the tcyr suite (plugin.tcyr 33 → 85 across
+   the 1.x cycle; +52 from 1.4.2 / 1.4.3 / 1.5.0 / 1.5.1);
+   `cyrius fuzz` 3 PASS; `cyrius smoke` 1 PASS
+   (`tests/smcyr/lsp_fold.smcyr`); `cyrius lint` 0 warnings on
+   touched files.
+2. **Benchmark baseline** — within noise of historical
+   [`BENCHMARKS.md`](BENCHMARKS.md). One sub-finding (F-CO-1)
+   re render_build_line; tracked.
+3. **Dead-code audit** — 359 dead symbols. All expected
+   (frozen ABI surface per ADR 0004 + DCE-stripped stdlib). 0
+   cyim-source true-dead.
+4. **Refactor pass** — F-CO-2 flagged: "load uri + jump to lc"
+   pattern at 2 instances; defer extraction until 3rd consumer
+   per cyim's wait-for-third rule.
+5. **Code review pass** — walked 1.4.0..1.5.1 diff
+   end-to-end. F-CO-3 flagged (defense-in-depth: prefix-clear
+   on `plugin_list_display`). No missed guards / off-by-ones /
+   silently-ignored errors.
+6. **Cleanup sweep** — 2 stale comments updated in
+   `src/plugin.cyr` (referenced pre-1.4.0 state). No orphaned
+   files; no unused includes.
+7. **Security re-scan** — 0 sys_system uses; all new `var
+   buf[N]` bounded; no unchecked syscalls. F-CO-4 flagged:
+   URL-decode for `file://` URIs (UX, not security).
+8. **Downstream check** — cyim-lsp 1.2.0 folds cleanly. Smoke
+   confirms protocol path works against a real `cyrius-lsp`.
+9. **Doc sync** — CHANGELOG, state.md, roadmap (rewritten this
+   pass), ADR 0004 (1.4.2 + 1.5.0 amendments) all in sync.
+10. **Version verify** — VERSION / cyrius.cyml / version_str /
+    CHANGELOG header / git tag / `--version` all align.
+11. **Full clean build** — OK from `rm -rf build`.
+
+### Severity summary
+
+| Severity | Count |
+|---|---|
+| CRITICAL | 0 |
+| HIGH | 0 |
+| MEDIUM | 0 |
+| LOW | 4 (F-CO-1, F-CO-2, F-CO-3, F-CO-4) |
+
+All 4 LOW findings are tracked in
+[`docs/development/roadmap.md`](docs/development/roadmap.md)'s
+1.5.x cycle as patch-sized items to address before 1.6.0.
+
+### Documentation
+
+- **`docs/development/roadmap.md`** — rewritten this pass:
+  closed-milestones list trimmed (M0–M7 + v1.0–v1.4 verbose
+  descriptions removed); deferred LSP work organized into a
+  v1.5.x cycle section; closeout findings tracked as 1.5.x
+  patch items; demand-gated table refreshed (clipboard /
+  terminal / macros / folding / marks / `:make` / plugin-system
+  refusal).
+- **`docs/audit/2026-05-07-1.5x-closeout.md`** — new audit doc.
+  All 11 closeout steps documented end-to-end; findings logged;
+  severity triage (0 CRITICAL / 0 HIGH / 0 MEDIUM / 4 LOW).
+- **`src/plugin.cyr`** — two stale comment blocks updated to
+  reflect 1.4.0+ reality (production wiring active via
+  cyim-lsp + trailing_ws; render layer paints diags).
+
+### Verification
+
+- `cyrius build` (DCE) — OK; binary 956,368 B (byte-identical
+  to v1.5.1 modulo `_VERSION_STR_CYIM` — pure verification cut,
+  no runtime code changes; comment edits don't affect codegen).
+- `cyrius test` — 20 suites all PASS, no regressions.
+- `cyrius fuzz` — 3 PASS.
+- `cyrius smoke` — 1 PASS.
+- `cyrius bench` — runs clean.
+- `cyrius lint` — 0 warnings on touched files.
+- `build/cyim --version` — `cyim 1.5.2`.
+
+### Coordination
+
+The 1.4.x → 1.5.x arc is closed out. Next minor (1.6.0) opens
+after the 4 closeout findings ship as 1.5.x patches (or are
+explicitly accepted as deferred). See roadmap §
+"v1.5.x Cycle — Deferred LSP Polish + Closeout".
+
 ## [1.5.1] — 2026-05-07
 
 **cyim-lsp 1.2.0 pickup — `:lsp-find-refs` / `gr` becomes a
