@@ -54,6 +54,21 @@ var _plugin_normal_keys        = 0;
 var _plugin_ex_commands        = 0;
 var _plugin_diagnostic_provs   = 0;
 
+# v1.3.5: most-recent diag vec, refreshed at every render frame by
+# _plugin_render_collect_diagnostics. Tests + future render-side
+# inline highlighting consume this.
+var _plugin_last_diags         = 0;
+
+# v1.3.5: diag severity enum. Higher numerically = more severe.
+# Mirrors LSP's DiagnosticSeverity (1=error..4=hint) inverted so
+# numeric > comparisons line up with cyim's internal action ordering
+# convention. Plugin authors match against these constants, never
+# the literal numbers.
+var DIAG_HINT    = 0;
+var DIAG_INFO    = 1;
+var DIAG_WARNING = 2;
+var DIAG_ERROR   = 3;
+
 # Initialize all six registries. Called once from main(), after
 # alloc_init() / args_init() and before any plugin-init code runs.
 # Idempotent — safe to call twice (defensive against future
@@ -245,11 +260,11 @@ fn _plugin_collect_status_segments(s, out_buf) {
 }
 
 # Run every diagnostic provider; each appends entries to `out_vec`
-# (a vec the caller owns; entries are heap-allocated 24 B records
-# of {line, severity, msg_ptr} per a future ADR — shape pinned in
-# v1.3.5+ when the first provider lands). For v1.3.4 we just call
-# each provider and let it own the entry shape; cyim's render layer
-# walks the vec and paints whatever it finds.
+# (a vec the caller owns). Diag record shape (pinned at v1.3.5):
+#   +0  line       1-indexed line number
+#   +8  severity   one of DIAG_HINT / DIAG_INFO / DIAG_WARNING / DIAG_ERROR
+#   +16 msg_ptr    NUL-term cstring; provider owns lifetime (heap-alloc'd
+#                  per-frame is fine since vec is rebuilt per frame)
 fn _plugin_collect_diagnostics(s, b, out_vec) {
     if (_plugin_diagnostic_provs == 0) { return 0; }
     var n = vec_len(_plugin_diagnostic_provs);
@@ -261,3 +276,35 @@ fn _plugin_collect_diagnostics(s, b, out_vec) {
     }
     return 0;
 }
+
+# Allocate a 24 B diag record. Called by diagnostic_provider plugins
+# to build entries for the out_vec.
+fn diag_new(line, severity, msg) {
+    var rec = alloc(24);
+    if (rec == 0) { return 0; }
+    store64(rec,      line);
+    store64(rec + 8,  severity);
+    store64(rec + 16, msg);
+    return rec;
+}
+
+fn diag_line(d)     { return load64(d); }
+fn diag_severity(d) { return load64(d + 8); }
+fn diag_msg(d)      { return load64(d + 16); }
+
+# Called once per render frame from render_frame. Allocates a fresh
+# diag vec, walks every registered provider, stashes the result for
+# inspection. v1.3.5 doesn't paint diags inline yet — that lands when
+# cyim-lsp at v1.4.0 needs the visual surface; until then, status_segment
+# hooks (e.g. trailing_ws's "TWS:N") show counts via the human-readable
+# path and tests read `plugin_last_diags()` for assertions.
+fn _plugin_render_collect_diagnostics(s) {
+    var v = vec_new();
+    var b = editor_buf(s);
+    if (b != 0) { _plugin_collect_diagnostics(s, b, v); }
+    _plugin_last_diags = v;
+    return v;
+}
+
+# Public accessor for the most-recent per-frame diag vec.
+fn plugin_last_diags() { return _plugin_last_diags; }

@@ -330,4 +330,4 @@ in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-05-06 (v1.3.4 shipped: plugin ABI scaffold per ADR 0003. `src/plugin.cyr` lands 6-hook registry + register/fire/lookup/collect API; post_save and post_change wired into core dispatch. v1.3.5 plan: trailing-whitespace POC plugin to prove ABI end-to-end (status_segment + diagnostic_provider hooks). v1.3.6: ADR 0004 freezes the ABI surface. v1.4.0: cyim-lsp as first non-trivial plugin.).*
+*Last updated: 2026-05-06 (v1.3.5 shipped: plugin ABI proven end-to-end. All 6 hooks wired (status_segment / normal_key / ex_command / diagnostic_provider added to v1.3.4's post_save / post_change). First working plugin: `src/plugins/trailing_ws.cyr` (post_change + diagnostic_provider + status_segment). v1.3.6 plan: ADR 0004 freezes the ABI based on what 1.3.5 surfaced. v1.4.0: cyim-lsp as first non-trivial plugin against the frozen contract.).*

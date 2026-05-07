@@ -1,0 +1,161 @@
+# src/plugins/trailing_ws.cyr — trailing-whitespace highlighter
+#
+# v1.3.5 inline plugin (lives in cyim's tree rather than as an
+# external repo per the sandhi pattern, because v1.3.5 is the ABI's
+# proving ground; an external `cyim-trailing-whitespace` repo can
+# come at v1.4.x once the cyrius.cyml [plugins] block parsing is
+# settled and the ABI is frozen). This file demonstrates what an
+# external plugin would look like — same imports, same hook
+# registration shape, same DCE behaviour.
+#
+# What it does:
+#   - post_change_hook: recompute the set of lines that end in
+#     space or tab (after the last byte before \n).
+#   - diagnostic_provider: emit DIAG_HINT entries for each such
+#     line so future render-side painters can underline them.
+#   - status_segment: render "TWS:N" if N > 0 (human-readable
+#     count alongside the file path in the status row).
+#
+# Design notes:
+#   - The line-set is recomputed on every post_change rather than
+#     tracked incrementally. cyim's buffer doesn't expose per-line
+#     dirty bits and per-change incremental update would need an
+#     editor_step delta API. Per ADR 0003, the plugin extends the
+#     dispatch table without modifying cyim's internals — full
+#     recompute is the simpler choice.
+#   - Storage is a vec<i64> of 1-indexed line numbers. Reset every
+#     post_change. ~40 bytes for a 100-line file with one trailing-
+#     ws line; bounded by buf_line_count(b).
+
+# Cached line-set from the most-recent post_change.
+var _tws_lines = 0;
+
+fn _tws_init_storage() {
+    if (_tws_lines == 0) { _tws_lines = vec_new(); }
+    return 0;
+}
+
+# Drop existing entries by allocating a fresh vec. cyim's vec API
+# doesn't have vec_clear — recreating the underlying storage is
+# the documented pattern for "reset" semantics.
+fn _tws_reset() {
+    _tws_lines = vec_new();
+    return 0;
+}
+
+# Walk the buffer, find lines ending in ' ' or '\t' before their
+# trailing '\n' (or EOF). Append 1-indexed line numbers to
+# _tws_lines. Returns count.
+fn _tws_recompute(b) {
+    if (b == 0) { return 0; }
+    _tws_reset();
+    var blen = buf_len(b);
+    if (blen == 0) { return 0; }
+    var line = 1;
+    var line_start = 0;
+    var i = 0;
+    while (i <= blen) {
+        var at_eol = 0;
+        if (i == blen) { at_eol = 1; }
+        if (at_eol == 0) {
+            if (buf_get(b, i) == 10) { at_eol = 1; }
+        }
+        if (at_eol == 1) {
+            # Line content: [line_start, i). Empty line → no
+            # trailing ws. Otherwise check the last byte.
+            if (i > line_start) {
+                var last = buf_get(b, i - 1);
+                if (last == 32) {
+                    vec_push(_tws_lines, line);
+                } else {
+                    if (last == 9) {
+                        vec_push(_tws_lines, line);
+                    }
+                }
+            }
+            line = line + 1;
+            line_start = i + 1;
+        }
+        i = i + 1;
+    }
+    return vec_len(_tws_lines);
+}
+
+# === Hook callbacks ===
+
+# Fires after every buffer-mutating editor_step. Recomputes the
+# line-set so subsequent diagnostic_provider / status_segment
+# calls in the same frame see fresh data.
+fn _tws_on_change(s) {
+    _tws_recompute(editor_buf(s));
+    return 0;
+}
+
+# Diagnostic provider: emit one DIAG_HINT entry per trailing-ws
+# line. cyim-side diag rendering lands at v1.4.0+; until then
+# `plugin_last_diags()` makes the entries inspectable from tests
+# and the status_segment provides the human-readable path.
+fn _tws_diags(s, b, out_vec) {
+    var n = vec_len(_tws_lines);
+    var i = 0;
+    while (i < n) {
+        var line = vec_get(_tws_lines, i);
+        var d = diag_new(line, DIAG_HINT, "trailing whitespace");
+        if (d != 0) { vec_push(out_vec, d); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Status segment: "TWS:N" when N > 0, omitted otherwise. The
+# producer's "no segment" signal is returning 0 (the collect helper
+# skips null returns rather than appending an empty string).
+var _tws_status_buf[16];
+fn _tws_status(s) {
+    var n = vec_len(_tws_lines);
+    if (n == 0) { return 0; }
+    # Format "TWS:N" into the static buf. N is bounded by line count;
+    # 14 bytes after "TWS:" handle up to a 14-digit decimal which
+    # comfortably exceeds any real buffer's line count.
+    store8(&_tws_status_buf,     84);  # T
+    store8(&_tws_status_buf + 1, 87);  # W
+    store8(&_tws_status_buf + 2, 83);  # S
+    store8(&_tws_status_buf + 3, 58);  # :
+    var pos = 4;
+    # Inline integer-to-decimal: write digits to a temporary, then
+    # reverse into _tws_status_buf at pos. n bounded by buf_line_count
+    # so 8 KB lines = 4 digits; 1 M lines = 7 digits.
+    var tmp[16];
+    var tlen = 0;
+    var v = n;
+    if (v == 0) {
+        store8(&tmp, 48);
+        tlen = 1;
+    } else {
+        while (v > 0) {
+            store8(&tmp + tlen, 48 + (v - (v / 10) * 10));
+            v = v / 10;
+            tlen = tlen + 1;
+        }
+    }
+    var j = 0;
+    while (j < tlen) {
+        store8(&_tws_status_buf + pos, load8(&tmp + tlen - 1 - j));
+        pos = pos + 1;
+        j = j + 1;
+    }
+    store8(&_tws_status_buf + pos, 0);
+    return &_tws_status_buf;
+}
+
+# === Init: register all three hooks. Called from main() after
+# plugin_init(). Idempotent — calling twice double-registers, so
+# main is the one source of truth. ===
+
+fn trailing_ws_init() {
+    _tws_init_storage();
+    plugin_register_post_change_hook(&_tws_on_change);
+    plugin_register_diagnostic_provider(&_tws_diags);
+    plugin_register_status_segment(&_tws_status);
+    return 0;
+}

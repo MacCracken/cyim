@@ -359,6 +359,25 @@ fn render_status(s, rows, cols) {
     if (editor_modified(s) == 1) {
         syscall(1, 1, " [+]", 4);
     }
+
+    # v1.3.5: plugin status_segment hooks. Each registered provider
+    # contributes a short segment (e.g. "TWS:3" from trailing_ws or
+    # "E:1 W:2" from cyim-lsp's diagnostic count). Segments are
+    # appended after the mode + path + dirty block, separated by
+    # " | ". No-op when no plugin registers.
+    var seg_buf = buf_new();
+    var n_segs = _plugin_collect_status_segments(s, seg_buf);
+    if (n_segs > 0) {
+        syscall(1, 1, " | ", 3);
+        var blen = buf_len(seg_buf);
+        var i = 0;
+        while (i < blen) {
+            var b1[1];
+            store8(&b1, buf_get(seg_buf, i));
+            syscall(1, 1, &b1, 1);
+            i = i + 1;
+        }
+    }
     return 0;
 }
 
@@ -540,6 +559,12 @@ fn _render_frame_multi(s, rows, cols) {
 # initializes the window tree on startup so the binary always lands
 # on the multi-window path.
 fn render_frame(s, rows, cols, tb) {
+    # v1.3.5: collect diagnostics once per frame from every registered
+    # provider. Stashes the result for tests + future render-side
+    # inline-paint integration (LSP at v1.4.0). No-op when no plugin
+    # registers a diagnostic provider.
+    _plugin_render_collect_diagnostics(s);
+
     if (editor_window_root(s) != 0) {
         return _render_frame_multi(s, rows, cols);
     }

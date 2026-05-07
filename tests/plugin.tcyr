@@ -163,6 +163,61 @@ fn main() {
     plugin_init();
     assert_eq(vec_len(_plugin_post_save_hooks), len_before, "double-init preserves registrations");
 
+    # === v1.3.5 integration: dispatch wire-ups ===
+
+    test_group("editor_dispatch routes unmapped NORMAL keys to plugin");
+    # 'Z' (90) is not in cyim's built-in NORMAL keymap. With the
+    # plugin registration above, _plugin_lookup_normal_key('Z')
+    # returns &_t_cb_normal_key. mode.cyr's NORMAL-mode dispatch
+    # falls through to plugin lookup when the built-in keymap
+    # returns ACT_NONE.
+    var s2 = editor_new(buf_new());
+    bl_init(s2, editor_buf(s2));
+    window_init(s2);
+    var pre_nk = _t_normal_key_calls;
+    var act_z = editor_dispatch(s2, 90);   # 'Z'
+    assert_eq(act_z, ACT_NONE, "plugin cb returned ACT_NONE");
+    assert_eq(_t_normal_key_calls, pre_nk + 1, "plugin normal_key fired via dispatch");
+
+    test_group("built-ins win on conflict — h still moves left");
+    var pre_nk2 = _t_normal_key_calls;
+    var act_h = editor_dispatch(s2, 104);  # 'h' is built-in MOVE_LEFT
+    assert_eq(act_h, ACT_MOVE_LEFT, "built-in h not shadowed by plugin");
+    assert_eq(_t_normal_key_calls, pre_nk2, "plugin normal_key NOT fired when built-in matches");
+
+    test_group("ex_command parser routes unknown :foo to plugin");
+    # Drive the cmdbuf with "test-ex" then ACT_CMDLINE_EXECUTE.
+    var s3 = editor_new(buf_new());
+    bl_init(s3, editor_buf(s3));
+    window_init(s3);
+    editor_set_mode(s3, MODE_COMMAND);
+    command_reset(s3);
+    var ex_chars = "test-ex";
+    var ec_i = 0;
+    while (load8(ex_chars + ec_i) != 0) {
+        command_append(s3, load8(ex_chars + ec_i));
+        ec_i = ec_i + 1;
+    }
+    var pre_ex = _t_ex_cmd_calls;
+    command_execute(s3);
+    assert_eq(_t_ex_cmd_calls, pre_ex + 1, "plugin ex_command fired via :test-ex");
+
+    test_group("ex_command built-ins win on conflict");
+    # Try registering a colliding :q — built-in :q wins, plugin not
+    # invoked. (We don't actually register a colliding name here
+    # because it'd dirty global state; we just confirm :q's
+    # built-in path is reachable without going through the plugin
+    # path.)
+    var s4 = editor_new(buf_new());
+    bl_init(s4, editor_buf(s4));
+    window_init(s4);
+    editor_set_mode(s4, MODE_COMMAND);
+    command_reset(s4);
+    command_append(s4, 113);  # 'q'
+    var pre_ex2 = _t_ex_cmd_calls;
+    command_execute(s4);
+    assert_eq(_t_ex_cmd_calls, pre_ex2, "plugin ex_command NOT called for built-in :q");
+
     return assert_summary();
 }
 

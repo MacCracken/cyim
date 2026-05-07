@@ -300,6 +300,13 @@ fn editor_dispatch(s, key) {
             return ACT_NONE;
         }
         var act = map_u64_get(load64(s + 16), key);
+        # v1.3.5: built-ins win on conflict (ADR 0003 §3 — plugins
+        # extend the dispatch table, never override). Only fall
+        # through to plugin lookup when the built-in keymap missed.
+        if (act == ACT_NONE) {
+            var pfp = _plugin_lookup_normal_key(key);
+            if (pfp != 0) { act = fncall1(pfp, s); }
+        }
         if (act == ACT_TO_INSERT)         { store64(s, MODE_INSERT);  return act; }
         if (act == ACT_TO_INSERT_AFTER)   { store64(s, MODE_INSERT);  return act; }
         if (act == ACT_TO_INSERT_LINE_END) { store64(s, MODE_INSERT); return act; }

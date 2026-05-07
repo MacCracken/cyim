@@ -17,6 +17,7 @@
 
 include "src/buffer.cyr"
 include "src/motion.cyr"
+include "src/plugin.cyr"
 include "src/mode.cyr"
 
 fn load_fixture(b) {

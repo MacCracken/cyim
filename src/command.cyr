@@ -443,6 +443,24 @@ fn command_execute(s) {
     if (_cmd_eq(cb, 0, name_end, "vsp") == 1) { return _cmd_vsp(s); }
     if (_cmd_eq(cb, 0, name_end, "set") == 1) { return _cmd_set(s, cb, arg_start, arg_len); }
 
+    # v1.3.5: built-ins win on conflict (ADR 0003 §3). Only fall
+    # through to plugin ex_command lookup once every built-in has
+    # been checked. Materialise [0, name_end) as a NUL-term cstring
+    # for _plugin_lookup_ex_command's API.
+    var name_str = alloc(name_end + 1);
+    if (name_str != 0) {
+        var ni = 0;
+        while (ni < name_end) {
+            store8(name_str + ni, buf_get(cb, ni));
+            ni = ni + 1;
+        }
+        store8(name_str + name_end, 0);
+        var pfp = _plugin_lookup_ex_command(name_str);
+        if (pfp != 0) {
+            return fncall1(pfp, s);
+        }
+    }
+
     editor_set_last_error(s, ERR_UNKNOWN_CMD);
     return 0 - 1;
 }

@@ -4,6 +4,110 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.5] — 2026-05-06
+
+Patch release — **plugin ABI proven end-to-end** with the first
+working plugin. Wires the four remaining hook fire-points into
+cyim's render / mode-dispatch / command-parser paths
+(`status_segment`, `normal_key`, `ex_command`,
+`diagnostic_provider`) and ships the trailing-whitespace
+highlighter (`src/plugins/trailing_ws.cyr`) as the proving-ground
+consumer. All six hooks per ADR 0003 §3 are now active; the ABI
+is one real plugin away from earning its v1.3.6 freeze (ADR 0004).
+
+The trailing_ws plugin is intentionally inline in cyim's tree
+rather than an external `cyim-trailing-whitespace` repo. v1.3.5
+is the ABI's proving ground; once the surface freezes (1.3.6),
+the plugin can promote to the sandhi pattern alongside vyakarana
+and niyama.
+
+CLAUDE.md's Work Loop step 3 + Closeout Pass step 1 now call out
+`cyrius fuzz` explicitly so the v1.3.4 single-pass-include CI gap
+doesn't bite anyone again.
+
+### Added
+
+- **`src/plugins/trailing_ws.cyr`** (140 lines) — first inline
+  cyim plugin. Registers three hooks: `post_change_hook`
+  recomputes the line-set on every buffer mutation,
+  `diagnostic_provider` emits one `DIAG_HINT` entry per
+  trailing-ws line, `status_segment` renders `TWS:N` (omits the
+  segment when N == 0). Recompute is full-buffer-walk per
+  change.
+- **`trailing_ws_init()`** call in `src/main.cyr:main()` after
+  `plugin_init()`.
+- **DIAG_* constants** + **`diag_new(line, severity, msg)`**
+  helper + accessors in `src/plugin.cyr`. The 24 B record shape
+  pinned at v1.3.5.
+- **`_plugin_render_collect_diagnostics(s)`** + **`plugin_last_diags()`**
+  in `src/plugin.cyr` — fires every render frame from
+  `render_frame`; populates a fresh diag vec globally for tests
+  + future render-side inline-paint integration.
+- **`tests/trailing_ws.tcyr`** (140 lines, 24 assertions across
+  8 groups) — trailing-ws end-to-end behaviour.
+
+### Changed
+
+- **`src/render.cyr:render_status`** — appends plugin
+  status_segment output after the dirty indicator, separated by
+  ` | `.
+- **`src/render.cyr:render_frame`** — calls
+  `_plugin_render_collect_diagnostics(s)` once per frame.
+- **`src/mode.cyr:editor_dispatch`** NORMAL-mode arm — falls
+  through to `_plugin_lookup_normal_key(key)` after built-in
+  keymap miss. Built-ins win on conflict per ADR 0003 §3.
+- **`src/command.cyr:command_execute`** — falls through to
+  `_plugin_lookup_ex_command(name)` after every built-in `:cmd`
+  comparison misses. Materialises the cmdbuf bytes as NUL-term
+  cstring for the lookup. Built-ins win.
+- **Test files (4)**: `tests/{cyimrc,render,motion,dispatch}.tcyr`
+  added `include "src/plugin.cyr"` immediately before
+  `include "src/mode.cyr"` (single-pass-resolution).
+- **CLAUDE.md** — Work Loop step 3 now reads "Test + benchmark +
+  fuzz additions" with explicit guidance for src files in
+  `driver/command/buffer/mode/edit/insert.cyr`. Closeout Pass
+  step 1 broadened from "all `.tcyr` pass" to "all `.tcyr` pass;
+  `cyrius fuzz` passes all `.fcyr` harnesses". Closes the
+  v1.3.4-shipped-then-CI-failed-fuzz gap.
+- **`tests/plugin.tcyr`** extended with 4 new groups (33 total
+  assertions, was 27) — `editor_dispatch` routing unmapped
+  NORMAL keys to plugins, built-ins-win invariant for `h`, ex
+  parser routing `:test-ex` to plugin via `command_execute`,
+  built-ins-win invariant for `:q`.
+
+### Tests
+
+- `cyrius test` — 11 test files (was 9) including new
+  `trailing_ws.tcyr`; all PASS.
+- Driver/dispatch summary: 20 PASS (was 19).
+- `tests/cli_smoke.sh` 118/118, `integration_smoke.py` PASS,
+  `cyrius fuzz` 3/3 PASS, `cyrius lint` 0 warnings.
+
+### Notes
+
+- **No cyrius toolchain bump.** Pin stays at 5.9.13.
+- **All six hooks now have fire-points.** ABI is functionally
+  complete per the v1.3.4 ADR 0003 §3 surface. v1.3.6 plan: ADR
+  0004 freezes the ABI based on what 1.3.5 surfaced. v1.4.0:
+  cyim-lsp builds against the frozen contract.
+- **trailing_ws is inline, not external.** Promoting to a
+  separate `cyim-trailing-whitespace` repo waits for: (a) the
+  ABI freeze (1.3.6), and (b) `cyrius.cyml [plugins.<name>]`
+  parsing in upstream cyrius.
+- **Render-side inline paint of diags deferred.** v1.3.5
+  populates `plugin_last_diags()` per frame but doesn't paint
+  diag markers in the buffer view. cyim-lsp at v1.4.0 will land
+  the visual surface.
+
+### Binary
+
+- `build/cyim` — DCE build size: **899,488 B** (+4,592 B over
+  v1.3.4's 894,896 B). Trailing_ws plugin (~700 B) + 4 fire-
+  point integrations (~3 KB across render.cyr / mode.cyr /
+  command.cyr) + diag record helpers (~700 B). All four
+  previously-DCE'd register/lookup/collect helpers now have
+  active call sites and are linked in.
+
 ## [1.3.4] — 2026-05-06
 
 Patch release — **plugin ABI scaffold** per [ADR 0003](docs/adr/0003-cyrius-plugin-system.md).

@@ -111,7 +111,7 @@ CYRIUS_DCE=1 cyrius build ...            # dead-code-eliminated release build
 
 1. **Work phase** — new features, roadmap items, bug fixes
 2. **Build check** — `cyrius build`
-3. **Test + benchmark additions** for new code
+3. **Test + benchmark + fuzz additions** for new code. Any change that touches `src/{driver,command,buffer,mode,edit,insert}.cyr` or adds a new `src/*.cyr` referenced from those files must re-run `cyrius fuzz` — the existing `.fcyr` harnesses include those files transitively, and single-pass symbol resolution will fail at fuzz-build time if the include order isn't right.
 4. **Internal review** — performance (edit latency, repaint cost), memory (gap-buffer growth), correctness, edge cases
 5. **Security check** — any new syscall usage, user input handling, buffer allocation
 6. **Documentation** — update CHANGELOG, roadmap, `docs/development/state.md`, any ADR the change earned
@@ -137,7 +137,7 @@ Severity levels: **CRITICAL** (remote / privilege escalation), **HIGH** (moderat
 
 Run a closeout pass before tagging `X.Y.0` or `X.0.0`. Ship as the last patch of the current minor (e.g. `0.4.5` before `0.5.0`).
 
-1. **Full test suite** — all `.tcyr` pass, zero failures
+1. **Full test + fuzz suite** — all `.tcyr` pass, zero failures; `cyrius fuzz` passes all `.fcyr` harnesses (any new src/ file pulled into the include chain of an existing `.fcyr` needs the include order checked, not just the test-suite include order — single-pass resolution applies the same way)
 2. **Benchmark baseline** — `cyrius bench`, save CSV; compare against prior closeout
 3. **Dead code audit** — remove unused functions; record remaining floor in CHANGELOG
 4. **Refactor pass** — consolidate the minor's additions where parallel codepaths accreted

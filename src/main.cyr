@@ -20,11 +20,17 @@
 include "lib/vyakarana.cyr"
 # Plugin ABI scaffold (v1.3.4) — registry + register/fire/lookup
 # helpers. Per ADR 0003, plugins extend the dispatch table via
-# explicit hook points, not the modal grammar. v1.3.4 wires
-# post_save + post_change fire-points; other hooks have helpers
-# in place but are not yet called from cyim's render / mode-
-# dispatch / command paths.
+# explicit hook points, not the modal grammar. v1.3.4 wired
+# post_save + post_change; v1.3.5 wires status_segment, normal_key,
+# ex_command, diagnostic_provider — all six hooks now active.
 include "src/plugin.cyr"
+# v1.3.5: trailing-whitespace plugin — first inline plugin proving
+# the ABI end-to-end. Uses post_change_hook + diagnostic_provider
+# + status_segment. An external repo (`cyim-trailing-whitespace`
+# via the sandhi pattern) can come at v1.4.x once the [plugins]
+# manifest is settled; v1.3.5 keeps it inline because v1.3.5 is
+# the ABI's proving ground.
+include "src/plugins/trailing_ws.cyr"
 # niyama 1.0.1 folded into cyrius stdlib at 5.9.0 (sandhi-pattern):
 # vendored as `lib/niyama.cyr` byte-identical from niyama's
 # `dist/niyama.cyr`. Pulled here via explicit include rather than
@@ -244,6 +250,7 @@ fn main() {
     alloc_init();
     args_init();
     plugin_init();
+    trailing_ws_init();
 
     var ac = argc();
     var fpath = 0;
