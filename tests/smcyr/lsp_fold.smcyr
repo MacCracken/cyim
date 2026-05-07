@@ -1,0 +1,92 @@
+# lsp_fold.smcyr — end-to-end smoke for cyim 1.4.0 + cyim-lsp 1.0.2
+#
+# A `.smcyr` answers "did this start at all?" — `cyrius smoke` runs
+# every harness under tests/smcyr/. The fold-in's narrow tests
+# (cyim's tcyr suite) validate that the consumer-side glue compiles
+# clean against the bundle and that `cyim_lsp_init()` registers
+# the eight hooks. What they don't prove: the bundled protocol
+# code can spawn `cyrius-lsp` and complete an `initialize`
+# handshake against a real server.
+#
+# This smoke fills that gap. It uses cyim-lsp's frozen public API
+# (per ADR 0001 v1.0.2 amendment) directly:
+#
+#   1. `lsp_client_start_default()` — pipe/fork/exec cyrius-lsp on PATH
+#      via `/usr/bin/env cyrius-lsp`, then run the LSP `initialize`
+#      handshake. Returns 0 on success.
+#   2. `lsp_client_running()` — pid (non-zero if attached).
+#   3. `lsp_client_describe()` — human-readable "cyrius-lsp pid=N"
+#      or "(not attached)".
+#   4. `lsp_client_stop()` — graceful shutdown handshake + SIGTERM
+#      + reap.
+#
+# Skips: actual diagnostic flow. cyrius-lsp's `cc5` lookup is
+# environment-dependent (it walks a hardcoded path list); when
+# cc5 isn't found it logs "diagnostics disabled" and serves an
+# initialize roundtrip with no publishDiagnostics. This smoke
+# proves the wire is connected, not whether traffic flows.
+#
+# Required at runtime:
+#   cyrius-lsp must be on PATH. The cyrius toolchain installs it
+#   at ~/.cyrius/bin/cyrius-lsp; this should be in PATH for any
+#   developer who has a working cyrius toolchain.
+
+include "lib/syscalls.cyr"
+include "lib/alloc.cyr"
+include "lib/fmt.cyr"
+include "lib/io.cyr"
+include "lib/string.cyr"
+include "lib/str.cyr"
+include "lib/vec.cyr"
+include "lib/process.cyr"
+include "lib/json.cyr"
+include "lib/assert.cyr"
+
+# The bundled cyim-lsp distfile. `cyrius deps` resolves
+# `[deps.cyim-lsp]` from cyrius.cyml into `lib/cyim-lsp.cyr` (a
+# symlink to ~/.cyrius/deps/cyim-lsp/1.0.2/dist/cyim-lsp.cyr).
+include "lib/cyim-lsp.cyr"
+
+alloc_init();
+
+test_group("cyim-lsp 1.0.3 protocol bundle: spawn + initialize + stop");
+
+# Pre-spawn baseline.
+assert_eq(lsp_client_running(), 0, "no server attached pre-spawn");
+
+# Spawn cyrius-lsp + complete the initialize handshake. This is the
+# end-to-end fold-in proof: the bundled subprocess + jsonrpc + lsp_client
+# code talks to a real server.
+var rc = lsp_client_start_default();
+assert_eq(rc, 0, "lsp_client_start_default returns 0");
+
+# pid > 0 once the spawn + handshake completes.
+var pid = lsp_client_running();
+assert_neq(pid, 0, "cyrius-lsp pid registered post-spawn");
+
+# Describe should be a non-null cstring whose first 5 bytes are "cyriu".
+# (Per cyim-lsp ADR 0001 § "lsp_client_describe": "cyrius-lsp pid=N"
+# when attached.)
+var desc = lsp_client_describe();
+assert_neq(desc, 0, "describe cstring non-null");
+assert_eq(load8(desc + 0), 99,  "describe[0] == 'c'");
+assert_eq(load8(desc + 1), 121, "describe[1] == 'y'");
+assert_eq(load8(desc + 2), 114, "describe[2] == 'r'");
+assert_eq(load8(desc + 3), 105, "describe[3] == 'i'");
+assert_eq(load8(desc + 4), 117, "describe[4] == 'u'");
+
+# Clean shutdown — sends shutdown/exit handshake, SIGTERM, waitpid reap.
+lsp_client_stop();
+assert_eq(lsp_client_running(), 0, "post-stop pid is 0");
+
+# Re-attach to verify lazy-start is idempotent across stop/start.
+var rc2 = lsp_client_start_default();
+assert_eq(rc2, 0, "second start succeeds (idempotent re-attach)");
+assert_neq(lsp_client_running(), 0, "second pid registered");
+
+# Final cleanup.
+lsp_client_stop();
+assert_eq(lsp_client_running(), 0, "final shutdown clean");
+
+var ec = assert_summary();
+syscall(60, ec);

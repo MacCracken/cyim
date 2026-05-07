@@ -4,6 +4,59 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-05-07
+
+**Patch — picks up cyim-lsp 1.0.3's subprocess env fix; first
+`cyrius smoke` harness lands.**
+
+cyim-lsp 1.0.3 fixes the empty-envp regression that broke
+`/usr/bin/env cyrius-lsp` lookup in v1.0.0–v1.0.2 (the child
+had no `PATH`, so the default lazy-start path silently failed).
+The bug was surfaced by writing the first end-to-end smoke
+harness for the 1.4.0 fold-in — `tests/smcyr/lsp_fold.smcyr`,
+which spawns cyrius-lsp via the bundled API and asserts the
+initialize handshake completes. That harness is the
+"fold-in dry-run against a real consumer" the v1.0.0 freeze
+should have included (cyim-lsp ADR 0001 v1.0.2 amendment §
+process consequence); now cyim has it.
+
+### Changed
+
+- `cyrius.cyml [deps.cyim-lsp].tag` 1.0.2 → 1.0.3.
+- `lib/cyim-lsp.cyr` regenerated (symlink retargeted by
+  `cyrius deps`); distfile 2163 → 2228 lines.
+- `cyrius.lock` updated for the new dist sha.
+
+### Added
+
+- `tests/smcyr/lsp_fold.smcyr` (76 lines) — first cyim
+  `.smcyr` harness. Exercises `lsp_client_start_default()` →
+  spawn cyrius-lsp → initialize handshake → describe →
+  clean stop → idempotent restart → clean stop. 13 assertions,
+  all PASS under `cyrius smoke`. cyim's narrow tcyr suite
+  validates the consumer-side glue compiles + registers; this
+  smoke validates the wire actually carries traffic.
+
+### Verification
+
+- `cyrius build` — OK; binary 948,016 B (+800 B over 1.4.0's
+  947,216 B; +800 B is the `_lsp_proc_envp_from_self` helper +
+  /proc/self/environ read path inherited from cyim-lsp 1.0.3).
+- `cyrius test` — 20 suites all PASS (no regressions).
+- `cyrius fuzz` — 3 PASS.
+- `cyrius smoke` — **1 PASS**, 13/13 assertions. Confirms
+  `[cyrius-lsp] initialized` in stderr — the server received
+  + responded to our LSP initialize message.
+- `cyrius lint` — 0 warnings on touched files (pre-existing
+  `src/cli.cyr` line-length warning unchanged).
+
+### Process
+
+- The `tests/smcyr/` directory is now active (was scaffolded
+  but empty). Future smoke harnesses for other surfaces land
+  here and run under `cyrius smoke` alongside the .tcyr / .fcyr
+  / .bcyr suites.
+
 ## [1.4.0] — 2026-05-07
 
 **Minor release — first non-trivial external plugin folded in.**
