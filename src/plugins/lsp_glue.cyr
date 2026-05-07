@@ -22,6 +22,9 @@
 #   plugin_buf_load_file(s, path) -> buf or 0            -- 1.4.2
 #   plugin_list_display(s, items, count, on_select)      -- 1.5.0
 #   KEY_G                                                -- 1.4.2
+#
+# cyim-lsp bundle helpers consumed (besides protocol senders):
+#   lsp_uri_decode(uri) -> cstring or 0                  -- cyim-lsp 1.2.1
 #   editor_buf(s) / editor_file_path(s)
 #   editor_set_status(s, msg)            -- 2-arg; cstring ptr only
 #   buf_get(b, i) / buf_len(b) / buf_cursor(b) / buf_move(b, off)
@@ -275,11 +278,15 @@ fn _cyim_lsp_ex_goto_def(s) {
         return 0;
     }
     # Cross-file (v1.4.3): load destination via plugin_buf_load_file.
-    # dest_uri starts with "file://" per LSP §3.5; strip 7 bytes for
-    # the absolute path. URL-encoded paths (file:///foo%20bar) are
-    # not percent-decoded — files with spaces / non-ASCII won't load
-    # correctly. Deferred until the corner case surfaces.
-    var dest_path = dest_uri + 7;
+    # dest_uri starts with "file://" per LSP §3.5; strip 7 bytes
+    # then percent-decode (cyim-lsp 1.2.1+ exposes `lsp_uri_decode`
+    # for paths with spaces / non-ASCII / %XX escapes). v1.5.3
+    # closeout F-CO-4.
+    var dest_path = lsp_uri_decode(dest_uri + 7);
+    if (dest_path == 0) {
+        editor_set_status(s, "lsp: failed to decode destination URI");
+        return 0 - 1;
+    }
     var new_b = plugin_buf_load_file(s, dest_path);
     if (new_b == 0) {
         editor_set_status(s, "lsp: failed to load definition file");
@@ -433,7 +440,13 @@ fn _cyim_lsp_on_ref_select(s, idx) {
     var line = vec_get(_cyim_lsp_refs_lines, idx);
     var char = vec_get(_cyim_lsp_refs_chars, idx);
     if (uri == 0) { return 0; }
-    var path = uri + 7;   # strip "file://"
+    # Strip "file://" prefix per LSP §3.5 + percent-decode (cyim-lsp
+    # 1.2.1+ via `lsp_uri_decode`). v1.5.3 closeout F-CO-4.
+    var path = lsp_uri_decode(uri + 7);
+    if (path == 0) {
+        editor_set_status(s, "lsp: failed to decode reference URI");
+        return 0 - 1;
+    }
     var b = plugin_buf_load_file(s, path);
     if (b == 0) {
         editor_set_status(s, "lsp: failed to load reference file");

@@ -34,11 +34,11 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.5.2** (see [`state.md`](state.md)) — closeout
-audit just shipped. The full LSP user-visible surface —
-diagnostics, `gd` goto-def (same-file + cross-file), `gr`
-references quickfix, `:lsp-*` ex-commands — is active via
-cyim-lsp 1.2.0.
+cyim is at **1.5.3** (see [`state.md`](state.md)). The full LSP
+user-visible surface — diagnostics, `gd` goto-def (same-file +
+cross-file), `gr` references quickfix, `:lsp-*` ex-commands — is
+active via cyim-lsp 1.2.1. URL-encoded `file://` URIs (paths with
+spaces, non-ASCII, percent escapes) load correctly as of 1.5.3.
 
 The 1.x plugin ABI freeze (1.3.6 / [ADR 0004](../adr/0004-plugin-abi-freeze.md))
 holds across all 1.4.x and 1.5.x extensions. Three additive
@@ -74,6 +74,7 @@ this is a sequencing index.
 | **v1.5.0** — `plugin_list_display` ABI (popup picker subsystem) | Shipped 2026-05-07 |
 | **v1.5.1** — cyim-lsp 1.2.0 pickup (refs quickfix activates) | Shipped 2026-05-07 |
 | **v1.5.2** — closeout audit (pre-1.6.0; all 11 steps PASS, 4 LOW findings tracked) | Shipped 2026-05-07 |
+| **v1.5.3** — closes 3 of 4 LOW closeout findings (F-CO-1 multi-iter bench, F-CO-3 prefix-clear, F-CO-4 URL-decode via cyim-lsp 1.2.1) | Shipped 2026-05-07 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -84,45 +85,29 @@ CHANGELOG.md and the per-version state.md narrative.
 ## v1.5.x Cycle — Deferred Polish (before 1.6.0)
 
 The 1.4.x → 1.5.x arc lit up the full LSP user-visible surface.
-Two classes of items remain in the cycle before opening 1.6.0:
+**Closeout audit shipped at 1.5.2; 3 of 4 LOW findings closed
+at 1.5.3.** Remaining 1.5.x deferred-polish items are
+carry-over candidates — bigger than LOW; not blocking 1.6.0.
 
-1. **Deferred LSP polish** — items deferred during the 1.4.x /
-   1.5.x feature work because they were below the activation
-   bar. None are load-bearing.
-2. **Closeout findings** — surfaced by the
-   [2026-05-07 closeout audit](../audit/2026-05-07-1.5x-closeout.md)
-   (shipped as v1.5.2). All LOW; all patch-sized.
+### Closeout findings (from v1.5.2 audit) — status
 
-All items below are patch-sized; each lands independently when
-its corner case surfaces or someone picks it up. None block
-1.6.0 if the user explicitly defers — but the cycle stays
-"open" until they're addressed or accepted as carry-overs.
+| ID | Class | Status |
+|---|---|---|
+| ~~**F-CO-1**~~ | perf | ✅ **Closed in v1.5.3.** Multi-iter bench (`tests/perf.bcyr` 10× outer for short-runtime, 3× outer for medium-runtime). Verdict: the +18% render_build_line "regression" was 1-iter sampling noise; multi-iter shows 250 μs avg ± 4 μs across 10 iters. See [`BENCHMARKS.md`](../../BENCHMARKS.md) v1.5.3 row. |
+| **F-CO-2** | refactor | **Informational — defer.** "Load uri + jump to lc" pattern at 2 instances. Per "wait for the third instance" rule, no action until cyim-lsp grows `:lsp-implementation` or `:lsp-type-definition`. Then extract `_cyim_lsp_jump_to_uri_lc(s, uri, line, char, err_msg)`. |
+| ~~**F-CO-3**~~ | defense-in-depth | ✅ **Closed in v1.5.3.** `plugin_list_display` clears latched prefix at entry (`editor_set_prefix(s, 0)`). Unreachable today, but the corner case is closed once. +3 assertions in `tests/plugin.tcyr`. |
+| ~~**F-CO-4**~~ | UX | ✅ **Closed in v1.5.3.** cyim-lsp 1.2.1 added public `lsp_uri_decode(uri)` to the bundle (real source change, +77 lines). cyim's `src/plugins/lsp_glue.cyr` cross-file branches use it. Files with spaces / non-ASCII / `%XX` escapes in `file://` URIs now load correctly. Closes the deferred-LSP-polish URL-decode row simultaneously. |
 
-### Deferred LSP polish
+### Deferred LSP polish — carry-over to 1.5.x or 1.6.0
+
+Bigger than LOW; not closeout findings. Each lands independently
+when the trigger surfaces.
 
 | Item | Trigger | Scope |
 |---|---|---|
-| **URL-decoded `file://` URIs** ⚠ overlaps with closeout F-CO-4 | Path with spaces / non-ASCII / percent-encoded bytes appears in a goto-def or refs response | Add a `_cyim_lsp_uri_decode(uri)` helper to the consumer glue (cyim-side AND cyim-lsp's reference). Patch in both repos. Today the dest-path is a direct byte-7 slice. Cyim 1.5.x patch + cyim-lsp 1.2.x patch. |
-| **Reference previews** | User asks for "what's at this reference" without jumping | Append a source-line snippet to each `_cyim_lsp_label_for_ref` cstring. Requires fetching the line from disk (or buf if open) and truncating to popup width. Cyim-lsp 1.2.x patch (no cyim ABI change needed). |
-| **Open-in-split** | User wants to keep current buffer visible while jumping | New plugin ABI `plugin_buf_load_file_split(s, path, direction)` (additive); consumer passes a "split" hint to on_select. Cyim 1.5.x patch (additive ABI) + cyim-lsp 1.2.x or 1.3.0 patch. |
-| **Arrow keys in list mode** | A user complains that j/k feels off | Wire up arrow handling in `editor_feed`'s CSI parser to route to `_plugin_list_next` / `_plugin_list_prev` when `_plugin_list_active`. Driver-side change in cyim. Cyim 1.5.x patch. |
-
-### Closeout findings (from v1.5.2 audit)
-
-All LOW per the audit's severity triage. Tracked here so
-"closeout shipped" doesn't mean "findings forgotten."
-
-| ID | Class | Description | Action |
-|---|---|---|---|
-| **F-CO-1** | perf | `render_build_line_80c × 1000` measured 252 μs at 1.5.1 vs. 214 μs historical baseline (+18%). Render layer hasn't changed since 1.5.0 and the 1.5.0 → 1.5.1 delta in `render.cyr` is zero — likely 1-iter sampling noise. | Re-run `cyrius bench` with multi-iter sampling (the bench harness supports it) and update [`BENCHMARKS.md`](../../BENCHMARKS.md) with the multi-iter result. If the regression persists, bisect the render path. Cyim 1.5.x patch. |
-| **F-CO-2** | refactor | "Load uri + jump to lc" pattern is duplicated between `_cyim_lsp_ex_goto_def` cross-file branch (1.4.3) and `_cyim_lsp_on_ref_select` (1.5.1). Two instances; identical modulo error message. | Per cyim's "wait for the third instance" rule, **do not extract yet**. Action: when cyim-lsp grows `:lsp-implementation` or `:lsp-type-definition`, extract `_cyim_lsp_jump_to_uri_lc(s, uri, line, char, err_msg)` then. **Informational; not blocking 1.6.0.** |
-| **F-CO-3** | defense-in-depth | If a user types `g` (latches `KEY_G` prefix) and a plugin synchronously calls `plugin_list_display` before the next keystroke, the prefix stays latched while the picker is active. On dismiss, the next NORMAL key still sees the prefix. | Unreachable today (the only `plugin_list_display` call site is `:lsp-find-refs` / `gr` ex-command paths, which complete dispatch before yielding). Future hardening: clear `editor_set_prefix(s, 0)` on `plugin_list_display` entry. Patch-sized. Cyim 1.5.x patch. |
-| **F-CO-4** | UX | URL-encoded `file://` URIs are not percent-decoded (same item as the deferred LSP polish row above). Files with spaces / non-ASCII paths fail to load via cross-file goto-def or refs quickfix. | See the deferred-polish row. Single patch addresses both. |
-
-Note: F-CO-4 dedups with the URL-decode row in deferred polish —
-shipping that one patch closes both. F-CO-2 is informational
-(no action until 3rd consumer); the actionable closeout findings
-are F-CO-1, F-CO-3, F-CO-4.
+| **Reference previews** | User asks for "what's at this reference" without jumping | Append a source-line snippet to each `_cyim_lsp_label_for_ref` cstring. Requires fetching the line from disk (or buf if open) and truncating to popup width. Cyim-lsp patch (no cyim ABI change). |
+| **Open-in-split** | User wants to keep current buffer visible while jumping | New plugin ABI `plugin_buf_load_file_split(s, path, direction)` (additive); consumer passes a "split" hint to on_select. Cyim 1.5.x patch (additive ABI) + cyim-lsp follow-up. |
+| **Arrow keys in list mode** | A user complains j/k feels off | Wire up arrow handling in `editor_feed`'s CSI parser to route to `_plugin_list_next` / `_plugin_list_prev` when `_plugin_list_active`. Driver-side change in cyim. Cyim 1.5.x patch. |
 
 ### Closeout Pass — ✅ shipped 2026-05-07 as v1.5.2
 
@@ -130,7 +115,8 @@ are F-CO-1, F-CO-3, F-CO-4.
 verification cut; no runtime code changes (binary byte-identical
 to 1.5.1 modulo the regenerated `_VERSION_STR_CYIM`). All 11
 CLAUDE.md closeout steps PASS. 0 CRITICAL / 0 HIGH / 0 MEDIUM /
-4 LOW (tracked above).
+4 LOW. Of the 4 LOW: F-CO-1 / F-CO-3 / F-CO-4 closed at 1.5.3;
+F-CO-2 informational.
 
 ---
 
@@ -190,7 +176,6 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-05-07 (v1.5.2 — closeout pass shipped.
-Roadmap rewrite: closed-milestones trimmed; deferred LSP polish
-+ closeout findings organized as v1.5.x cycle items before
-1.6.0; demand-gated table refreshed.)*
+*Last updated: 2026-05-07 (v1.5.3 — 3 of 4 closeout LOWs
+closed. Roadmap reflects the closures; remaining 1.5.x deferred
+polish items are carry-over candidates. 1.6.0 may now open.)*

@@ -94,55 +94,84 @@ fn main() {
 
     syscall(1, 1, "\n=== gap-buffer cursor moves on 10 MB ===\n", 42);
     # Random-walk cursor moves: 10 K back-and-forth cycles across 10 MB.
+    # v1.5.3: 3 outer rounds for min/max sampling (F-CO-1 closeout).
     var bench_move = bench_new("buf_move_10K_cycles_10MB");
-    bench_start(bench_move);
-    var k = 0;
-    while (k < 10000) {
-        buf_move(b10, k * 1000);
-        buf_move(b10, k * 1000 + 500);
-        k = k + 1;
+    var move_round = 0;
+    while (move_round < 3) {
+        bench_start(bench_move);
+        var k = 0;
+        while (k < 10000) {
+            buf_move(b10, k * 1000);
+            buf_move(b10, k * 1000 + 500);
+            k = k + 1;
+        }
+        bench_stop(bench_move);
+        move_round = move_round + 1;
     }
-    bench_stop(bench_move);
     bench_report(bench_move);
 
     syscall(1, 1, "\n=== search scan on 10 MB ===\n", 30);
     # First-hit scan — pattern appears every 16 bytes, so this is best-case.
+    # 3 outer rounds (search is non-mutating, safe to repeat).
     var bench_search_best = bench_new("search_forward_10MB_best_case");
-    buf_move(b10, 0);
-    bench_start(bench_search_best);
-    _search_scan_forward(b10, "world", 5, 0, 0);
-    bench_stop(bench_search_best);
+    var sb_round = 0;
+    while (sb_round < 3) {
+        buf_move(b10, 0);
+        bench_start(bench_search_best);
+        _search_scan_forward(b10, "world", 5, 0, 0);
+        bench_stop(bench_search_best);
+        sb_round = sb_round + 1;
+    }
     bench_report(bench_search_best);
 
     # Worst-case scan — pattern not in buffer, so we walk every byte.
     var bench_search_worst = bench_new("search_forward_10MB_worst_case");
-    bench_start(bench_search_worst);
-    _search_scan_forward(b10, "ZZZZZZ", 6, 0, 0);
-    bench_stop(bench_search_worst);
+    var sw_round = 0;
+    while (sw_round < 3) {
+        bench_start(bench_search_worst);
+        _search_scan_forward(b10, "ZZZZZZ", 6, 0, 0);
+        bench_stop(bench_search_worst);
+        sw_round = sw_round + 1;
+    }
     bench_report(bench_search_worst);
 
     # Same pattern with case-fold — exercises the per-byte lower() cost.
     var bench_search_fold = bench_new("search_forward_10MB_worst_case_ic");
-    bench_start(bench_search_fold);
-    _search_scan_forward(b10, "ZZZZZZ", 6, 0, 1);
-    bench_stop(bench_search_fold);
+    var sf_round = 0;
+    while (sf_round < 3) {
+        bench_start(bench_search_fold);
+        _search_scan_forward(b10, "ZZZZZZ", 6, 0, 1);
+        bench_stop(bench_search_fold);
+        sf_round = sf_round + 1;
+    }
     bench_report(bench_search_fold);
 
     syscall(1, 1, "\n=== render_build_line of an 80-col line on a 1 MB buffer ===\n", 62);
     # Tokenize once, then time the per-line render path.
+    # v1.5.3 (F-CO-1 closeout): 10 outer rounds × 1000 inner. Per-call
+    # cost is ~250ns; clock_gettime overhead would dominate single-iter
+    # measurement. Multi-iter min/max gives the real floor + warm-cache
+    # truth.
     var tb = highlight_buf(b1, "plain");
     var out[8192];
     var bench_render = bench_new("render_build_line_80c_x1000");
-    bench_start(bench_render);
-    var r = 0;
-    while (r < 1000) {
-        render_build_line(b1, 0, 80, tb, &out, 8192);
-        r = r + 1;
+    var rb_round = 0;
+    while (rb_round < 10) {
+        bench_start(bench_render);
+        var r = 0;
+        while (r < 1000) {
+            render_build_line(b1, 0, 80, tb, &out, 8192);
+            r = r + 1;
+        }
+        bench_stop(bench_render);
+        rb_round = rb_round + 1;
     }
-    bench_stop(bench_render);
     bench_report(bench_render);
 
     syscall(1, 1, "\n=== highlight_buf (vyakarana tokenize) on 1 MB ===\n", 52);
+    # Cold-tokenize is the first call only; remains single-iter (the
+    # tokenbuf cache absorbs subsequent calls and would measure the
+    # cache-hit path instead, which is the next bench).
     var bench_tok = bench_new("highlight_buf_1MB_cyrius");
     bench_start(bench_tok);
     highlight_buf(b1, "cyrius");
@@ -153,15 +182,20 @@ fn main() {
     # buffer. After M6's tokenbuf cache, the 1000 calls collapse to a
     # single hashmap-keyed pointer compare per call. Reports the
     # average; expect sub-microsecond.
+    # v1.5.3 (F-CO-1 closeout): 10 outer rounds × 1000 inner.
     syscall(1, 1, "\n=== highlight_buf cache hit × 1000 on unchanged 1 MB buffer ===\n", 65);
     var bench_cached = bench_new("highlight_buf_cache_hit_x1000");
-    bench_start(bench_cached);
-    var rt = 0;
-    while (rt < 1000) {
-        highlight_buf(b1, "cyrius");
-        rt = rt + 1;
+    var ch_round = 0;
+    while (ch_round < 10) {
+        bench_start(bench_cached);
+        var rt = 0;
+        while (rt < 1000) {
+            highlight_buf(b1, "cyrius");
+            rt = rt + 1;
+        }
+        bench_stop(bench_cached);
+        ch_round = ch_round + 1;
     }
-    bench_stop(bench_cached);
     bench_report(bench_cached);
 
     return 0;

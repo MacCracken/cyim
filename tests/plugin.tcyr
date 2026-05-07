@@ -344,6 +344,25 @@ fn main() {
     assert_eq(plugin_list_count(),  0, "count 0");
     assert_eq(plugin_list_index(),  0, "index 0");
 
+    test_group("v1.5.3 F-CO-3: plugin_list_display clears latched prefix");
+    # Reproduce the corner case: user types `g`, prefix latches to
+    # KEY_G. Before plugin_list_display can complete (e.g. some
+    # synthetic test scenario), display gets called. If we don't
+    # clear the prefix, the next post-dismiss key resolves against
+    # the stale KEY_G.
+    var s_pf = editor_new(buf_new());
+    bl_init(s_pf, editor_buf(s_pf));
+    window_init(s_pf);
+    editor_set_prefix(s_pf, KEY_G);
+    assert_eq(editor_prefix(s_pf), KEY_G, "prefix latched pre-display");
+    var items_pf = vec_new();
+    vec_push(items_pf, "x");
+    plugin_list_display(s_pf, items_pf, 1, &_t_cb_list_select);
+    assert_eq(editor_prefix(s_pf), 0, "prefix cleared by plugin_list_display");
+    # Cleanup.
+    editor_dispatch(s_pf, KEY_ESC);
+    assert_eq(plugin_list_active(), 0, "list dismissed after Esc");
+
     test_group("plugin_list_display latches state");
     var s7 = editor_new(buf_new());
     bl_init(s7, editor_buf(s7));

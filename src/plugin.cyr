@@ -435,6 +435,16 @@ fn plugin_last_diags() { return _plugin_last_diags; }
 # `plugin_buf_load_file` + `buf_move`.
 
 fn plugin_list_display(s, items, count, on_select) {
+    # v1.5.3 (F-CO-3 closeout finding) — defensively clear any
+    # latched prefix (e.g. KEY_G after a `g` keystroke). Otherwise
+    # if a plugin synchronously called plugin_list_display from a
+    # prefix-keymap fp before the user's next byte, the prefix
+    # would survive the picker and resolve against whatever the
+    # user typed after dismiss. Unreachable today (the only call
+    # sites — :lsp-find-refs / gr — complete dispatch before
+    # yielding to next-key) but the guard is patch-sized and
+    # closes the corner case once.
+    if (s != 0) { editor_set_prefix(s, 0); }
     _plugin_list_items     = items;
     _plugin_list_count     = count;
     _plugin_list_index     = 0;

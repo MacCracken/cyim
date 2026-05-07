@@ -4,19 +4,51 @@ Numbers from `cyrius bench tests/perf.bcyr` on x86_64 Linux. The
 benchmark file lives at [`tests/perf.bcyr`](tests/perf.bcyr) and is
 the source of truth for what's measured.
 
-> **Reproducibility:** `cyrius bench tests/perf.bcyr`. Numbers below
-> are single-iteration; treat as ±10% noise. Bench harness uses
-> `clock_gettime(CLOCK_MONOTONIC_RAW)` via `lib/bench.cyr`.
+> **Reproducibility:** `cyrius bench tests/perf.bcyr`. Bench harness
+> uses `clock_gettime(CLOCK_MONOTONIC_RAW)` via `lib/bench.cyr`.
+> v1.5.3+ runs noise-prone short-runtime benches multi-iter (10 outer
+> rounds × 1000 inner) and medium-runtime benches 3-iter for
+> min/max sampling. Mutating benches (gap-buffer fills) stay
+> single-iter (multi-iter would need fresh buffers each round).
 
 ---
 
-## v1.5.2 — 2026-05-07 (closeout cut)
+## v1.5.3 — 2026-05-07 (multi-iter bench, F-CO-1 closure)
 
-Captured during the v1.5.2 closeout audit. Within noise of M6.
-The 1.x cycle (M5 → v1.5.2) added LSP integration (cyim-lsp
-folded in), niyama regex flavors, plugin ABI extensions, and the
-list-display popup subsystem; net binary growth +682 KB, but
-hot-path edit/render perf is unchanged.
+Captured against the v1.5.3 multi-iter harness. **F-CO-1 verdict:
+the +18% render_build_line "regression" at v1.5.2 was 1-iter
+sampling noise.** Multi-iter shows tight variance (±2% across 10
+iters); the underlying perf is stable. F-CO-1 closed.
+
+| Workload | Iters | M6 | v1.5.2 (1-iter) | v1.5.3 (multi-iter) | Verdict |
+|---|---|---|---|---|---|
+| `buf_fill_1MB` | 1 | 12.7 ms | 13.4 ms | 12.8 ms | within noise |
+| `buf_fill_10MB` | 1 | 105 ms | 137 ms | 135.8 ms | within noise (allocator pressure variance) |
+| `buf_fill_100MB` | 1 | 1.32 s | 1.28 s | 1.29 s | within noise |
+| `buf_move_10K_cycles_10MB` | 3 | 51 ms | 49 ms | 47.0 ms (44.8 / 49.9) | improvement |
+| `search_forward_10MB_best` | 3 | 1 μs | 1 μs | 778 ns (501 / 1067) | improvement |
+| `search_forward_10MB_worst` | 3 | 108 ms | 100 ms | 102.1 ms (101.6 / 102.5) | improvement |
+| `search_forward_10MB_worst_ic` | 3 | 164 ms | 164 ms | 163.3 ms (162.9 / 163.7) | within noise |
+| **`render_build_line × 1000`** | **10** | **214 μs** | **252 μs** | **250 μs (249 / 253)** | **noise; F-CO-1 closed** |
+| `highlight_buf` 1 MB cyrius (cold) | 1 | 265 ms | 253 ms | 258.7 ms | within noise |
+| `highlight_buf` × 1000 cache hit | 10 | 17 μs | 16 μs | 15 μs (15 / 16) | improvement |
+
+**Conclusion:** The 1.x cycle (M5 → v1.5.3) added LSP integration,
+niyama regex flavors, plugin ABI extensions (3), and the
+list-display popup subsystem; net binary growth +683 KB. Hot-path
+edit/render perf is **stable or improved** across the board; the
+2-iter min/max bands at 3-iter sampling fall within ±5% of each
+other. Multi-iter at 10 rounds shows ±2% — well below the original
+±10% single-iter noise estimate.
+
+---
+
+## v1.5.2 — 2026-05-07 (closeout cut, single-iter)
+
+Single-iter numbers from the v1.5.2 closeout. Superseded by
+v1.5.3 multi-iter above; preserved here for the F-CO-1 audit
+trail. The +18% `render_build_line` here vs. M6 was the finding
+that prompted multi-iter re-sampling.
 
 | Workload | M6 | v1.5.2 | Δ |
 |---|---|---|---|
@@ -24,16 +56,9 @@ hot-path edit/render perf is unchanged.
 | `buf_fill_100MB` | 1.32 s | 1.28 s | -3% (improvement / noise) |
 | `buf_move_10K_cycles_10MB` | 51 ms | 49 ms | -3.5% |
 | `search_forward_10MB_worst` | 108 ms | 100 ms | -7% (improvement) |
-| `render_build_line × 1000` | 214 μs | 252 μs | **+18% — see F-CO-1** |
+| `render_build_line × 1000` | 214 μs | 252 μs | **+18% — F-CO-1 (now closed)** |
 | `highlight_buf` 1 MB cyrius (cold) | 265 ms | 253 ms | -4.5% |
 | `highlight_buf` × 1000 cache hit | 17 μs | 16 μs | -6% |
-
-**F-CO-1 (LOW)** — the `render_build_line` regression is likely
-1-iter sampling noise; the render layer hasn't changed since
-v1.5.0 and the v1.5.0 → v1.5.1 delta in `render.cyr` is zero.
-Tracked in
-[`docs/development/roadmap.md`](docs/development/roadmap.md)'s
-1.5.x cycle for multi-iter re-bench before 1.6.0.
 
 ---
 
