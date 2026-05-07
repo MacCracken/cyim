@@ -4,6 +4,79 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.6] — 2026-05-06
+
+Patch release — **plugin ABI frozen + cyrius pin 5.9.13 → 5.9.16**.
+Two complementary cuts:
+
+1. **ADR 0004 freezes the plugin ABI surface** at the v1.3.5
+   shape. All six hook registration functions, their callback
+   signatures, the 24 B diag record layout, and the four
+   `DIAG_*` severity constants are now stable across cyim 1.x.
+   Plugin authors (cyim-lsp at v1.4.0; future external plugins
+   via the sandhi pattern) can target this contract with the
+   confidence that backwards-incompatible changes wait for
+   cyim 2.x. Hook expansion within 1.x continues to require an
+   ADR per ADR 0003 §3.
+2. **Cyrius toolchain bump 5.9.13 → 5.9.16**. Re-vendored
+   `lib/fs.cyr` lost the `dir_walk_with_prunes` helper
+   (introduced and removed upstream between 5.9.13 and 5.9.16)
+   — cyim doesn't consume that function, so the removal is
+   benign and DCE-stripped. Binary is **byte-identical** to
+   v1.3.5 (899,488 B): the changed stdlib paths aren't consumed
+   by cyim at all, so DCE delivers an exact match.
+
+No source changes in cyim's own code. Pure doc cut + toolchain
+re-vendor.
+
+### Added
+
+- **`docs/adr/0004-plugin-abi-freeze.md`** (350 lines) —
+  formalises the frozen surface: hook registration functions,
+  callback signatures, diag record layout, severity constants,
+  compatibility envelope (stable across 1.x; additions allowed;
+  breaking changes need 2.x). Documents what's NOT frozen
+  (internal `_plugin_*` helpers, registry vec layouts,
+  render-side inline diag paint) and three alternatives that
+  were considered and rejected.
+
+### Changed
+
+- **Cyrius toolchain pin**: `5.9.13` → `5.9.16` in `cyrius.cyml
+  [package].cyrius`. All gates green: cyrius test 33/33,
+  cli_smoke 118/118, integration smoke PASS, cyrius fuzz 3/3,
+  lint 0 warnings.
+- Re-vendored `lib/fs.cyr` from the new toolchain.
+  `dir_walk_with_prunes` removed (upstream churn; cyim doesn't
+  consume it).
+
+### Notes
+
+- **No external plugin migration yet.** trailing_ws stays
+  inline in `src/plugins/trailing_ws.cyr`. Promotion to a
+  separate `cyim-trailing-whitespace` repo via the sandhi
+  pattern remains gated on upstream cyrius adding first-class
+  `[plugins.<name>]` parsing — currently we use the
+  `[deps.<name>]` syntactic equivalence per ADR 0003 §4.
+- **v1.4.0 unblocked.** With the ABI frozen, cyim-lsp can
+  proceed: subprocess spawn of `cyrius-lsp`, JSON-RPC framing
+  on pipes, `textDocument/didSave` via post_save_hook,
+  `textDocument/didChange` via post_change_hook,
+  `publishDiagnostics` via diagnostic_provider, status segment
+  for diag count, `gd` / `gr` keymaps via normal_key, ex
+  commands via `:lsp-restart` / `:lsp-status`. Lands as a new
+  `MacCracken/cyim-lsp` repo with `[plugins.cyim-lsp]` in
+  cyrius.cyml.
+
+### Binary
+
+- `build/cyim` — DCE build size: **899,488 B** (byte-identical
+  to v1.3.5). The cyrius 5.9.13 → 5.9.16 stdlib paths cyim
+  consumes are byte-equivalent after DCE; the changed paths
+  (`dir_walk_with_prunes` removal, etc.) aren't consumed by
+  cyim at all. Pure documentation cut from cyim's binary
+  perspective.
+
 ## [1.3.5] — 2026-05-06
 
 Patch release — **plugin ABI proven end-to-end** with the first
