@@ -54,12 +54,15 @@ the design choices.
 
 ### Changed
 
-- **8 test files (`tests/{visual,buflist,dot,insert,command,search,window,undo}.tcyr`)**
-  added `include "src/plugin.cyr"` immediately before
+- **8 test files (`tests/{visual,buflist,dot,insert,command,search,window,undo}.tcyr`)
+  + 1 fuzz file (`fuzz/driver.fcyr`)** added
+  `include "src/plugin.cyr"` immediately before
   `include "src/command.cyr"`. Cyrius is single-pass; the
   fire-point references in command.cyr need plugin.cyr's
   function definitions to come earlier in the translation unit.
-  Existing test assertions unchanged.
+  Existing test assertions and fuzz invariants unchanged. (CI's
+  `cyrius fuzz` gate caught driver.fcyr after the .tcyr fixes
+  landed; same root cause, same one-line fix.)
 - `src/driver.cyr:editor_step` captures `buf_version` pre-dispatch
   and compares post-apply for the post_change firing decision.
   Pure addition — no existing dispatch behaviour changed.
