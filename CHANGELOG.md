@@ -4,6 +4,97 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.7] — 2026-05-09
+
+**cyim-lsp 1.5.0 pickup — open-in-split for `:lsp-find-refs`.**
+
+Seventh bite of the 1.6.x catch-up cycle. Activates cyim 1.6.6's
+`plugin_buf_load_file_split` ABI through cyim-lsp 1.5.0's example
+glue: two new ex-commands (`:lsp-find-refs-split` /
+`:lsp-find-refs-vsplit`) thread a mode flag into the references
+picker so that selecting a result opens it beside the current
+buffer instead of replacing it.
+
+cyim-lsp 1.5.0's `[lib]` source was unchanged (banner-only
+distfile delta vs 1.4.0); the work is entirely in the example
+glue and cyim's `src/plugins/lsp_glue.cyr` mirror. Per CLAUDE.md
+"ONE change at a time", arrow-keys-in-list-mode (the other
+1.5.x carry-over) stays a separate bite — sequencing is your
+call once 1.6.7 lands.
+
+User-visible: `:lsp-find-refs` (unchanged — replaces current
+pane), `:lsp-find-refs-split` (new — splits horizontal, new pane
+below, focus moves there), `:lsp-find-refs-vsplit` (new — splits
+vertical, new pane right). Default in-place behaviour preserved
+byte-for-byte; users on cyim < 1.6.6 with cyim-lsp 1.4.0 glue
+continue to work without change.
+
+### Changed
+
+- **`cyrius.cyml`** — `[deps.cyim-lsp].tag = "1.5.0"` (was
+  `"1.4.0"`). `cyrius deps` re-resolved; `lib/cyim-lsp.cyr`
+  symlink now points at `~/.cyrius/deps/cyim-lsp/1.5.0/dist/cyim-lsp.cyr`
+  (2425 lines, byte-identical to 1.4.0 modulo banner — `[lib]`
+  unchanged).
+- **`cyrius.lock`** — cyim-lsp sha updated; vyakarana sha
+  unchanged.
+- **`src/plugins/lsp_glue.cyr`** — mirror of cyim-lsp 1.5.0's
+  example-glue refactor:
+  - New module-level `_cyim_lsp_ref_split_mode` (i64; default
+    0). Set by the entering ex-command, read by
+    `_cyim_lsp_on_ref_select` at jump time.
+  - Existing `_cyim_lsp_ex_find_refs` body extracted into
+    `_cyim_lsp_ex_find_refs_with_mode(s, mode)` shared helper.
+  - `_cyim_lsp_ex_find_refs(s)` thinned to a single line (sets
+    mode 0 via the helper).
+  - New `_cyim_lsp_ex_find_refs_split(s)` (mode 1) and
+    `_cyim_lsp_ex_find_refs_vsplit(s)` (mode 2).
+  - `_cyim_lsp_on_ref_select` branches: mode 0 →
+    `plugin_buf_load_file`, mode 1/2 →
+    `plugin_buf_load_file_split(..., SPLIT_HORIZONTAL/SPLIT_VERTICAL)`.
+  - `cyim_lsp_init` registers the two new ex-commands
+    (`:lsp-find-refs-split`, `:lsp-find-refs-vsplit`) alongside
+    the existing four.
+
+### Status
+
+- **No new cyim ABI surface.** The `plugin_buf_load_file_split`
+  ABI shipped in 1.6.6; this cut just consumes it. Plugin ABI
+  freeze (1.3.6 / ADR 0004) holds.
+- **Default behaviour preserved.** `:lsp-find-refs` (and `gr`
+  via the prefix-keymap) continues to load in-place — the
+  mode-0 branch is byte-equivalent to pre-1.6.7 logic.
+- **Open-in-split is now ex-command-only.** Keymap bindings for
+  `:lsp-find-refs-split` / `:lsp-find-refs-vsplit` (e.g. `gR`,
+  `gv`, etc.) are deferred — would land via either a
+  `.cyimrc` keymap surface or a future cyim-lsp glue update.
+
+### Binary
+
+- `build/cyim` (CYRIUS_DCE=1): **1,214,528 B** (+648 over 1.6.6's
+  1,213,880 B). Delta is the `_cyim_lsp_ex_find_refs_with_mode`
+  helper extraction (~zero net — body moved, not duplicated),
+  the two new ex-command bodies (~80 B each as thin wrappers
+  delegating to the helper), the new `_cyim_lsp_ref_split_mode`
+  module global (~16 B), the on_select branch (~200 B for the
+  mode-1/2 dispatch path including SPLIT_HORIZONTAL/SPLIT_VERTICAL
+  resolution), and the two extra `plugin_register_ex_command`
+  calls in `cyim_lsp_init` (~150 B with the cstrings).
+
+### Verification
+
+- `cyrius deps` — re-resolved, lock updated.
+- `cyrius test` — **22 suites, 1134 assertions PASS**, 0 fail
+  (unchanged vs 1.6.6 — the new ex-commands are exercised
+  through the lsp smoke harness at runtime, not via tcyr).
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 24 src files, 0 warnings each.
+- `cyrfmt --check` — 24 files clean.
+- `tests/cli_smoke.sh` — 118 PASS.
+- `tests/integration_smoke.py` — all PASS.
+- `cyrius smoke tests/smcyr/lsp_fold.smcyr` — 1 PASS.
+- `CYRIUS_DCE=1 cyrius build` — clean.
+
 ## [1.6.6] — 2026-05-09
 
 **Plugin ABI: `plugin_buf_load_file_split(s, path, direction)`.**
