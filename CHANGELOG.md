@@ -4,6 +4,57 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.3] — 2026-05-09
+
+**cyim-lsp 1.3.0 pickup.** Third bite of the 1.6.x catch-up
+channel. cyim-lsp 1.3.0 is the toolchain-bump tag that publishes
+the `cyrius.cyml [package].cyrius = 5.10.10` edit cyim 1.6.1
+made in-tree. Pure infrastructure cut on the cyim-lsp side — no
+`[lib]` source change, no example-glue change, no behaviour
+delta. cyim's pickup is correspondingly minimal: one tag bump in
+`cyrius.cyml`, one `cyrius deps`, gates re-verified.
+
+The cyim-lsp distfile resolved at the new tag is byte-identical
+to 1.2.1 modulo the version banner (2305 lines unchanged), so
+cyim's binary is byte-identical to 1.6.2's: **1,208,896 B**.
+
+### Changed
+
+- **`cyrius.cyml`** — `[deps.cyim-lsp].tag = "1.3.0"` (was
+  `"1.2.1"`). `cyrius deps` re-resolved; `lib/cyim-lsp.cyr`
+  symlink now points at `~/.cyrius/deps/cyim-lsp/1.3.0/dist/cyim-lsp.cyr`.
+- **`cyrius.lock`** — cyim-lsp sha updated; vyakarana sha
+  unchanged.
+
+### Status
+
+- **No cyim source changes.** This is a banner-only consumer
+  pickup. `src/plugins/lsp_glue.cyr`, all `[lib]` symbols, and
+  every test stay byte-identical to 1.6.2.
+- **ABI freeze** (1.3.6 / ADR 0004) holds. cyim-lsp 1.3.0 didn't
+  touch the bundle; the freeze envelope wasn't tested by this
+  cut.
+
+### Binary
+
+- `build/cyim` (CYRIUS_DCE=1): **1,208,896 B** (byte-identical
+  to 1.6.2 — the cyim-lsp distfile didn't change shape, only the
+  banner string). Recorded for the audit trail; no delta to
+  explain.
+
+### Verification
+
+- `cyrius deps` — re-resolved, lock updated.
+- `cyrius test` — **22 suites, 1087 assertions PASS**, 0 failures
+  (unchanged from 1.6.2).
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 23 src files, 0 warnings each (per-file iteration).
+- `cyrfmt --check` — 23 files clean.
+- `tests/cli_smoke.sh` — 118 PASS.
+- `tests/integration_smoke.py` — all PASS.
+- `cyrius smoke tests/smcyr/lsp_fold.smcyr` — 1 PASS.
+- `CYRIUS_DCE=1 cyrius build` — clean.
+
 ## [1.6.2] — 2026-05-09
 
 **Grammar-routing catch-up — 11 → 45 languages.** Second bite of
