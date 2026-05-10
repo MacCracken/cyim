@@ -530,6 +530,85 @@ fn main() {
     var act_h_post = editor_dispatch(s7, 104);
     assert_eq(act_h_post, ACT_MOVE_LEFT, "h moves left again after dismiss");
 
+    # === v1.6.7 — arrow keys in list mode ===
+    #
+    # editor_feed parses CSI sequences (ESC [ <final>) at the
+    # driver layer. v1.6.7 routes Up/Down arrows to
+    # _plugin_list_prev / _plugin_list_next when the picker is
+    # active, mirroring mode.cyr's j/k routing for the same
+    # state. Left/Right are swallowed (no horizontal navigation
+    # in a single-column picker).
+    #
+    # CSI bytes: ESC = 27, [ = 91, A = 65 (up), B = 66 (down),
+    # C = 67 (right), D = 68 (left).
+
+    test_group("arrow keys: Down advances list-index when picker active");
+    plugin_list_display(s7, items, 3, &_t_cb_list_select);
+    assert_eq(plugin_list_index(), 0, "list starts at index 0");
+    var csi_down[3];
+    store8(&csi_down + 0, 27);   # ESC
+    store8(&csi_down + 1, 91);   # [
+    store8(&csi_down + 2, 66);   # B (down)
+    editor_feed(s7, &csi_down, 3);
+    assert_eq(plugin_list_index(), 1, "Down arrow moves to index 1");
+    editor_feed(s7, &csi_down, 3);
+    assert_eq(plugin_list_index(), 2, "second Down moves to index 2");
+    editor_feed(s7, &csi_down, 3);
+    assert_eq(plugin_list_index(), 2, "Down at last clamps (no overflow past count - 1)");
+
+    test_group("arrow keys: Up moves list-index back when picker active");
+    var csi_up[3];
+    store8(&csi_up + 0, 27);     # ESC
+    store8(&csi_up + 1, 91);     # [
+    store8(&csi_up + 2, 65);     # A (up)
+    editor_feed(s7, &csi_up, 3);
+    assert_eq(plugin_list_index(), 1, "Up moves to index 1");
+    editor_feed(s7, &csi_up, 3);
+    assert_eq(plugin_list_index(), 0, "Up moves to index 0");
+    editor_feed(s7, &csi_up, 3);
+    assert_eq(plugin_list_index(), 0, "Up at first clamps (no underflow below 0)");
+
+    test_group("arrow keys: Left/Right swallowed in list mode (no buf mutation, no list change)");
+    var csi_right[3];
+    store8(&csi_right + 0, 27);
+    store8(&csi_right + 1, 91);
+    store8(&csi_right + 2, 67);   # C (right)
+    var pre_idx_lr = plugin_list_index();
+    var pre_v_lr = buf_version(editor_buf(s7));
+    editor_feed(s7, &csi_right, 3);
+    assert_eq(plugin_list_index(), pre_idx_lr, "Right arrow did not change list index");
+    assert_eq(buf_version(editor_buf(s7)), pre_v_lr, "Right arrow did not mutate buffer");
+    var csi_left[3];
+    store8(&csi_left + 0, 27);
+    store8(&csi_left + 1, 91);
+    store8(&csi_left + 2, 68);    # D (left)
+    editor_feed(s7, &csi_left, 3);
+    assert_eq(plugin_list_index(), pre_idx_lr, "Left arrow did not change list index");
+    assert_eq(buf_version(editor_buf(s7)), pre_v_lr, "Left arrow did not mutate buffer");
+    assert_eq(plugin_list_active(), 1, "list still active after L/R swallow");
+
+    test_group("arrow keys: dismiss clears list, then arrows resume normal motion routing");
+    editor_dispatch(s7, KEY_ESC);
+    assert_eq(plugin_list_active(), 0, "list dismissed");
+    # After dismissal, ESC [ B should fall through the !list-active
+    # branch and dispatch ACT_MOVE_DOWN via motion_apply on the
+    # active buffer. We can't observe motion_apply directly without
+    # buffer fixture, but we can confirm the picker isn't reactivated
+    # and editor_feed returns the consumed-byte count.
+    var consumed = editor_feed(s7, &csi_down, 3);
+    assert_eq(consumed, 3, "editor_feed consumed all 3 CSI bytes after dismiss");
+    assert_eq(plugin_list_active(), 0, "list still dismissed (no reactivation)");
+
+    test_group("arrow keys: regression guard — ESC alone outside CSI still routes byte-wise");
+    # An ESC not followed by '[' should fall through to editor_step
+    # (which interprets ESC as mode-exit in INSERT, etc.). We don't
+    # have a fixture for that here; the guard is that editor_feed
+    # consumes 1 byte (not 3) when the head bytes aren't a CSI head.
+    var lone_esc[1];
+    store8(&lone_esc + 0, 27);
+    var lone_consumed = editor_feed(s7, &lone_esc, 1);
+    assert_eq(lone_consumed, 1, "lone ESC consumed as single byte (no CSI lookahead overrun)");
+
     return assert_summary();
 }
 

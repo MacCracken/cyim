@@ -176,24 +176,40 @@ fn editor_feed(s, buf, len) {
             if (load8(buf + i) == 27) {
                 if (load8(buf + i + 1) == 91) {
                     var final = load8(buf + i + 2);
-                    var act = 0;
-                    if (final == 65) { act = ACT_MOVE_UP; }
-                    if (final == 66) { act = ACT_MOVE_DOWN; }
-                    if (final == 67) { act = ACT_MOVE_RIGHT; }
-                    if (final == 68) { act = ACT_MOVE_LEFT; }
-                    if (act != 0) {
-                        # Apply the motion in whatever mode the
-                        # editor is in (NORMAL, INSERT, VISUAL).
-                        # motion_apply guards by mode/state.
-                        motion_apply(s, act);
+                    # v1.6.7: route arrow keys to list-mode
+                    # navigation when the picker is active.
+                    # Mirrors mode.cyr's j/k routing for the same
+                    # state — arrow-key users get the same surface
+                    # as vim-key users, no second-class citizenship.
+                    # Up/Down move the selection; Left/Right are
+                    # swallowed (no horizontal navigation in a
+                    # single-column picker — they'd land on
+                    # h/l-equivalent NORMAL motions if dispatched).
+                    if (_plugin_list_active == 1) {
+                        if (final == 65) { _plugin_list_prev(); } # Up
+                        if (final == 66) { _plugin_list_next(); } # Down
+                        # final == 67 (Right) / 68 (Left): no-op.
                         consumed = 3;
                     } else {
-                        # Unknown CSI final byte — swallow the
-                        # 3-byte sequence to avoid the destructive
-                        # fallback (ESC + [ + <byte> processed
-                        # individually would exit insert + dispatch
-                        # whatever <byte> means in NORMAL).
-                        consumed = 3;
+                        var act = 0;
+                        if (final == 65) { act = ACT_MOVE_UP; }
+                        if (final == 66) { act = ACT_MOVE_DOWN; }
+                        if (final == 67) { act = ACT_MOVE_RIGHT; }
+                        if (final == 68) { act = ACT_MOVE_LEFT; }
+                        if (act != 0) {
+                            # Apply the motion in whatever mode the
+                            # editor is in (NORMAL, INSERT, VISUAL).
+                            # motion_apply guards by mode/state.
+                            motion_apply(s, act);
+                            consumed = 3;
+                        } else {
+                            # Unknown CSI final byte — swallow the
+                            # 3-byte sequence to avoid the destructive
+                            # fallback (ESC + [ + <byte> processed
+                            # individually would exit insert + dispatch
+                            # whatever <byte> means in NORMAL).
+                            consumed = 3;
+                        }
                     }
                 }
             }

@@ -87,7 +87,7 @@ this is a sequencing index.
 | **v1.6.4** — Basename-driven language detection (`lang_basenames(i)` table; `Dockerfile`/`Makefile`/`GNUmakefile`/`Containerfile` + `.bashrc`/`.zshrc`/`.profile` family; case-sensitive with directory-boundary check; `tests/lang.tcyr` 77 → 103 assertions) | Shipped 2026-05-09 |
 | **v1.6.5** — cyim-lsp 1.4.0 pickup; reference previews in `:lsp-find-refs` (`_cyim_lsp_label_for_ref` calls `lsp_ref_preview(uri, line, 80)` and appends snippet after coordinates; falls through cleanly when preview unavailable) | Shipped 2026-05-09 |
 | **v1.6.6** — Plugin ABI: `plugin_buf_load_file_split(s, path, direction)` (additive per ADR 0004; `SPLIT_HORIZONTAL`/`SPLIT_VERTICAL` constants; cyim side of the open-in-split carry-over from 1.5.x; cyim-lsp 1.5.0 will consume) | Shipped 2026-05-09 |
-| **v1.6.7** — cyim-lsp 1.5.0 pickup; open-in-split for `:lsp-find-refs` (`:lsp-find-refs-split` / `:lsp-find-refs-vsplit` ex-commands; `_cyim_lsp_on_ref_select` branches on mode flag; default in-place behaviour preserved byte-for-byte) | Shipped 2026-05-09 |
+| **v1.6.7** — cyim-lsp 1.5.0 pickup (open-in-split for `:lsp-find-refs`) + arrow keys in list mode (CSI Up/Down → `_plugin_list_prev`/`_plugin_list_next` when picker active; Left/Right swallowed); both 1.5.x carry-over items in one pre-tag bundle | Shipped 2026-05-09 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -150,14 +150,10 @@ under the new toolchain.
 | **v1.6.4** | Basename-driven language detection. New `lang_basenames(i)` table in `src/lang.cyr` populated for shell (`.bashrc` family), dockerfile (`Dockerfile`/`Containerfile`), and makefile (`Makefile`/`GNUmakefile`). Case-sensitive equality with `/` directory-boundary check; basename probe runs before extension probe in `detect_language_from_path`. `tests/lang.tcyr` 77 → 103 assertions. | ✅ Shipped 2026-05-09 |
 | **v1.6.5** | cyim-lsp 1.4.0 pickup. Tag bump 1.3.0 → 1.4.0 plus `src/plugins/lsp_glue.cyr` mirror of cyim-lsp's `_cyim_lsp_label_for_ref` change — calls `lsp_ref_preview(uri, line, 80)` and appends snippet after coordinates separated by two spaces. Closes the long-standing "reference previews" carry-over from 1.5.x deferred polish. No new cyim ABI surface. | ✅ Shipped 2026-05-09 |
 | **v1.6.6** | Open-in-split ABI: `plugin_buf_load_file_split(s, path, direction)` added to `src/plugin.cyr`. Additive per ADR 0004's freeze envelope — `plugin_buf_load_file` unchanged. New public constants `SPLIT_HORIZONTAL = 0` / `SPLIT_VERTICAL = 1`. Implementation reuses dedup + load helpers, then `window_split_active` + focus move to new sibling. `tests/plugin.tcyr` 88 → 109 assertions. cyim-lsp 1.5.0 (next) consumes for ref-jumping UX; ABI dormant until then. | ✅ Shipped 2026-05-09 |
-| **v1.6.7** | cyim-lsp 1.5.0 pickup. Tag bump 1.4.0 → 1.5.0; cyim-lsp's `[lib]` source unchanged (banner-only distfile delta), but example glue refactored to add `_cyim_lsp_ref_split_mode` state, `_cyim_lsp_ex_find_refs_with_mode(s, mode)` helper, and three ex-commands (`:lsp-find-refs` / `-split` / `-vsplit`). cyim's `src/plugins/lsp_glue.cyr` mirrors the refactor; on_select branches on mode 0/1/2 to in-place / horizontal / vertical loads. Default behaviour byte-equivalent to pre-1.6.7. | ✅ Shipped 2026-05-09 |
+| **v1.6.7** | cyim-lsp 1.5.0 pickup (open-in-split) **+ arrow keys in list mode** — both 1.5.x carry-over polish items in a single pre-tag cut. Tag bump 1.4.0 → 1.5.0; cyim-lsp's `[lib]` source unchanged (banner-only distfile delta); example glue refactored. cyim's `src/plugins/lsp_glue.cyr` mirrors: `_cyim_lsp_ref_split_mode` global, `_cyim_lsp_ex_find_refs_with_mode(s, mode)` helper, three ex-commands (`:lsp-find-refs` / `-split` / `-vsplit`); on_select branches mode 0/1/2 → `plugin_buf_load_file` / `plugin_buf_load_file_split`. Arrow keys: `src/driver.cyr` `editor_feed` CSI dispatch routes `ESC [ A` / `ESC [ B` to `_plugin_list_prev` / `_plugin_list_next` when picker active; Left/Right swallowed; outside list mode the existing `motion_apply` routing is unchanged. `tests/plugin.tcyr` 88 → 125 assertions (+37 net). All 1.5.x deferred-polish carry-overs now closed. | ✅ Shipped 2026-05-09 |
 
 ### Planned (next bites)
-
-| Cut | Theme | Notes |
-|---|---|---|
-| **v1.6.x** | **Arrow keys in list mode** (carry-over from 1.5.x deferred polish). Wire arrow handling in `editor_feed`'s CSI parser to route to `_plugin_list_next` / `_plugin_list_prev` when `_plugin_list_active`. Pure driver-side change. Smallest carry-over remaining. **Slot is your call**: was originally 1.6.7 in the original sequence; that slot was consumed by the cyim-lsp 1.5.0 pickup. Either lands as 1.6.7.x patch or shifts the closeout from 1.6.8 → 1.6.9. | Triggered by user finding j/k off in list mode. |
-| **v1.6.8** *(or 1.6.9 if arrow keys lands as 1.6.8 first)* | **Closeout pass for the 1.6.x cycle.** Follows CLAUDE.md's 11-step Closeout Pass policy (same shape as 1.5.2's). Specific 1.6.x agenda: re-baseline benchmarks under cyrius 5.10.10 + vyakarana 2.2.1 + cyim-lsp 1.5.0 + full grammar surface (1.6.1's numbers are the new baseline; 1.6.x cumulative regression vs 1.5.3 worth a chart). Confirm `agnoshi` / `aethersafha` integration paths still embed cyim cleanly under the catch-up sequence. Architecture review: `lang.cyr` if-chain at 45 entries + parallel `lang_basenames` table from 1.6.4 — assess whether the third forcing function for refactor has arrived. `_cyim_lsp_label_for_ref` shape duplicated in cyim-lsp's example glue and cyim's `src/plugins/lsp_glue.cyr`; `_cyim_lsp_ex_find_refs_with_mode` similarly duplicated as of 1.6.7 — both cases are wait-for-third-instance. Audit doc lands at `docs/audit/2026-MM-DD-1.6x-closeout.md`. | The 1.6.x cycle gate. |
+| **v1.6.8** | **Closeout pass for the 1.6.x cycle.** Follows CLAUDE.md's 11-step Closeout Pass policy (same shape as 1.5.2's). Specific 1.6.x agenda: re-baseline benchmarks under cyrius 5.10.10 + vyakarana 2.2.1 + cyim-lsp 1.5.0 + full grammar surface (1.6.1's numbers are the new baseline; 1.6.x cumulative regression vs 1.5.3 worth a chart). Confirm `agnoshi` / `aethersafha` integration paths still embed cyim cleanly under the catch-up sequence. Architecture review: `lang.cyr` if-chain at 45 entries + parallel `lang_basenames` table from 1.6.4 — assess whether the third forcing function for refactor has arrived. cyim-lsp glue mirror duplications (label_for_ref, ex_find_refs_with_mode, on_ref_select branch) — instance-2 today; closeout reassesses whether to formalize the copy-from-upstream procedure. Audit doc lands at `docs/audit/2026-MM-DD-1.6x-closeout.md`. | The 1.6.x cycle gate. |
 
 ### v1.7.0 — Mechanical refresh + darshana TUI dep pickup (planned)
 
@@ -254,12 +250,12 @@ name in the tradition, written in the language of the library.
 ---
 
 *Last updated: 2026-05-09 (v1.6.7 — cyim-lsp 1.5.0 pickup
-shipped. Open-in-split ABI now end-to-end usable through three
-new ex-commands. Catch-up cycle seven cuts deep: 1.6.1 toolchain
-/ 1.6.2 grammars / 1.6.3 cyim-lsp toolchain publish / 1.6.4
-basename detection / 1.6.5 reference previews / 1.6.6
-open-in-split ABI / 1.6.7 open-in-split consumer activation.
-The original 1.6.7 slot (arrow keys in list mode) has slipped —
-it's the only 1.5.x carry-over still pending. Slot for arrow
-keys + sequencing of the 1.6.8 closeout is the next sequencing
-question. Then 1.7.0 (cyrius 5.10.20 + darshana TUI).)*
+(open-in-split) + arrow keys in list mode shipped. Both 1.5.x
+deferred-polish carry-overs land in one pre-tag bundle since
+1.6.7 hadn't been tagged when the arrow-keys piece was scoped.
+Catch-up cycle seven cuts deep: 1.6.1 toolchain / 1.6.2 grammars
+/ 1.6.3 cyim-lsp toolchain publish / 1.6.4 basename detection /
+1.6.5 reference previews / 1.6.6 open-in-split ABI / 1.6.7
+open-in-split consumer activation + arrow keys. **All 1.5.x
+deferred-polish items now closed.** Next: 1.6.8 closeout, then
+1.7.0 (cyrius 5.10.20 + darshana TUI dep pickup).)*

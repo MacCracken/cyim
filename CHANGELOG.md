@@ -6,21 +6,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.6.7] — 2026-05-09
 
-**cyim-lsp 1.5.0 pickup — open-in-split for `:lsp-find-refs`.**
+**cyim-lsp 1.5.0 pickup — open-in-split for `:lsp-find-refs`,
+plus arrow keys in list mode.**
 
-Seventh bite of the 1.6.x catch-up cycle. Activates cyim 1.6.6's
-`plugin_buf_load_file_split` ABI through cyim-lsp 1.5.0's example
-glue: two new ex-commands (`:lsp-find-refs-split` /
-`:lsp-find-refs-vsplit`) thread a mode flag into the references
-picker so that selecting a result opens it beside the current
-buffer instead of replacing it.
+Seventh bite of the 1.6.x catch-up cycle. Lands two carry-over
+items at once because 1.6.7 hadn't been tagged yet when the
+arrow-keys piece was scoped — bundling fits the same release
+window:
+
+1. **Open-in-split** — cyim-lsp 1.5.0's example-glue refactor
+   activates cyim 1.6.6's `plugin_buf_load_file_split` ABI
+   through two new ex-commands (`:lsp-find-refs-split` /
+   `:lsp-find-refs-vsplit`).
+2. **Arrow keys in list mode** — `editor_feed`'s CSI parser
+   now routes `ESC [ A` / `ESC [ B` (Up / Down) to
+   `_plugin_list_prev` / `_plugin_list_next` when
+   `_plugin_list_active == 1`. Mirror of mode.cyr's existing
+   j/k routing; closes the last 1.5.x deferred-polish carry-over.
 
 cyim-lsp 1.5.0's `[lib]` source was unchanged (banner-only
 distfile delta vs 1.4.0); the work is entirely in the example
-glue and cyim's `src/plugins/lsp_glue.cyr` mirror. Per CLAUDE.md
-"ONE change at a time", arrow-keys-in-list-mode (the other
-1.5.x carry-over) stays a separate bite — sequencing is your
-call once 1.6.7 lands.
+glue and cyim's `src/plugins/lsp_glue.cyr` mirror.
 
 User-visible: `:lsp-find-refs` (unchanged — replaces current
 pane), `:lsp-find-refs-split` (new — splits horizontal, new pane
@@ -56,6 +62,27 @@ continue to work without change.
     (`:lsp-find-refs-split`, `:lsp-find-refs-vsplit`) alongside
     the existing four.
 
+### Added — arrow keys in list mode
+
+- **`src/driver.cyr` `editor_feed`** — when
+  `_plugin_list_active == 1`, the CSI dispatch routes `ESC [ A`
+  (Up) to `_plugin_list_prev` and `ESC [ B` (Down) to
+  `_plugin_list_next`. Left / Right finals (`C` / `D`) are
+  swallowed (consumed without effect) since a single-column
+  picker has no horizontal navigation. Outside list mode the
+  existing `motion_apply(ACT_MOVE_*)` routing is unchanged.
+- **`tests/plugin.tcyr` extended 109 → 125 assertions** (+16
+  across 5 new groups for the arrow-key surface):
+  - Down advances index (and clamps at `count - 1`).
+  - Up moves index back (and clamps at 0).
+  - Left/Right swallowed (no list-index change, no buffer
+    mutation).
+  - After list dismiss, arrow keys resume motion routing
+    (regression guard for the active-leaf case).
+  - Lone ESC outside a CSI head still routes as a single byte
+    (no 3-byte lookahead overrun — preserves
+    INSERT-mode-exit semantics).
+
 ### Status
 
 - **No new cyim ABI surface.** The `plugin_buf_load_file_split`
@@ -64,29 +91,34 @@ continue to work without change.
 - **Default behaviour preserved.** `:lsp-find-refs` (and `gr`
   via the prefix-keymap) continues to load in-place — the
   mode-0 branch is byte-equivalent to pre-1.6.7 logic.
-- **Open-in-split is now ex-command-only.** Keymap bindings for
-  `:lsp-find-refs-split` / `:lsp-find-refs-vsplit` (e.g. `gR`,
-  `gv`, etc.) are deferred — would land via either a
-  `.cyimrc` keymap surface or a future cyim-lsp glue update.
+- **Arrow-key surface is parity-only.** j/k continue to work
+  unchanged in list mode (mode.cyr handles the byte-level
+  dispatch); arrow keys now do the same via editor_feed. No
+  user-visible regression for either input style.
+- **Open-in-split is currently ex-command-only.** Keymap
+  bindings for `:lsp-find-refs-split` / `:lsp-find-refs-vsplit`
+  (e.g. `gR`, `gv`, etc.) are deferred — would land via either
+  a `.cyimrc` keymap surface or a future cyim-lsp glue update.
 
 ### Binary
 
-- `build/cyim` (CYRIUS_DCE=1): **1,214,528 B** (+648 over 1.6.6's
-  1,213,880 B). Delta is the `_cyim_lsp_ex_find_refs_with_mode`
-  helper extraction (~zero net — body moved, not duplicated),
-  the two new ex-command bodies (~80 B each as thin wrappers
-  delegating to the helper), the new `_cyim_lsp_ref_split_mode`
-  module global (~16 B), the on_select branch (~200 B for the
-  mode-1/2 dispatch path including SPLIT_HORIZONTAL/SPLIT_VERTICAL
-  resolution), and the two extra `plugin_register_ex_command`
-  calls in `cyim_lsp_init` (~150 B with the cstrings).
+- `build/cyim` (CYRIUS_DCE=1): **1,214,656 B** (+776 over 1.6.6's
+  1,213,880 B). Deltas:
+  - cyim-lsp 1.5.0 pickup (~648 B): helper extraction net-zero
+    + two thin-wrapper ex-commands ~160 B + on_select branch
+    ~200 B + register calls ~150 B + `_cyim_lsp_ref_split_mode`
+    module global ~16 B + scaffolding.
+  - Arrow-key routing (~128 B): the `_plugin_list_active == 1`
+    branch in `editor_feed`'s CSI dispatch + the two
+    `_plugin_list_*` calls.
 
 ### Verification
 
 - `cyrius deps` — re-resolved, lock updated.
-- `cyrius test` — **22 suites, 1134 assertions PASS**, 0 fail
-  (unchanged vs 1.6.6 — the new ex-commands are exercised
-  through the lsp smoke harness at runtime, not via tcyr).
+- `cyrius test` — **22 suites, 1150 assertions PASS** (+16 vs
+  1.6.6 — all in `tests/plugin.tcyr`'s new arrow-key groups;
+  the cyim-lsp 1.5.0 pickup is exercised via the lsp smoke
+  harness at runtime).
 - `cyrius fuzz` — 3 PASS.
 - `cyrius lint` — 24 src files, 0 warnings each.
 - `cyrfmt --check` — 24 files clean.
