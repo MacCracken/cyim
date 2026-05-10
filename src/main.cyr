@@ -24,6 +24,14 @@ include "lib/vyakarana.cyr"
 # narrow tests like tests/buffer.tcyr that don't pull plugin.cyr
 # stay clean. Consumer-side wiring lives in src/plugins/lsp_glue.cyr.
 include "lib/cyim-lsp.cyr"
+# darshana 0.2.0 — TTY/raw-mode primitives (termios + ANSI + cursor).
+# Extracted at v0.2.0 from cyim's `src/tty.cyr` donor source; cyim
+# is the primary donor and first consumer. v1.7.0 fold-in sheds the
+# donor function bodies from `src/tty.cyr` (only `tty_probe()`
+# stays — a cyim-internal raw-mode smoke). Must be included before
+# `src/tty.cyr` because `tty_probe()` calls `tty_raw` / `tty_cooked`
+# from darshana; single-pass compiler resolves at parse time.
+include "lib/darshana.cyr"
 # Plugin ABI scaffold (v1.3.4) — registry + register/fire/lookup
 # helpers. Per ADR 0003, plugins extend the dispatch table via
 # explicit hook points, not the modal grammar. v1.3.4 wired

@@ -34,9 +34,11 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.6.8** (see [`state.md`](state.md)). The 1.6.x
-catch-up cycle is **closed** — closeout audit shipped at 1.6.8
-with 0 new findings. VIM-style
+cyim is at **1.7.0** (see [`state.md`](state.md)). The 1.6.x
+catch-up cycle is closed; **1.7.0 opens the post-catch-up era**
+with the toolchain refresh + darshana TUI dep pickup that was
+FYI'd at 1.6.5. Binary byte-identical to 1.6.8 — the donor
+extraction was clean. VIM-style
 marks (`m<letter>` / `'<letter>`) shipped at 1.6.0 as the first
 feature minor of the post-1.5.x cycle; 1.6.1 and 1.6.2 are the
 opening bites of the **1.6.x catch-up channel** — toolchain pin
@@ -91,6 +93,7 @@ this is a sequencing index.
 | **v1.6.6** — Plugin ABI: `plugin_buf_load_file_split(s, path, direction)` (additive per ADR 0004; `SPLIT_HORIZONTAL`/`SPLIT_VERTICAL` constants; cyim side of the open-in-split carry-over from 1.5.x; cyim-lsp 1.5.0 will consume) | Shipped 2026-05-09 |
 | **v1.6.7** — cyim-lsp 1.5.0 pickup (open-in-split for `:lsp-find-refs`) + arrow keys in list mode (CSI Up/Down → `_plugin_list_prev`/`_plugin_list_next` when picker active; Left/Right swallowed); both 1.5.x carry-over items in one pre-tag bundle | Shipped 2026-05-09 |
 | **v1.6.8** — Closeout cut for the 1.6.x cycle (all 11 CLAUDE.md audit steps PASS; 0 new findings; byte-identical to 1.6.7 modulo `_VERSION_STR_CYIM` regen); audit doc `docs/audit/2026-05-09-1.6x-closeout.md` | Shipped 2026-05-09 |
+| **v1.7.0** — Toolchain refresh (cyrius 5.10.10 → 5.10.20) + darshana 0.2.0 TUI dep pickup. cyim's `src/tty.cyr` strips down to `tty_probe()` only; donor surface (termios + ANSI + cursor) now resolves through darshana's `[lib]`. cyim-lsp pin moves in lockstep (no tag). Binary byte-identical to 1.6.8 — donor bodies were byte-equivalent | Shipped 2026-05-09 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -156,34 +159,36 @@ under the new toolchain.
 | **v1.6.7** | cyim-lsp 1.5.0 pickup (open-in-split) **+ arrow keys in list mode** — both 1.5.x carry-over polish items in a single pre-tag cut. Tag bump 1.4.0 → 1.5.0; cyim-lsp's `[lib]` source unchanged (banner-only distfile delta); example glue refactored. cyim's `src/plugins/lsp_glue.cyr` mirrors: `_cyim_lsp_ref_split_mode` global, `_cyim_lsp_ex_find_refs_with_mode(s, mode)` helper, three ex-commands (`:lsp-find-refs` / `-split` / `-vsplit`); on_select branches mode 0/1/2 → `plugin_buf_load_file` / `plugin_buf_load_file_split`. Arrow keys: `src/driver.cyr` `editor_feed` CSI dispatch routes `ESC [ A` / `ESC [ B` to `_plugin_list_prev` / `_plugin_list_next` when picker active; Left/Right swallowed; outside list mode the existing `motion_apply` routing is unchanged. `tests/plugin.tcyr` 88 → 125 assertions (+37 net). All 1.5.x deferred-polish carry-overs now closed. | ✅ Shipped 2026-05-09 |
 | **v1.6.8** | **Closeout cut for the 1.6.x cycle.** Pure verification per CLAUDE.md "Closeout Pass" policy. All 11 audit steps PASS; 0 CRITICAL / 0 HIGH / 0 MEDIUM / 0 LOW new findings. Binary byte-identical to 1.6.7 modulo `_VERSION_STR_CYIM` regen. Carry-over F-CO-2 (informational since 1.5.2) stays at instance 2. Cyim-side dead-code floor 24 → 22 (net -2). Cumulative 1.6.x test growth: 973 → 1150 assertions (+177). Bench: cold-tokenize 253ms → 307ms (+21% — documented vyakarana 2.0.0 alloc-overhead trade); cache-hit hot path within sampling noise. Audit doc: [`docs/audit/2026-05-09-1.6x-closeout.md`](../audit/2026-05-09-1.6x-closeout.md). | ✅ Shipped 2026-05-09 |
 
-### v1.7.0 — Mechanical refresh + darshana TUI dep pickup (planned)
+### v1.7.0 — Toolchain refresh + darshana TUI dep pickup ✅ shipped 2026-05-09
 
-User-confirmed shape (FYI 2026-05-09):
+What landed:
 
 - **`cyrius` toolchain pin 5.10.10 → 5.10.20.** 10 patches of
-  drift to absorb; expect stdlib drift similar to 5.9.16 → 5.10.10
-  but bounded to the 5.10.x series. Lockstep cyim-lsp own-pin
-  bump (likely a 1.5.0 cut on cyim-lsp's side per the
-  vyakarana 2.2.0 toolchain-bump-as-minor convention).
-- **New `[deps.darshana]` block.** darshana is a sibling TUI
-  library (currently `0.1.0` against cyrius 5.10.20) being
-  worked on as a primary-donor extraction from cyim's own TTY
-  / render code. cyim becomes the consumer side of the
-  extraction once the lib is published. cyim's `src/tty.cyr` +
-  `src/render.cyr` paths are the integration target — exact
-  shape of consumption depends on what darshana 0.1.x exposes.
-- vyakarana — bumped if a newer tag is available at 1.7.0 cut
-  time; otherwise stays at 2.2.1.
+  stdlib drift absorbed via `cyrius deps`; bench numbers within
+  sampling noise.
+- **New `[deps.darshana]` block** at tag `0.2.0`. Three
+  bundled modules (`termios`, `ansi`, `cursor`) — extracted
+  byte-for-byte from cyim's `src/tty.cyr` donor source. cyim
+  is the primary donor and first consumer.
+- **cyim-lsp lockstep**: `cyim-lsp/cyrius.cyml [package].cyrius`
+  → 5.10.20; no tag bump (mirrors 1.6.1's in-tree edit pattern).
+  `[deps.cyim-lsp].tag` stays at 1.5.0; a future cyim-lsp tag
+  publishes the pin (cyim picks up later, similar to how 1.6.3
+  picked up cyim-lsp 1.3.0 after 1.6.1's lockstep edit).
+- **`src/tty.cyr` shrank 207 → ~37 lines** (~82% reduction).
+  `tty_probe()` and the Linux ifdef guard are the only cyim-
+  internal pieces that stayed; everything else now resolves
+  through darshana's bundle.
+- vyakarana stayed at 2.2.1 (no newer tag).
 
-**Cut as a minor** (1.6.x → 1.7.0) per the toolchain-bump-as-
-minor convention vyakarana 2.2.0 set: consumers pinning cyim
-need to know the toolchain expectation moved + a new external
-dep entered the manifest.
+**Binary byte-identical to 1.6.8** modulo `_VERSION_STR_CYIM`
+regen — the donor extraction was clean: bodies were
+byte-identical, DCE coalesces to the same image.
 
-After 1.7.0 the 1.6.x → 1.7.x → 1.8.x cycles open the next
-demand-gated work window (macros, folding, system clipboard
-via aethersafha, etc.) — the catch-up channel work converges
-here.
+The 1.7.x cycle now opens demand-gated. Next major work
+windows (macros, folding, system clipboard via aethersafha,
+terminal emulator embed) all require user demand or a real
+trigger.
 
 ### Watch list (architectural debt; not yet earning a bite)
 
@@ -250,7 +255,21 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-05-09 (v1.6.8 — **Closeout cut for the 1.6.x
+*Last updated: 2026-05-09 (v1.7.0 — **Toolchain refresh +
+darshana TUI dep pickup shipped.** First minor of the
+post-catch-up era. cyrius 5.10.10 → 5.10.20; new
+`[deps.darshana]` at tag 0.2.0; cyim-lsp pin moves in lockstep
+(no tag). `src/tty.cyr` strips to ~37 lines (`tty_probe()` only);
+donor surface now in darshana's `[lib]`. **Binary byte-identical
+to 1.6.8** — donor extraction was clean, DCE coalesces. Bench
+numbers within sampling noise. Plugin ABI freeze (1.3.6 / ADR
+0004) holds. Darshana joins vyakarana + cyim-lsp as cyim's third
+external sandhi-pattern dep. The 1.7.x cycle opens demand-gated;
+next work windows (macros, folding, system clipboard via
+aethersafha, terminal emulator embed) all require a real
+trigger.)*
+
+*Prior update: 2026-05-09 (v1.6.8 — **Closeout cut for the 1.6.x
 cycle shipped. Cycle is closed.** All 11 CLAUDE.md audit steps
 PASS; 0 CRITICAL / 0 HIGH / 0 MEDIUM / 0 LOW new findings.
 Binary byte-identical to 1.6.7 modulo `_VERSION_STR_CYIM` regen.

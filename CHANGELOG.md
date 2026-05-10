@@ -4,6 +4,157 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-05-09
+
+**Minor — toolchain refresh + darshana TUI dep pickup.**
+
+First minor of the post-1.6.x cycle. Pure infrastructure cut as
+the user FYI'd at 1.6.5: cyrius toolchain pin 5.10.10 → 5.10.20,
+new `[deps.darshana]` block consuming the TUI library that was
+extracted from cyim's own `src/tty.cyr` donor source. Cyim is the
+primary donor and first consumer (per the saved
+project-darshana memory).
+
+cyim-lsp's `[package].cyrius` moves in lockstep (5.10.10 →
+5.10.20) but stays at tag 1.5.0 — same pattern as 1.6.1's
+in-tree edit before the 1.6.3 tag publish.
+
+The remarkable result of the donor relationship: **binary
+byte-identical to 1.6.8 modulo `_VERSION_STR_CYIM` regen.**
+cyim's `src/tty.cyr` shed ~140 lines (the donor surface) but
+darshana's bundle restored the same symbols byte-for-byte;
+DCE coalesces to the same output. cyim 1.7.0 has fewer
+direct source lines and a cleaner separation of concerns,
+without paying any binary cost.
+
+### Added
+
+- **`[deps.darshana]` in `cyrius.cyml`** — pinned at tag
+  `0.2.0`. Distfile `dist/darshana.cyr`; consumer-side
+  `include "lib/darshana.cyr"` in `src/main.cyr` brings the
+  module bodies into cyim's compilation unit at fold-in time.
+  Darshana exports the TTY/raw-mode primitives (termios bit
+  twiddling + `tty_raw` / `tty_cooked` + ANSI helpers +
+  `tty_move` / `tty_itoa`) — three `[lib]` modules: `termios`,
+  `ansi`, `cursor`.
+
+### Changed
+
+- **`cyrius.cyml`** — `[package].cyrius = "5.10.20"` (was
+  `"5.10.10"`). Local toolchain conformed via `cyriusly use 5.10.20`
+  per the pin-authority rule. cyim-lsp's own pin moves in
+  lockstep (`cyim-lsp/cyrius.cyml [package].cyrius` 5.10.10 →
+  5.10.20; no tag bump, mirrors 1.6.1's in-tree edit pattern).
+  `[deps.cyim-lsp].tag` stays at 1.5.0; a future cyim-lsp tag
+  cut publishes the new pin (cyim picks up later).
+- **`src/main.cyr`** — adds `include "lib/darshana.cyr"` after
+  `lib/cyim-lsp.cyr` and before `src/plugin.cyr`. Single-pass
+  resolution: must come before `src/tty.cyr` (line 73) because
+  cyim's `tty_probe()` calls `tty_raw` / `tty_cooked` from
+  darshana.
+- **`src/tty.cyr`** — stripped down to the cyim-internal raw-
+  mode smoke (`tty_probe()` only, plus its `#ifdef CYRIUS_TARGET_LINUX`
+  guard). Removed: termios bit constants (`TIO_*`, `SYS_IOCTL`,
+  `TCGETS`, `TCSETS`), saved-state globals (`_tty_saved`,
+  `_tty_in_raw`), termios load/store helpers (`tio_load32`,
+  `tio_store32`), the `tty_apply_raw_flags` / `tty_raw` /
+  `tty_cooked` triple, ANSI helpers (`tty_alt_*`, `tty_clear`,
+  `tty_cursor_*`), and cursor positioning (`tty_itoa`,
+  `tty_move`). All of those now resolve through darshana's
+  bundle. **File shrinks 207 → ~37 lines** (~82% reduction);
+  the donor relationship is now visibly clean.
+
+### Stdlib drift inherited (informational)
+
+The 5.10.10 → 5.10.20 cyrius window includes 10 patch releases
+of stdlib drift that cyim (and cyim-lsp via its own pin) inherit
+via `cyrius deps`. Spot-checked (functionally equivalent):
+- `lib/io.cyr` — read/write helpers expanded.
+- `lib/syscalls_*` — additional syscall coverage.
+- `lib/result.cyr`, `lib/str.cyr`, `lib/string.cyr`,
+  `lib/vec.cyr` — minor refinements.
+
+None of these affect cyim's runtime behaviour at the surface
+level — gates verify identical output across both versions.
+
+### Performance
+
+Bench numbers vs 1.6.8 baseline (closeout audit) — all within
+sampling noise:
+
+| Bench | 1.6.8 | 1.7.0 | Δ |
+|-------|------:|------:|--:|
+| `buf_fill_1MB` | 13.5 ms | 13.3 ms | -1% |
+| `buf_fill_10MB` | 140 ms | 144 ms | +3% |
+| `buf_move_10K_cycles_10MB` | 49 ms | 47 ms | -3% |
+| `render_build_line_80c_x1000` | 265 µs | 274 µs | +3% |
+| `highlight_buf_1MB_cyrius` | 307 ms | 311 ms | +1% |
+| `highlight_buf_cache_hit_x1000` | 17 µs | 17 µs | 0 |
+
+All deltas within the noise floor of the bench harness. The
+toolchain bump didn't introduce regressions on cyim's hot or
+cold paths.
+
+### Binary
+
+- `build/cyim` (CYRIUS_DCE=1): **1,214,656 B** —
+  **byte-identical to 1.6.8** modulo the regenerated
+  `_VERSION_STR_CYIM` literal (`"cyim 1.6.8\n"` →
+  `"cyim 1.7.0\n"`, same byte length). The donor-surface shift
+  from `src/tty.cyr` to darshana's `[lib]` modules is
+  byte-equivalent at the DCE-stripped output: bodies were
+  byte-identical, the same set of symbols is reached, and DCE
+  coalesces to the same image.
+
+### Status
+
+- **Plugin ABI freeze (1.3.6 / ADR 0004) holds.** No plugin
+  ABI changes; this cut doesn't touch the dispatch table, hooks,
+  or plugin-facing surface.
+- **Darshana is the second external Cyrius dep cyim consumes
+  via the sandhi pattern** (after vyakarana M2 and cyim-lsp
+  1.4.0). Same shape — `[deps.<name>]` block, `[lib]` modules
+  bundled into one distfile, consumer-side `include` in
+  `src/main.cyr`.
+- **Bundle self-containment verified**: darshana's distfile
+  resolves cleanly under cyim's `[deps.stdlib]` (the surface
+  it needs — `syscalls`, `alloc`, `io`, `assert` — is a strict
+  subset of cyim's already-pulled list).
+- **No new cyim ABI surface.** The `tty_*` symbols cyim's
+  callers (mostly `src/render.cyr` + `src/driver.cyr`) consume
+  are unchanged in name and behaviour; only the definition site
+  moved.
+
+### Verification
+
+- `cyriusly use 5.10.20` — local toolchain conformed.
+- `cyrius deps` — **3 deps resolved** (vyakarana 2.2.1,
+  cyim-lsp 1.5.0, darshana 0.2.0). Lock updated.
+- `cyrius test` — **22 suites, 1150 assertions PASS**, 0 fail
+  (unchanged vs 1.6.8 — TTY surface exercised at runtime via
+  integration smoke).
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 24 src files, 0 warnings each.
+- `cyrfmt --check` — 24 files clean.
+- `tests/cli_smoke.sh` — 118 PASS.
+- `tests/integration_smoke.py` — all PASS.
+- `cyrius smoke tests/smcyr/lsp_fold.smcyr` — 1 PASS.
+- `CYRIUS_DCE=1 cyrius build` — clean.
+- `cyrius bench` — see Performance above.
+
+### Carry-forward
+
+- **cyim-lsp tag publish** — like 1.6.3's relationship to
+  1.6.1's in-tree pin edit, cyim-lsp will eventually cut a tag
+  publishing the 5.10.20 pin (likely 1.6.0 or 1.5.1; user's
+  call). cyim picks it up via a future `[deps.cyim-lsp].tag`
+  bump.
+- **darshana surface growth** — cyim's `src/render.cyr` does
+  more ANSI emission than darshana 0.2.0 currently exposes;
+  if the render path's escape sequences keep growing, future
+  refactors could push more into darshana. Wait-for-third-
+  instance applies before any extraction.
+
 ## [1.6.8] — 2026-05-09
 
 **Closeout cut for the 1.6.x cycle.** Pure verification per

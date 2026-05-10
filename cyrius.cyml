@@ -5,7 +5,7 @@ description = "Sovereign Cyrius-native text editor — VIM-inspired, zero attack
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/cyim"
 language = "cyrius"
-cyrius = "5.10.10"
+cyrius = "5.10.20"
 
 [build]
 entry = "src/main.cyr"
@@ -76,3 +76,17 @@ modules = ["dist/vyakarana.cyr"]
 git = "https://github.com/MacCracken/cyim-lsp.git"
 tag = "1.5.0"
 modules = ["dist/cyim-lsp.cyr"]
+
+# darshana — TTY/raw-mode primitives (termios + ANSI + cursor).
+# Extracted at v0.2.0 from cyim's `src/tty.cyr` donor source;
+# cyim is the primary donor and first consumer (per the saved
+# project-memory rule). 1.7.0 picks it up + sheds the donor
+# definitions from cyim's tty.cyr — only `tty_probe()` (a cyim-
+# internal raw-mode smoke) stays local. Bundled distfile is
+# `dist/darshana.cyr`; consumer-side `include "lib/darshana.cyr"`
+# in `src/main.cyr` brings the module bodies into cyim's
+# compilation unit at fold-in time.
+[deps.darshana]
+git = "https://github.com/MacCracken/darshana.git"
+tag = "0.2.0"
+modules = ["dist/darshana.cyr"]
