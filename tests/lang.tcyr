@@ -10,6 +10,9 @@ fn main() {
     assert_eq(lang_index("shell"),       1,  "shell @ 1");
     assert_eq(lang_index("cyrius"),      6,  "cyrius @ 6");
     assert_eq(lang_index("yaml"),       10,  "yaml @ 10");
+    assert_eq(lang_index("cyml"),       11,  "cyml @ 11 (added 1.6.2)");
+    assert_eq(lang_index("markdown"),   12,  "markdown @ 12 (added 1.6.2)");
+    assert_eq(lang_index("makefile"),   44,  "makefile @ 44 (added 1.6.2)");
     assert_eq(lang_index("esperanto"), 0 - 1, "unknown -> -1");
     assert_eq(lang_is_valid("rust"), 1, "rust valid");
     assert_eq(lang_is_valid("nope"), 0, "nope invalid");
@@ -19,7 +22,8 @@ fn main() {
     assert_streq(detect_language_from_path("tests/buffer.tcyr"),    "cyrius", ".tcyr -> cyrius");
     assert_streq(detect_language_from_path("tests/cyim.bcyr"),      "cyrius", ".bcyr -> cyrius");
     assert_streq(detect_language_from_path("tests/cyim.fcyr"),      "cyrius", ".fcyr -> cyrius");
-    assert_streq(detect_language_from_path("cyrius.cyml"),          "toml",   ".cyml -> toml");
+    # 1.6.2: `.cyml` moves from "toml" to dedicated "cyml" grammar.
+    assert_streq(detect_language_from_path("cyrius.cyml"),          "cyml",   ".cyml -> cyml");
 
     test_group("detect_language_from_path: common languages");
     assert_streq(detect_language_from_path("foo.sh"),       "shell",      ".sh");
@@ -36,6 +40,50 @@ fn main() {
     assert_streq(detect_language_from_path("foo.json"),     "json",       ".json");
     assert_streq(detect_language_from_path("foo.yaml"),     "yaml",       ".yaml");
     assert_streq(detect_language_from_path("foo.yml"),      "yaml",       ".yml");
+
+    test_group("detect_language_from_path: 1.6.2 grammar catch-up");
+    assert_streq(detect_language_from_path("README.md"),     "markdown", ".md");
+    assert_streq(detect_language_from_path("notes.markdown"),"markdown", ".markdown");
+    assert_streq(detect_language_from_path("main.cpp"),      "cpp",      ".cpp");
+    assert_streq(detect_language_from_path("widget.hpp"),    "cpp",      ".hpp");
+    assert_streq(detect_language_from_path("Foo.cs"),        "csharp",   ".cs");
+    assert_streq(detect_language_from_path("style.css"),     "css",      ".css");
+    assert_streq(detect_language_from_path("style.scss"),    "scss",     ".scss");
+    assert_streq(detect_language_from_path("page.html"),     "html",     ".html");
+    assert_streq(detect_language_from_path("doc.xml"),       "xml",      ".xml");
+    assert_streq(detect_language_from_path("icon.svg"),      "xml",      ".svg -> xml");
+    assert_streq(detect_language_from_path("server.go"),     "go",       ".go");
+    assert_streq(detect_language_from_path("App.java"),      "java",     ".java");
+    assert_streq(detect_language_from_path("Main.kt"),       "kotlin",   ".kt");
+    assert_streq(detect_language_from_path("View.swift"),    "swift",    ".swift");
+    assert_streq(detect_language_from_path("script.rb"),     "ruby",     ".rb");
+    assert_streq(detect_language_from_path("index.php"),     "php",      ".php");
+    assert_streq(detect_language_from_path("init.lua"),      "lua",      ".lua");
+    assert_streq(detect_language_from_path("Main.hs"),       "haskell",  ".hs");
+    assert_streq(detect_language_from_path("parser.ml"),     "ocaml",    ".ml");
+    assert_streq(detect_language_from_path("app.ex"),        "elixir",   ".ex");
+    assert_streq(detect_language_from_path("worker.cr"),     "crystal",  ".cr");
+    assert_streq(detect_language_from_path("solver.jl"),     "julia",    ".jl");
+    assert_streq(detect_language_from_path("ring.zig"),      "zig",      ".zig");
+    assert_streq(detect_language_from_path("default.nix"),   "nix",      ".nix");
+    assert_streq(detect_language_from_path("Card.vue"),      "vue",      ".vue");
+    assert_streq(detect_language_from_path("Widget.svelte"), "svelte",   ".svelte");
+    assert_streq(detect_language_from_path("Deploy.ps1"),    "powershell", ".ps1");
+    assert_streq(detect_language_from_path("query.sql"),     "sql",      ".sql");
+    assert_streq(detect_language_from_path("smb.conf"),      "ini",      ".conf -> ini");
+    assert_streq(detect_language_from_path("schema.graphql"),"graphql",  ".graphql");
+    assert_streq(detect_language_from_path("schema.proto"),  "protobuf", ".proto");
+    assert_streq(detect_language_from_path("main.tf"),       "terraform",".tf");
+    assert_streq(detect_language_from_path("boot.s"),        "asm_x86_64", ".s -> asm_x86_64 (default arch)");
+    assert_streq(detect_language_from_path("boot.asm"),      "asm_x86_64", ".asm -> asm_x86_64 (default arch)");
+    assert_streq(detect_language_from_path("module.ll"),     "llvm_ir",  ".ll");
+
+    test_group("detect_language_from_path: dockerfile/makefile fall through (no extension routing yet)");
+    # vyakarana matches these by basename; cyim's lang.cyr is extension-only
+    # in 1.6.2 — basename-driven routing is a future bite. Confirm the
+    # current behavior so a future change has a regression to flip.
+    assert_streq(detect_language_from_path("Dockerfile"), "plain", "Dockerfile -> plain (no basename detect)");
+    assert_streq(detect_language_from_path("Makefile"),   "plain", "Makefile -> plain (no basename detect)");
 
     test_group("detect_language_from_path: case-insensitive on the extension");
     assert_streq(detect_language_from_path("FOO.PY"), "python", ".PY uppercase");

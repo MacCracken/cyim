@@ -4,6 +4,122 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.2] — 2026-05-09
+
+**Grammar-routing catch-up — 11 → 45 languages.** Second bite of
+the 1.6.x catch-up channel. 1.6.1 pulled in vyakarana 2.2.1's
+distfile (with all 45 grammars compiled into the binary) but
+cyim's `src/lang.cyr` extension table still routed only the
+original 10 — leaving 35 grammars linked but unreachable from
+`detect_language_from_path`. 1.6.2 wires them.
+
+### Added
+
+- **34 new language entries in `src/lang.cyr`**: `cyml` (dedicated
+  grammar — moves from "toml" routing), `markdown`, `cpp`,
+  `csharp`, `css`, `scss`, `html`, `xml`, `go`, `java`, `kotlin`,
+  `swift`, `ruby`, `php`, `lua`, `haskell`, `ocaml`, `elixir`,
+  `crystal`, `julia`, `zig`, `nix`, `vue`, `svelte`, `powershell`,
+  `sql`, `ini`, `graphql`, `protobuf`, `terraform`, `asm_x86_64`,
+  `llvm_ir`, `dockerfile`, `makefile`. `LANG_COUNT` 11 → 45.
+  Indices 0..10 preserved unchanged so `lang_index("...")` callers
+  see the same numeric slots they did at 1.6.0.
+- **34 grammar `.cyml` files in `grammars/`** — copied from
+  vyakarana 2.2.1's repo so `highlight_init`'s binary-relative
+  `grammars/` resolution finds the definitions at runtime. cyim's
+  `grammars/` count 11 → 45.
+- **`tests/lang.tcyr` extended 37 → 77 assertions** across two new
+  groups: "1.6.2 grammar catch-up" (33 cases — one per new
+  extension or extension family) and "dockerfile/makefile fall
+  through" (2 cases — pinning the current "no basename detection"
+  behavior so a future bite can flip the assertions when basename
+  routing lands).
+
+### Changed
+
+- **`.cyml` routing moves from `toml` to dedicated `cyml` grammar.**
+  The 1.6.0-era comment in `lang.cyr` flagged this as "an M2-future
+  bite" because vyakarana didn't ship a CYML grammar yet. vyakarana
+  2.2.1 does, so the routing tracks the dedicated grammar.
+  `tests/lang.tcyr:22` updated: `.cyml -> cyml` (was `.cyml -> toml`).
+- **`lang.cyr` header comments** rewritten to document the 1.6.2
+  conflict-resolution decisions (`.cyml` move, `.s/.S/.asm`
+  defaulting to `asm_x86_64`, dockerfile/makefile basename gap).
+  Includes a "refactor when 46+" note: at 45 entries the if-chain
+  pattern is the practical limit; future growth earns a parallel-
+  global-array refactor or a vyakarana-metadata query, ADR'd
+  before going.
+- **`src/cli.cyr:529`** — wrapped a 127-char line spotted during
+  this pass's per-file lint sweep. Pre-existing warning unrelated
+  to 1.6.2's scope, but cheap to clean while in the file's mental
+  cache. (See "Fixed" — the 1.6.1 lint claim was inaccurate.)
+
+### Fixed
+
+- **1.6.1 lint-cleanliness claim was inaccurate.** That release's
+  verification reported "0 warnings" from `cyrius lint src/*.cyr`,
+  but cyrlint takes one file per invocation — the glob only
+  surfaced the first expanded path's result. 1.6.2 verifies via
+  per-file iteration: 23 files, 0 warnings each (after the
+  `cli.cyr:529` wrap above).
+
+### Conflict-resolution decisions
+
+- `.cyml` → `cyml` (was `toml`; dedicated grammar wins).
+- `.s` / `.asm` → `asm_x86_64` (primary dev arch default;
+  aarch64 routing waits for content sniff or a `.cyimrc`
+  filetype override, neither of which ships in 1.6.x).
+- `.zsh` → `shell` grammar (vyakarana's grammar is
+  `.sh`/`.bash`-only, but zsh shares enough syntax to highlight
+  cleanly through it; cyim retains the `.zsh` extension routing
+  it shipped at 1.6.0).
+- `.cyr` / `.tcyr` / `.bcyr` / `.fcyr` → `cyrius` (vyakarana's
+  grammar metadata only declares `.cyr`/`.cyml`; cyim's local
+  routing covers test/bench/fuzz harness extensions).
+- `Dockerfile` / `Makefile` → `plain` (no extension, basename
+  detection unimplemented in 1.6.x).
+
+### Binary
+
+- `build/cyim` (CYRIUS_DCE=1): **1,208,896 B** (+4,960 over 1.6.1's
+  1,203,936 B). Delta is the 34 new `lang_name`/`lang_exts`
+  if-chain entries (~145 B per language pair after DCE). Notably
+  *no* delta from the new grammar `.cyml` files — those are
+  loaded at runtime, not compiled into the binary.
+
+### Performance
+
+Bench numbers within sampling noise of 1.6.1 — the extension table
+is walked once per file open (worst case 45 string-suffix compares
+on a path miss), not on the highlight hot path:
+
+| Bench | 1.6.1 | 1.6.2 |
+|-------|------:|------:|
+| `highlight_buf_1MB_cyrius` | 318 ms | 312 ms |
+| `highlight_buf_cache_hit_x1000` | 17.5 µs | 16 µs |
+| `render_build_line_80c_x1000` | 270 µs | 294 µs |
+
+### Deferred to later 1.6.x
+
+- **Basename-driven detection** (`Dockerfile`, `Makefile`,
+  `.bashrc`, `Justfile`, etc.) — adds a second probe path
+  alongside extension matching. Small surface, but distinct
+  enough to deserve its own bite.
+- **Architecture refactor of `lang.cyr`** — at 45 entries the
+  if-chain is at its practical limit. Further growth (or the
+  basename surface above) earns a refactor; ADR before going.
+
+### Verification
+
+- `cyrius test` — **22 suites, 1087 assertions PASS** (+40 vs 1.6.1).
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 23 files, 0 warnings (per-file iteration).
+- `cyrfmt --check` — 23 files clean.
+- `tests/cli_smoke.sh` — 118 PASS.
+- `tests/integration_smoke.py` — all PASS.
+- `cyrius smoke tests/smcyr/lsp_fold.smcyr` — 1 PASS.
+- `CYRIUS_DCE=1 cyrius build` — clean.
+
 ## [1.6.1] — 2026-05-09
 
 **Toolchain + vyakarana catch-up cut.** First step of the 1.6.x

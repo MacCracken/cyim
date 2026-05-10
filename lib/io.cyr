@@ -188,7 +188,7 @@ fn _io_errno_to_iorr(errn): i64 {
 
 # Result variant of file_open. On success: Ok(fd); on failure:
 # Err(IoError variant for the underlying errno).
-fn file_open_r(path, flags, mode) {
+fn file_open_r(path, flags, mode) : Result {
     var fd = sys_open(path, flags, mode);
     if (fd < 0) { return Err(_io_errno_to_iorr(0 - fd)); }
     return Ok(fd);
@@ -196,7 +196,7 @@ fn file_open_r(path, flags, mode) {
 
 # Result variant of file_close. Kernel close(2) almost never fails
 # on a valid fd, but if it does, we surface it.
-fn file_close_r(fd) {
+fn file_close_r(fd) : Result {
     var rc = sys_close(fd);
     if (rc < 0) { return Err(_io_errno_to_iorr(0 - rc)); }
     return Ok(rc);
@@ -204,7 +204,7 @@ fn file_close_r(fd) {
 
 # Result variant of file_read. On success: Ok(bytes_read); on
 # failure: Err. Note that 0 bytes read at EOF is Ok(0), not Err.
-fn file_read_r(fd, buf, len) {
+fn file_read_r(fd, buf, len) : Result {
     var n = sys_read(fd, buf, len);
     if (n < 0) { return Err(_io_errno_to_iorr(0 - n)); }
     return Ok(n);
@@ -212,7 +212,7 @@ fn file_read_r(fd, buf, len) {
 
 # Result variant of file_write. On success: Ok(bytes_written).
 # Short writes (n < len) are still Ok — caller may need to loop.
-fn file_write_r(fd, buf, len) {
+fn file_write_r(fd, buf, len) : Result {
     var n = sys_write(fd, buf, len);
     if (n < 0) { return Err(_io_errno_to_iorr(0 - n)); }
     return Ok(n);
@@ -222,7 +222,7 @@ fn file_write_r(fd, buf, len) {
 # maxlen bytes, closes. Open failure surfaces as Err with the
 # corresponding IoError variant; read failure mid-stream returns
 # whatever was read up to that point as Ok.
-fn file_read_all_r(path, buf, maxlen) {
+fn file_read_all_r(path, buf, maxlen) : Result {
     var fd = sys_open(path, 0, 0);
     if (fd < 0) { return Err(_io_errno_to_iorr(0 - fd)); }
     var total = 0;
@@ -242,7 +242,7 @@ fn file_read_all_r(path, buf, maxlen) {
 # Result variant of file_write_all. Opens with O_WRONLY|O_CREAT|
 # O_TRUNC, writes, closes. Open failure → Err; write failure →
 # Err with errno mapping.
-fn file_write_all_r(path, buf, len) {
+fn file_write_all_r(path, buf, len) : Result {
     var fd = sys_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
     if (fd < 0) { return Err(_io_errno_to_iorr(0 - fd)); }
     var n = sys_write(fd, buf, len);

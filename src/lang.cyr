@@ -18,10 +18,31 @@
 #
 # Requires: stdlib (strlen, load8) only.
 
-var LANG_COUNT = 11;
+var LANG_COUNT = 45;
 
 # Indexed 0..LANG_COUNT-1. "plain" at index 0 is the no-grammar
 # fallback — its `lang_exts` is empty so the table-walk skips it.
+#
+# Indices 1..10 preserved from the v1.6.0 shape so existing tests
+# and external callers that index by name (via `lang_index`) keep
+# matching the same numeric slot. New entries (1.6.2) appended
+# 11..44 to keep churn local.
+#
+# Conflict resolution decisions (1.6.2):
+#   - `.cyml` moves from "toml" (legacy until 1.6.1) to the
+#     dedicated "cyml" grammar shipped in vyakarana 2.x.
+#   - `.s` / `.S` / `.asm` default to `asm_x86_64` (primary dev
+#     arch); aarch64 routing waits for content-sniff or a future
+#     `.cyimrc` filetype override.
+#   - `dockerfile` / `makefile` are present in `lang_name` but
+#     `lang_exts` is empty: vyakarana's grammars match by basename,
+#     not extension. cyim's `detect_language_from_path` is
+#     extension-only today, so these route to "plain". Filename
+#     detection is a future bite.
+#
+# 45 entries makes the if-chain noisy. If we add more in 1.7+ this
+# will earn a refactor (parallel global string arrays or a vyakarana
+# metadata query); document the decision in an ADR before going.
 fn lang_name(i) {
     if (i == 0)  { return "plain"; }
     if (i == 1)  { return "shell"; }
@@ -34,14 +55,49 @@ fn lang_name(i) {
     if (i == 8)  { return "toml"; }
     if (i == 9)  { return "json"; }
     if (i == 10) { return "yaml"; }
+    if (i == 11) { return "cyml"; }
+    if (i == 12) { return "markdown"; }
+    if (i == 13) { return "cpp"; }
+    if (i == 14) { return "csharp"; }
+    if (i == 15) { return "css"; }
+    if (i == 16) { return "scss"; }
+    if (i == 17) { return "html"; }
+    if (i == 18) { return "xml"; }
+    if (i == 19) { return "go"; }
+    if (i == 20) { return "java"; }
+    if (i == 21) { return "kotlin"; }
+    if (i == 22) { return "swift"; }
+    if (i == 23) { return "ruby"; }
+    if (i == 24) { return "php"; }
+    if (i == 25) { return "lua"; }
+    if (i == 26) { return "haskell"; }
+    if (i == 27) { return "ocaml"; }
+    if (i == 28) { return "elixir"; }
+    if (i == 29) { return "crystal"; }
+    if (i == 30) { return "julia"; }
+    if (i == 31) { return "zig"; }
+    if (i == 32) { return "nix"; }
+    if (i == 33) { return "vue"; }
+    if (i == 34) { return "svelte"; }
+    if (i == 35) { return "powershell"; }
+    if (i == 36) { return "sql"; }
+    if (i == 37) { return "ini"; }
+    if (i == 38) { return "graphql"; }
+    if (i == 39) { return "protobuf"; }
+    if (i == 40) { return "terraform"; }
+    if (i == 41) { return "asm_x86_64"; }
+    if (i == 42) { return "llvm_ir"; }
+    if (i == 43) { return "dockerfile"; }
+    if (i == 44) { return "makefile"; }
     return "plain";
 }
 
 # Space-separated lowercase extensions per language. Leading dot is
 # part of the token. cyim grew up with `.cyr`, so its grammar covers
 # `.cyr` (sources), `.tcyr` (tests), `.bcyr` (bench harnesses), and
-# `.fcyr` (fuzz harnesses). `.cyml` falls under "toml" for now —
-# vyakarana has no dedicated CYML grammar yet (an M2-future bite).
+# `.fcyr` (fuzz harnesses) — vyakarana's `cyrius` grammar only knows
+# `.cyr` / `.cyml`, but cyim wants the bench/test harness extensions
+# routed through it. cyim's local routing wins.
 fn lang_exts(i) {
     if (i == 0)  { return ""; }
     if (i == 1)  { return ".sh .bash .zsh"; }
@@ -51,9 +107,43 @@ fn lang_exts(i) {
     if (i == 5)  { return ".rs"; }
     if (i == 6)  { return ".cyr .tcyr .bcyr .fcyr"; }
     if (i == 7)  { return ".c .h"; }
-    if (i == 8)  { return ".toml .cyml"; }
+    if (i == 8)  { return ".toml"; }
     if (i == 9)  { return ".json"; }
     if (i == 10) { return ".yaml .yml"; }
+    if (i == 11) { return ".cyml"; }
+    if (i == 12) { return ".md .markdown"; }
+    if (i == 13) { return ".cpp .cc .cxx .hpp .hh .hxx"; }
+    if (i == 14) { return ".cs .csx"; }
+    if (i == 15) { return ".css"; }
+    if (i == 16) { return ".scss .sass"; }
+    if (i == 17) { return ".html .htm"; }
+    if (i == 18) { return ".xml .xsl .xsd .svg"; }
+    if (i == 19) { return ".go"; }
+    if (i == 20) { return ".java"; }
+    if (i == 21) { return ".kt .kts"; }
+    if (i == 22) { return ".swift"; }
+    if (i == 23) { return ".rb"; }
+    if (i == 24) { return ".php .phtml"; }
+    if (i == 25) { return ".lua"; }
+    if (i == 26) { return ".hs .lhs"; }
+    if (i == 27) { return ".ml .mli"; }
+    if (i == 28) { return ".ex .exs"; }
+    if (i == 29) { return ".cr"; }
+    if (i == 30) { return ".jl"; }
+    if (i == 31) { return ".zig"; }
+    if (i == 32) { return ".nix"; }
+    if (i == 33) { return ".vue"; }
+    if (i == 34) { return ".svelte"; }
+    if (i == 35) { return ".ps1 .psm1 .psd1"; }
+    if (i == 36) { return ".sql"; }
+    if (i == 37) { return ".ini .conf .cfg .properties"; }
+    if (i == 38) { return ".graphql .gql"; }
+    if (i == 39) { return ".proto"; }
+    if (i == 40) { return ".tf .tfvars .hcl"; }
+    if (i == 41) { return ".s .asm"; }
+    if (i == 42) { return ".ll"; }
+    if (i == 43) { return ""; }
+    if (i == 44) { return ""; }
     return "";
 }
 

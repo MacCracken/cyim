@@ -34,9 +34,13 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.6.0** (see [`state.md`](state.md)). VIM-style
-marks (`m<letter>` / `'<letter>`) shipped as the first feature
-minor of the post-1.5.x cycle. The full LSP user-visible surface
+cyim is at **1.6.2** (see [`state.md`](state.md)). VIM-style
+marks (`m<letter>` / `'<letter>`) shipped at 1.6.0 as the first
+feature minor of the post-1.5.x cycle; 1.6.1 and 1.6.2 are the
+opening bites of the **1.6.x catch-up channel** — toolchain pin
+5.9.16 → 5.10.10, vyakarana 1.0.2 → 2.2.1 (across the breaking
+2.0.0 streaming-API replacement), and grammar-routing wiring
+from 11 → 45 languages. The full LSP user-visible surface
 remains active via cyim-lsp 1.2.1 (diagnostics, `gd` goto-def
 same-file + cross-file, `gr` references quickfix, `:lsp-*`
 ex-commands, URL-decoded `file://` paths).
@@ -77,6 +81,8 @@ this is a sequencing index.
 | **v1.5.2** — closeout audit (pre-1.6.0; all 11 steps PASS, 4 LOW findings tracked) | Shipped 2026-05-07 |
 | **v1.5.3** — closes 3 of 4 LOW closeout findings (F-CO-1 multi-iter bench, F-CO-3 prefix-clear, F-CO-4 URL-decode via cyim-lsp 1.2.1) | Shipped 2026-05-07 |
 | **v1.6.0** — VIM-style marks (`m<letter>` / `'<letter>`; per-buffer a-z + global A-Z) | Shipped 2026-05-07 |
+| **v1.6.1** — Toolchain + vyakarana catch-up (cyrius 5.9.16 → 5.10.10; vyakarana 1.0.2 → 2.2.1; `tokenize_source` → streaming primitive migration in `src/highlight.cyr`; cyim-lsp pin moved in lockstep with no tag bump) | Shipped 2026-05-09 |
+| **v1.6.2** — Grammar-routing catch-up (`LANG_COUNT` 11 → 45; 34 new grammar `.cyml` files in `grammars/`; `.cyml` migrates from "toml" to dedicated "cyml" grammar; `tests/lang.tcyr` 37 → 77 assertions) | Shipped 2026-05-09 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -100,16 +106,14 @@ carry-over candidates — bigger than LOW; not blocking 1.6.0.
 | ~~**F-CO-3**~~ | defense-in-depth | ✅ **Closed in v1.5.3.** `plugin_list_display` clears latched prefix at entry (`editor_set_prefix(s, 0)`). Unreachable today, but the corner case is closed once. +3 assertions in `tests/plugin.tcyr`. |
 | ~~**F-CO-4**~~ | UX | ✅ **Closed in v1.5.3.** cyim-lsp 1.2.1 added public `lsp_uri_decode(uri)` to the bundle (real source change, +77 lines). cyim's `src/plugins/lsp_glue.cyr` cross-file branches use it. Files with spaces / non-ASCII / `%XX` escapes in `file://` URIs now load correctly. Closes the deferred-LSP-polish URL-decode row simultaneously. |
 
-### Deferred LSP polish — carry-over to 1.5.x or 1.6.0
+### Deferred LSP polish — carry-over to 1.6.x
 
-Bigger than LOW; not closeout findings. Each lands independently
-when the trigger surfaces.
-
-| Item | Trigger | Scope |
-|---|---|---|
-| **Reference previews** | User asks for "what's at this reference" without jumping | Append a source-line snippet to each `_cyim_lsp_label_for_ref` cstring. Requires fetching the line from disk (or buf if open) and truncating to popup width. Cyim-lsp patch (no cyim ABI change). |
-| **Open-in-split** | User wants to keep current buffer visible while jumping | New plugin ABI `plugin_buf_load_file_split(s, path, direction)` (additive); consumer passes a "split" hint to on_select. Cyim 1.5.x patch (additive ABI) + cyim-lsp follow-up. |
-| **Arrow keys in list mode** | A user complains j/k feels off | Wire up arrow handling in `editor_feed`'s CSI parser to route to `_plugin_list_next` / `_plugin_list_prev` when `_plugin_list_active`. Driver-side change in cyim. Cyim 1.5.x patch. |
+Bigger than LOW; not closeout findings. As of 1.6.2 these are
+formally placed in the **v1.6.x Cycle** section below as
+**v1.6.5** (reference previews), **v1.6.6** (open-in-split ABI),
+and **v1.6.7** (arrow keys in list mode). They lost their
+"trigger-gated only" status when the 1.6.x cycle absorbed them
+as catch-up bites.
 
 ### Closeout Pass — ✅ shipped 2026-05-07 as v1.5.2
 
@@ -119,6 +123,57 @@ to 1.5.1 modulo the regenerated `_VERSION_STR_CYIM`). All 11
 CLAUDE.md closeout steps PASS. 0 CRITICAL / 0 HIGH / 0 MEDIUM /
 4 LOW. Of the 4 LOW: F-CO-1 / F-CO-3 / F-CO-4 closed at 1.5.3;
 F-CO-2 informational.
+
+---
+
+## v1.6.x Cycle — Catch-Up Channel
+
+The 1.6.x line is split: 1.6.0 was a feature minor (marks);
+1.6.1+ is a **catch-up channel** to absorb infrastructure
+drift accumulated across the 1.4.x–1.5.x feature push. Toolchain
++ vyakarana already moved through; the rest finishes deferred
+LSP polish carried over from 1.5.x and republishes cyim-lsp
+under the new toolchain.
+
+### Shipped
+
+| Cut | Theme | Status |
+|---|---|---|
+| **v1.6.1** | cyrius 5.9.16 → 5.10.10 + vyakarana 1.0.2 → 2.2.1 (single breaking surface: `tokenize_source` → streaming primitive in `src/highlight.cyr`); cyim-lsp's own pin moves in lockstep, no tag bump. | ✅ Shipped 2026-05-09 |
+| **v1.6.2** | Wire vyakarana 2.2.1's 35 new grammars into `src/lang.cyr` extension routing + ship the matching grammar `.cyml` files in `grammars/`. `LANG_COUNT` 11 → 45. `.cyml` extension migrates from "toml" to dedicated "cyml" grammar. | ✅ Shipped 2026-05-09 |
+
+### Planned (next bites)
+
+| Cut | Theme | Notes |
+|---|---|---|
+| **v1.6.3** | **cyim-lsp 1.3.0 cut + pickup.** cyim-lsp's `[package].cyrius` already moved to 5.10.10 in 1.6.1, but no tag was cut. 1.3.0 publishes the pin (no source change), regenerates the distfile, then cyim 1.6.3 bumps `[deps.cyim-lsp].tag` to 1.3.0. Sequenced this way so consumers can track via the tag. **Triggers**: explicit "cyim-lsp 1.3.0 is out" call from the user (release-pacing rule). | Hygiene cut — independent of any source change. |
+| **v1.6.4** | **Basename-driven language detection.** `Dockerfile`, `Makefile` (and `.bashrc`-style dotfiles, `Justfile`, `Containerfile`, etc.) — vyakarana ships grammars for these but matches on basename, not extension. cyim 1.6.2 listed them in `lang_name` but `lang_exts` is empty so they fall through to "plain". 1.6.4 adds a basename-match probe alongside the extension walk. Small surface; one new helper + a basename table. | Closes the dockerfile/makefile gap that 1.6.2 documents in `tests/lang.tcyr`. |
+| **v1.6.5** | **Reference previews in `:lsp-find-refs`** (carry-over from 1.5.x deferred polish). Append source-line snippet to each `_cyim_lsp_label_for_ref` cstring; fetch line from disk (or buf if open) and truncate to popup width. Cyim-lsp `[lib]` patch (no cyim ABI change). Triggered by user asking "what's at this reference" without jumping. | Was carry-over from 1.5.x; folds cleanly into 1.6.x catch-up. |
+| **v1.6.6** | **Open-in-split ABI** (carry-over from 1.5.x deferred polish). New plugin ABI `plugin_buf_load_file_split(s, path, direction)` — additive; consumer passes a "split" hint to on_select. Cyim 1.6.x patch (additive ABI per ADR 0004 envelope) + cyim-lsp follow-up to consume it. | Was carry-over from 1.5.x. Triggered by user wanting to keep current buffer visible while jumping. |
+| **v1.6.7** | **Arrow keys in list mode** (carry-over from 1.5.x deferred polish). Wire arrow handling in `editor_feed`'s CSI parser to route to `_plugin_list_next` / `_plugin_list_prev` when `_plugin_list_active`. Pure driver-side change. | Was carry-over from 1.5.x. Triggered by user finding j/k off in list mode. Smallest of the carry-overs. |
+
+### Closeout — v1.7.0 entry gate
+
+Per CLAUDE.md "Closeout Pass" policy, run the 11-step closeout
+audit before tagging 1.7.0. Same shape as 1.5.2's audit, plus:
+
+- Re-baseline benchmarks under cyrius 5.10.10 + vyakarana 2.2.1 +
+  full grammar surface (the 1.6.1 numbers are the new baseline;
+  1.6.x cumulative regression vs 1.5.3 worth a chart in the audit).
+- Confirm `agnoshi` and `aethersafha` integration paths still
+  embed cyim cleanly under the new toolchain (downstream check).
+- Architecture review: `lang.cyr` if-chain is at 45 entries (the
+  practical cap noted in the file header). If 1.6.x adds basename
+  detection (1.6.4) and 1.7.x looks likely to push past 50,
+  refactor to parallel global arrays or a vyakarana-metadata
+  query. ADR before going.
+
+### Watch list (architectural debt; not yet earning a bite)
+
+| Item | Forcing function |
+|---|---|
+| `lang.cyr` if-chain refactor | At 45 entries today. CLAUDE.md "wait for the third instance" applies — third extension growth event triggers the refactor. The 1.6.4 basename-detection bite is the second instance (after 1.6.2 catch-up); next forcing function is the trigger. |
+| F-CO-2 (extract `_cyim_lsp_jump_to_uri_lc`) | Informational since 1.5.2. Still 2 instances; cyim-lsp `:lsp-implementation` or `:lsp-type-definition` would be the third. |
 
 ---
 
@@ -177,8 +232,10 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-05-07 (v1.6.0 — VIM-style marks shipped.
-Marks row removed from demand-gated table; remaining 1.5.x
-deferred polish items are carry-over candidates for 1.6.x
-patches. Next minor's theme is open — macros, folding, or
-something else demand-gated.)*
+*Last updated: 2026-05-09 (v1.6.2 — Grammar-routing catch-up
+shipped. 1.6.x catch-up channel formalized as its own roadmap
+section. 1.6.1 (toolchain + vyakarana 2.x migration) and 1.6.2
+(11 → 45 grammar routing) shipped; 1.6.3 (cyim-lsp 1.3.0 cut),
+1.6.4 (basename detection), and 1.6.5–1.6.7 (carry-over LSP
+polish from 1.5.x) sequenced as next bites. v1.7.0 closeout
+follows the same 11-step CLAUDE.md policy as 1.5.2's.)*
