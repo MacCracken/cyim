@@ -25,6 +25,7 @@
 #
 # cyim-lsp bundle helpers consumed (besides protocol senders):
 #   lsp_uri_decode(uri) -> cstring or 0                  -- cyim-lsp 1.2.1
+#   lsp_ref_preview(uri, line, max_chars) -> cstring or 0 -- cyim-lsp 1.4.0
 #   editor_buf(s) / editor_file_path(s)
 #   editor_set_status(s, msg)            -- 2-arg; cstring ptr only
 #   buf_get(b, i) / buf_len(b) / buf_cursor(b) / buf_move(b, off)
@@ -388,8 +389,15 @@ fn _cyim_lsp_parse_refs(body, blen, uris, lines, chars) {
     return count;
 }
 
-# Format "filename:line:col" cstring. 1-indexed for display
-# (LSP wire format is 0-indexed; humans expect 1-indexed).
+# Format "filename:line:col  preview" cstring. 1-indexed for
+# display (LSP wire format is 0-indexed; humans expect 1-indexed).
+# v1.6.5 picks up cyim-lsp 1.4.0's `lsp_ref_preview` and appends
+# the source-line snippet (leading whitespace stripped, capped at
+# 80 bytes) after the coordinates, separated by two spaces.
+# Falls through cleanly when preview is unavailable (file > 1 MiB,
+# line out of range, alloc failure) — `pl > 0` guards both the
+# separator and the copy loop, so the label is byte-identical to
+# 1.6.4's output in the no-preview case.
 fn _cyim_lsp_label_for_ref(uri, line, char) {
     if (uri == 0) { return 0; }
     var ul = strlen(uri);
@@ -407,7 +415,16 @@ fn _cyim_lsp_label_for_ref(uri, line, char) {
     if (char_str == 0) { return 0; }
     var ll = strlen(line_str);
     var cl = strlen(char_str);
-    var total = name_len + 1 + ll + 1 + cl + 1;
+
+    # v1.6.5: ask the bundle for a preview snippet.
+    var preview_max = 80;
+    var preview = lsp_ref_preview(uri, line, preview_max);
+    var pl = 0;
+    if (preview != 0) { pl = strlen(preview); }
+    var sep_len = 0;
+    if (pl > 0) { sep_len = 2; }
+
+    var total = name_len + 1 + ll + 1 + cl + sep_len + pl + 1;
     var out = alloc(total);
     if (out == 0) { return 0; }
     var off = 0;
@@ -425,6 +442,13 @@ fn _cyim_lsp_label_for_ref(uri, line, char) {
     j = 0;
     while (j < cl) { store8(out + off + j, load8(char_str + j)); j = j + 1; }
     off = off + cl;
+    if (pl > 0) {
+        store8(out + off, 32); off = off + 1;
+        store8(out + off, 32); off = off + 1;
+        j = 0;
+        while (j < pl) { store8(out + off + j, load8(preview + j)); j = j + 1; }
+        off = off + pl;
+    }
     store8(out + off, 0);
     return out;
 }

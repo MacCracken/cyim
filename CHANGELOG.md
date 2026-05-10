@@ -4,6 +4,87 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.5] — 2026-05-09
+
+**cyim-lsp 1.4.0 pickup — reference previews in `:lsp-find-refs`.**
+Fifth bite of the 1.6.x catch-up cycle. cyim-lsp 1.4.0 added
+`lsp_ref_preview(uri, line, max_chars)` as its second real
+`[lib]` source change of the 1.x line; cyim 1.6.5 picks it up
+and updates `_cyim_lsp_label_for_ref` to append the preview
+snippet after `filename:line:col`. Closes the long-standing
+"reference previews" carry-over from cyim's 1.5.x deferred
+polish list.
+
+User-visible change: pressing `gr` over a Cyrius symbol now
+shows each reference as `filename:line:col  source-snippet-here`
+(leading whitespace stripped, capped at 80 bytes). Files >1 MiB
+or out-of-range lines surface the bare `filename:line:col`
+(graceful fallback identical to 1.6.4 output).
+
+### Changed
+
+- **`cyrius.cyml`** — `[deps.cyim-lsp].tag = "1.4.0"` (was
+  `"1.3.0"`). `cyrius deps` re-resolved; `lib/cyim-lsp.cyr`
+  symlink now points at `~/.cyrius/deps/cyim-lsp/1.4.0/dist/cyim-lsp.cyr`
+  (2425 lines, was 2305 at 1.3.0).
+- **`cyrius.lock`** — cyim-lsp sha updated; vyakarana sha
+  unchanged.
+- **`src/plugins/lsp_glue.cyr`** — `_cyim_lsp_label_for_ref(uri,
+  line, char)` now calls `lsp_ref_preview(uri, line, 80)` and
+  appends the result after the coordinates separated by two
+  spaces. Header comment "cyim-lsp bundle helpers consumed"
+  lists the new helper alongside `lsp_uri_decode`. Mirror of
+  cyim-lsp 1.4.0's `docs/examples/cyim_glue.cyr` reference glue
+  change. Falls through cleanly when `lsp_ref_preview` returns
+  0: `pl > 0` guards both the separator and the copy loop, so
+  the label is byte-identical to 1.6.4's output in the
+  no-preview-available case.
+
+### Status
+
+- **No new cyim ABI surface.** `lsp_ref_preview` is a
+  cyim-lsp `[lib]` symbol — cyim's plugin ABI freeze (1.3.6 /
+  ADR 0004) holds.
+- **Minimum cyrius-lsp behaviour unchanged.** The reference
+  glue still works against any LSP server that responds to
+  `textDocument/references`; the preview helper just reads
+  the file directly off disk.
+
+### Binary
+
+- `build/cyim` (CYRIUS_DCE=1): **1,212,856 B** (+2,160 over
+  1.6.4's 1,210,696 B). Delta is the `lsp_ref_preview` call
+  site in `_cyim_lsp_label_for_ref` (~200 B), the appended
+  preview-copy branch (~600 B), and the `lsp_ref_preview` body
+  pulled in from cyim-lsp 1.4.0's expanded distfile (~1,360 B
+  after DCE — the helper isn't large but its file_read_all
+  callout pulls extra io.cyr surface that DCE retains).
+
+### Performance
+
+References-picker label format runs once per `gr` invocation —
+not on the highlight hot path. The added file_read_all per
+reference is bounded by 1 MiB and N references typical < 50,
+so the cumulative read cost for a typical `gr` is < 50 MiB
+in the worst case (cold disk reads) and effectively zero for
+warm cache. No new bench numbers needed; existing benches
+unaffected.
+
+### Verification
+
+- `cyrius deps` — re-resolved, lock updated.
+- `cyrius test` — **22 suites, 1113 assertions PASS**, 0 fail
+  (unchanged vs 1.6.4 — the label change is exercised through
+  the lsp smoke harness at runtime, not via tcyr).
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 23 src files + 1 plugin file (lsp_glue.cyr),
+  0 warnings each.
+- `cyrfmt --check` — 24 files clean.
+- `tests/cli_smoke.sh` — 118 PASS.
+- `tests/integration_smoke.py` — all PASS.
+- `cyrius smoke tests/smcyr/lsp_fold.smcyr` — 1 PASS.
+- `CYRIUS_DCE=1 cyrius build` — clean.
+
 ## [1.6.4] — 2026-05-09
 
 **Basename-driven language detection.** Closes the dockerfile /
