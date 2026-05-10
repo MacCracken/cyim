@@ -4,6 +4,87 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-05-09
+
+**Toolchain + vyakarana catch-up cut.** First step of the 1.6.x
+catch-up channel: cyrius pin 5.9.16 → 5.10.10, vyakarana
+1.0.2 → 2.2.1 (skipping every 1.x release in between — 14 minor
+cuts). The only breaking surface across that vyakarana window is
+the 2.0.0 `tokenize_source` removal, replaced by the streaming
+primitive (`tokenize_stream_new` / `_feed` / `_finish` / `_free`).
+cyim has a single call site (`src/highlight.cyr`); migration is
+the documented 5-line dance plus a null-handle guard. cyim-lsp's
+own toolchain pin moves in lockstep (5.9.16 → 5.10.10) but its
+tag stays at 1.2.1; a 1.3.0 publish lands later in 1.6.x.
+
+The 35 new vyakarana grammars (cpp, csharp, css, dockerfile,
+elixir, go, graphql, haskell, html, ini, java, kotlin, lua,
+makefile, markdown, ocaml, php, protobuf, ruby, scss, sql,
+swift, xml, zig + powershell, crystal, julia, vue, svelte, nix,
+terraform + asm_aarch64, asm_x86_64, llvm_ir, cyml) are linked
+into the binary by the distfile but `src/lang.cyr`'s extension
+table still routes only the original 10. Full extension-routing
+catch-up is the 1.6.2 bite.
+
+### Changed
+
+- **`cyrius.cyml`** — `[package].cyrius` 5.9.16 → 5.10.10;
+  `[deps.vyakarana].tag` 1.0.2 → 2.2.1. Local toolchain conformed
+  via `cyriusly use 5.10.10` per the pin-authority rule.
+- **`src/highlight.cyr`** — `tokenize_source(src, lang)` replaced
+  by `tokenize_stream_new` + `_feed(s, src, strlen(src))` +
+  `_finish(s, tb)` + `_free(s)`, with a `if (s == 0) { return 0; }`
+  guard preserving 1.x's null-on-unregistered-grammar contract.
+  Cache wiring at `buf_set_cache` unchanged. Header comments at
+  `:9` and `:21` rewritten to describe the streaming shape.
+- **`cyim-lsp/cyrius.cyml`** (sibling repo) — `[package].cyrius`
+  5.9.16 → 5.10.10. No `[lib]` source change; consumer-side
+  picks up the new toolchain without a tag bump (cyim's
+  `[deps.cyim-lsp].tag` stays at `1.2.1`).
+
+### Performance
+
+Cold tokenize regresses as expected from vyakarana 2.0.0's
+per-call alloc overhead — the streaming benefit (memory bound by
+per-token state) only realizes for streaming consumers, and cyim
+calls feed once with the whole buffer:
+
+| Bench | 1.5.3 | 1.6.1 | Δ |
+|-------|------:|------:|--:|
+| `highlight_buf_1MB_cyrius` | 253 ms | 318 ms (avg of 3 runs) | **+25 %** |
+| `highlight_buf_cache_hit_x1000` | 16 µs | 17.5 µs | **+10 %** |
+
+Cache-hit path (the hot path during interactive editing) is
+within sampling noise. 1MB cold is a one-shot at file open, so
+the regression is invisible at the user-visible latency layer.
+Full bench numbers logged in `tests/perf.bcyr` runs.
+
+### Binary
+
+- `build/cyim` (CYRIUS_DCE=1): **1,203,936 B** (+238,504 B over
+  1.6.0's 965,432 B). Delta is dominated by vyakarana 2.2.1's
+  45 bundled grammars vs 1.0.2's narrower set; `lib/vyakarana.cyr`
+  is now 4,036 lines. The binary-size soft cap inherited from
+  vyakarana's 1.13.0 ADR no longer applies cleanly to the
+  consumer; reviewing in the 1.7.0 closeout.
+
+### Verification
+
+- `cyrius test` — **22 suites, 1047 assertions PASS**, 0 failures.
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 0 warnings.
+- `cyrius bench` — completed; numbers above.
+- `CYRIUS_DCE=1 cyrius build` — clean.
+
+### Migration notes (for future readers)
+
+The 1.x → 2.x recipe in vyakarana's CHANGELOG is mechanical for
+single-call consumers. cyim's only complication was preserving
+the v1.x null-on-unregistered-grammar contract: `tokenize_source`
+returned 0 on unknown grammar names; `tokenize_stream_new` does
+the same, but `_feed` / `_finish` would dereference a null handle.
+The explicit `if (s == 0) { return 0; }` covers that.
+
 ## [1.6.0] — 2026-05-07
 
 **Minor — VIM-style marks (`m<letter>` / `'<letter>`).**

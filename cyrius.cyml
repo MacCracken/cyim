@@ -5,7 +5,7 @@ description = "Sovereign Cyrius-native text editor — VIM-inspired, zero attack
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/cyim"
 language = "cyrius"
-cyrius = "5.9.16"
+cyrius = "5.10.10"
 
 [build]
 entry = "src/main.cyr"
@@ -63,7 +63,7 @@ stdlib = [
 # resolved at runtime via /proc/self/exe (binary-relative).
 [deps.vyakarana]
 git = "https://github.com/MacCracken/vyakarana.git"
-tag = "1.0.2"
+tag = "2.2.1"
 modules = ["dist/vyakarana.cyr"]
 
 # cyim-lsp — LSP client plugin. v1.0.2 ships a self-contained

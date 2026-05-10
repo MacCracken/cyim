@@ -6,9 +6,9 @@
 #                                  (no /proc, weird sandbox), the function is
 #                                  a no-op and vyakarana's lazy bootstrap will
 #                                  fall back to cwd-relative paths on first
-#                                  tokenize_source call. Tests rely on this
-#                                  fallback because the test runner's cwd is
-#                                  the project root, which has grammars/.
+#                                  tokenize_stream_finish call. Tests rely on
+#                                  this fallback because the test runner's cwd
+#                                  is the project root, which has grammars/.
 #   highlight_buf(b, lang)      — copy gap-buffer content to a NUL-terminated
 #                                  heap cstr and tokenize. Returns a
 #                                  vyakarana tokenbuf or 0 if no grammar
@@ -18,10 +18,14 @@
 #                                  Whitespace-default fallback for positions
 #                                  not covered by any token.
 #
-# vyakarana's `tokenize_source` calls `strlen(src)`, so the source MUST be
-# NUL-terminated. The gap-buffer's two-segment layout doesn't satisfy that
-# directly — `_buf_to_cstr` materializes a contiguous copy. Copy cost is
-# O(buf_len); acceptable for M2 (one full retokenize per render frame).
+# vyakarana 2.x replaced `tokenize_source(src, lang)` with the streaming
+# primitive (`tokenize_stream_new` / `_feed` / `_finish` / `_free`). cyim
+# always has the full source in memory (the gap-buffer), so we feed the
+# whole thing in one chunk and finish — same shape as 1.x's one-shot call,
+# now five lines. The feed call still expects a contiguous byte range with
+# an explicit length, so the NUL-terminated cstring materialized by
+# `_hl_buf_to_cstr` continues to be the input shape; copy cost is
+# O(buf_len), acceptable for M2 (one full retokenize per render frame).
 #
 # Requires: src/buffer.cyr, plus dist/vyakarana.cyr from the
 #           [deps.vyakarana] block in cyrius.cyml. Test files include
@@ -187,7 +191,12 @@ fn highlight_buf(b, lang) {
     }
 
     var src = _hl_buf_to_cstr(b);
-    var tb = tokenize_source(src, lang);
+    var s = tokenize_stream_new(lang);
+    if (s == 0) { return 0; }
+    var tb = tokenbuf_new();
+    tokenize_stream_feed(s, src, strlen(src));
+    tokenize_stream_finish(s, tb);
+    tokenize_stream_free(s);
     if (tb != 0) { buf_set_cache(b, tb, buf_version(b), lang); }
     return tb;
 }
