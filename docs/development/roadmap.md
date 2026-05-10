@@ -34,7 +34,7 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.6.5** (see [`state.md`](state.md)). VIM-style
+cyim is at **1.6.6** (see [`state.md`](state.md)). VIM-style
 marks (`m<letter>` / `'<letter>`) shipped at 1.6.0 as the first
 feature minor of the post-1.5.x cycle; 1.6.1 and 1.6.2 are the
 opening bites of the **1.6.x catch-up channel** — toolchain pin
@@ -86,6 +86,7 @@ this is a sequencing index.
 | **v1.6.3** — cyim-lsp 1.3.0 pickup (`[deps.cyim-lsp].tag` 1.2.1 → 1.3.0; banner-only delta, distfile byte-identical, no cyim source changes; binary byte-identical to 1.6.2) | Shipped 2026-05-09 |
 | **v1.6.4** — Basename-driven language detection (`lang_basenames(i)` table; `Dockerfile`/`Makefile`/`GNUmakefile`/`Containerfile` + `.bashrc`/`.zshrc`/`.profile` family; case-sensitive with directory-boundary check; `tests/lang.tcyr` 77 → 103 assertions) | Shipped 2026-05-09 |
 | **v1.6.5** — cyim-lsp 1.4.0 pickup; reference previews in `:lsp-find-refs` (`_cyim_lsp_label_for_ref` calls `lsp_ref_preview(uri, line, 80)` and appends snippet after coordinates; falls through cleanly when preview unavailable) | Shipped 2026-05-09 |
+| **v1.6.6** — Plugin ABI: `plugin_buf_load_file_split(s, path, direction)` (additive per ADR 0004; `SPLIT_HORIZONTAL`/`SPLIT_VERTICAL` constants; cyim side of the open-in-split carry-over from 1.5.x; cyim-lsp 1.5.0 will consume) | Shipped 2026-05-09 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -147,12 +148,13 @@ under the new toolchain.
 | **v1.6.3** | cyim-lsp 1.3.0 cut + pickup. cyim-lsp's `[package].cyrius` had moved to 5.10.10 in 1.6.1; 1.3.0 publishes that as a tag (banner-only distfile delta), and cyim 1.6.3 bumps `[deps.cyim-lsp].tag` to 1.3.0. Pure infrastructure on both sides; binary byte-identical to 1.6.2. | ✅ Shipped 2026-05-09 |
 | **v1.6.4** | Basename-driven language detection. New `lang_basenames(i)` table in `src/lang.cyr` populated for shell (`.bashrc` family), dockerfile (`Dockerfile`/`Containerfile`), and makefile (`Makefile`/`GNUmakefile`). Case-sensitive equality with `/` directory-boundary check; basename probe runs before extension probe in `detect_language_from_path`. `tests/lang.tcyr` 77 → 103 assertions. | ✅ Shipped 2026-05-09 |
 | **v1.6.5** | cyim-lsp 1.4.0 pickup. Tag bump 1.3.0 → 1.4.0 plus `src/plugins/lsp_glue.cyr` mirror of cyim-lsp's `_cyim_lsp_label_for_ref` change — calls `lsp_ref_preview(uri, line, 80)` and appends snippet after coordinates separated by two spaces. Closes the long-standing "reference previews" carry-over from 1.5.x deferred polish. No new cyim ABI surface. | ✅ Shipped 2026-05-09 |
+| **v1.6.6** | Open-in-split ABI: `plugin_buf_load_file_split(s, path, direction)` added to `src/plugin.cyr`. Additive per ADR 0004's freeze envelope — `plugin_buf_load_file` unchanged. New public constants `SPLIT_HORIZONTAL = 0` / `SPLIT_VERTICAL = 1`. Implementation reuses dedup + load helpers, then `window_split_active` + focus move to new sibling. `tests/plugin.tcyr` 88 → 109 assertions. cyim-lsp 1.5.0 (next) consumes for ref-jumping UX; ABI dormant until then. | ✅ Shipped 2026-05-09 |
 
 ### Planned (next bites)
 
 | Cut | Theme | Notes |
 |---|---|---|
-| **v1.6.6** | **Open-in-split ABI** (carry-over from 1.5.x deferred polish). New plugin ABI `plugin_buf_load_file_split(s, path, direction)` — additive; consumer passes a "split" hint to on_select. Cyim 1.6.x patch (additive ABI per ADR 0004 envelope) + cyim-lsp follow-up to consume it. | Was carry-over from 1.5.x. Triggered by user wanting to keep current buffer visible while jumping. |
+| **v1.6.x patch** | **cyim-lsp 1.5.0 cut + cyim pickup** for the open-in-split ABI consumption. cyim-lsp side: `_cyim_lsp_on_ref_select` accepts a "split" hint and routes through `plugin_buf_load_file_split` when set; new public bundle helper exposes the hint plumbing. Cut as a minor (additive `[lib]` symbol). cyim picks up via `[deps.cyim-lsp].tag` bump. The exact cyim version depends on whether 1.6.7 (arrow keys) lands first — sequencing is your call. | Two-stage shape mirroring 1.6.5: cyim-lsp side first, "X is out" call, cyim-side pickup as a separate cyim cut. |
 | **v1.6.7** | **Arrow keys in list mode** (carry-over from 1.5.x deferred polish). Wire arrow handling in `editor_feed`'s CSI parser to route to `_plugin_list_next` / `_plugin_list_prev` when `_plugin_list_active`. Pure driver-side change. | Was carry-over from 1.5.x. Triggered by user finding j/k off in list mode. Smallest of the carry-overs. |
 | **v1.6.8** | **Closeout pass for the 1.6.x cycle.** Follows CLAUDE.md's 11-step Closeout Pass policy (same shape as 1.5.2's). Specific 1.6.x agenda: re-baseline benchmarks under cyrius 5.10.10 + vyakarana 2.2.1 + cyim-lsp 1.4.0 + full grammar surface (1.6.1's numbers are the new baseline; 1.6.x cumulative regression vs 1.5.3 worth a chart). Confirm `agnoshi` / `aethersafha` integration paths still embed cyim cleanly under the catch-up trio. Architecture review: `lang.cyr` if-chain at 45 entries + parallel `lang_basenames` table from 1.6.4 — assess whether the third forcing function for refactor has arrived. `_cyim_lsp_label_for_ref` shape now duplicated in cyim-lsp's example glue and cyim's `src/plugins/lsp_glue.cyr` — wait-for-third-instance applies before extracting. Audit doc lands at `docs/audit/2026-MM-DD-1.6x-closeout.md`. | The 1.6.x cycle gate. |
 
@@ -250,16 +252,14 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-05-09 (v1.6.5 — cyim-lsp 1.4.0 pickup
-shipped. Reference previews live in `:lsp-find-refs` —
-`gr` over a symbol now shows `filename:line:col  source-snippet`
-per reference. Catch-up cycle now five cuts deep: 1.6.1
-(toolchain) / 1.6.2 (grammars) / 1.6.3 (cyim-lsp toolchain
-publish) / 1.6.4 (basename detection) / 1.6.5 (reference
-previews via cyim-lsp 1.4.0). Long-standing carry-over from
-1.5.x deferred polish closed. **v1.7.0 plan concretized**
-(user FYI): cyrius 5.10.10 → 5.10.20 + new `[deps.darshana]`
-block (TUI lib being extracted from cyim's render/tty code,
-cyim is the primary donor + first consumer). Next bites:
-1.6.6 open-in-split ABI, 1.6.7 arrow keys in list mode,
-1.6.8 closeout, then 1.7.0.)*
+*Last updated: 2026-05-09 (v1.6.6 — Plugin ABI for open-in-split
+shipped. `plugin_buf_load_file_split(s, path, direction)` joins
+the additive plugin ABI surface alongside `plugin_buf_load_file`
+(1.4.2), `plugin_register_normal_prefix_key` (1.4.2), and
+`plugin_list_display` (1.5.0). Catch-up cycle now six cuts deep:
+1.6.1 toolchain / 1.6.2 grammars / 1.6.3 cyim-lsp toolchain
+publish / 1.6.4 basename detection / 1.6.5 reference previews /
+1.6.6 open-in-split ABI. Next bites: cyim-lsp 1.5.0 cut +
+pickup for the open-in-split consumer side (slot TBD —
+1.6.6.x or paired with 1.6.7), 1.6.7 arrow keys in list mode,
+1.6.8 closeout, then 1.7.0 (cyrius 5.10.20 + darshana TUI).)*

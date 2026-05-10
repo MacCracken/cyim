@@ -4,6 +4,127 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.6] — 2026-05-09
+
+**Plugin ABI: `plugin_buf_load_file_split(s, path, direction)`.**
+
+Sixth bite of the 1.6.x catch-up cycle. Adds an additive plugin
+ABI for opening a file in a new split window — the cyim side of
+the "open-in-split" carry-over from 1.5.x deferred polish. Same
+dedup + load-or-reuse semantics as `plugin_buf_load_file`, but
+splits the active window first and moves focus to the new leaf.
+
+Two new public constants pin the direction surface:
+`SPLIT_HORIZONTAL = 0` (new pane below; matches `:sp`),
+`SPLIT_VERTICAL = 1` (new pane right; matches `:vsp`). Unknown
+values default to horizontal so a future `SPLIT_TAB` /
+`SPLIT_FLOAT` etc. doesn't silently break this call site.
+
+cyim-lsp follow-up at 1.5.0 will consume this — `_cyim_lsp_on_ref_select`
+gains a "split" hint and routes through the new ABI when the
+caller wants to keep the current buffer visible. That's a
+separate cyim-lsp cut + cyim 1.6.x pickup.
+
+**Additive ABI** per ADR 0004's freeze envelope: nothing
+existing changed shape. `plugin_buf_load_file` stays unchanged;
+the freeze guarantees consumers compiled against cyim 1.3.6+
+continue to work without touching `lsp_glue.cyr` or any other
+plugin source.
+
+### Added
+
+- **`plugin_buf_load_file_split(s, path, direction)` in
+  `src/plugin.cyr`** (~85 lines). Public ABI that:
+  1. Validates `path != 0`; sets `ERR_NO_FILE_NAME` on null.
+  2. Initializes the buflist via `bl_init`.
+  3. Resolves to a buflist index — dedups via `_cmd_find_path`
+     when path is already loaded; loads from disk via
+     `buf_new` + `buf_load_file` otherwise. Path-not-found,
+     too-large, and read-error all set the appropriate
+     `ERR_*` and return 0.
+  4. Maps `direction` to window.cyr's internal split type
+     (`WIN_SPLIT_H = 1` / `WIN_SPLIT_V = 2`). Literal integers
+     used inline rather than the named constants because Cyrius
+     is single-pass and `motion.tcyr` / `dispatch.tcyr` include
+     `plugin.cyr` without `window.cyr` — referencing the named
+     constants would break their compile. The mapping is
+     asserted by the new tests in `plugin.tcyr` (which DOES
+     include `window.cyr`).
+  5. Calls `window_split_active(s, split_type)`. If the split
+     fails (degenerate window state, no active leaf), falls
+     back to the in-place load behaviour of
+     `plugin_buf_load_file` — caller never gets a silent
+     no-op.
+  6. Walks the parent of the original active leaf to find the
+     new sibling (always `child_b` of the freshly created
+     split node), points its `buf_idx` at the loaded file,
+     moves `editor_set_active_leaf` to it.
+  7. Returns the buf ptr.
+- **`SPLIT_HORIZONTAL = 0` / `SPLIT_VERTICAL = 1`** — public
+  constants for the direction parameter. Documented at the
+  ABI surface listing in plugin.cyr's header.
+- **`tests/plugin.tcyr` extended 88 → 109 assertions** (+21
+  across 7 new groups for the split ABI):
+  - Constants (2 assertions): `SPLIT_HORIZONTAL == 0`,
+    `SPLIT_VERTICAL == 1`.
+  - Horizontal split (8 assertions): pre-state is single leaf,
+    post-load buflist grows, active buffer == loaded buf, root
+    becomes a split node, active leaf changed and is now a
+    leaf whose parent is the split.
+  - Vertical split (1 assertion): split type stored at
+    `load64(root)` is `WIN_SPLIT_V` (2).
+  - Unknown direction (1 assertion): defaults to
+    `WIN_SPLIT_H` (1).
+  - Dedup against existing buflist entry (3 assertions):
+    second split-load reuses the buf; buflist count unchanged.
+  - Missing file (3 assertions): returns 0, `ERR_FILE_NOT_FOUND`
+    set, no split happened (root still single leaf).
+  - NULL path (2 assertions): returns 0, `ERR_NO_FILE_NAME`
+    set.
+  - Variables namespaced as `sp_h` / `sp_v` / `sp_unk` /
+    `sp_dd` / `sp_miss` to avoid collision with the existing
+    `s7` / `s8` / etc. function-scoped declarations later in
+    `plugin.tcyr`'s `plugin_list_display` group (Cyrius vars
+    are function-scoped per CLAUDE.md).
+
+### Changed
+
+- **`src/plugin.cyr` ABI surface header** — added the new
+  function and two constants to the comment listing of public
+  surface.
+
+### Binary
+
+- `build/cyim` (CYRIUS_DCE=1): **1,213,880 B** (+1,024 over
+  1.6.5's 1,212,856 B). Delta is the
+  `plugin_buf_load_file_split` body (~700 B after DCE) +
+  the two new public-constant globals (~24 B each) +
+  scaffolding around the new dispatch path.
+
+### Status
+
+- **No cyim-lsp consumer yet.** cyim-lsp 1.5.0 (planned) will
+  thread a "split" hint through `_cyim_lsp_on_ref_select` and
+  route through this ABI for the open-in-split UX. Until then,
+  the new ABI is dormant — exercised only by `tests/plugin.tcyr`,
+  not by any user-facing keybinding.
+- **Plugin ABI freeze (ADR 0004) holds.** This is purely
+  additive: `plugin_buf_load_file` stays unchanged, and the
+  new function + constants are net new symbols.
+
+### Verification
+
+- `cyrius test` — **22 suites, 1134 assertions PASS** (+21
+  vs 1.6.5).
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 24 src files (incl. plugins/lsp_glue.cyr),
+  0 warnings each.
+- `cyrfmt --check` — 24 files clean.
+- `tests/cli_smoke.sh` — 118 PASS.
+- `tests/integration_smoke.py` — all PASS.
+- `cyrius smoke tests/smcyr/lsp_fold.smcyr` — 1 PASS.
+- `CYRIUS_DCE=1 cyrius build` — clean.
+
 ## [1.6.5] — 2026-05-09
 
 **cyim-lsp 1.4.0 pickup — reference previews in `:lsp-find-refs`.**

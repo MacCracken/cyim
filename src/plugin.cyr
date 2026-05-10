@@ -22,6 +22,11 @@
 # ABI surface — operations (called by plugins to drive cyim state):
 #   plugin_buf_load_file(s, path)                  # v1.4.2 — load file into new
 #                                                  #   buf + switch active; returns buf or 0
+#   plugin_buf_load_file_split(s, path, direction) # v1.6.6 — load file into a new
+#                                                  #   split window; SPLIT_HORIZONTAL (0)
+#                                                  #   adds the pane below, SPLIT_VERTICAL (1)
+#                                                  #   adds it to the right; focus moves to
+#                                                  #   the new pane. Returns buf or 0.
 #   plugin_list_display(s, items, count, on_select)  # v1.5.0 — popup picker;
 #                                                    #   on_select(s, index)
 #
@@ -230,6 +235,112 @@ fn plugin_register_normal_prefix_key(prefix, key, fp) {
 # open the destination, then `buf_move(b, dest_offset)` to jump.
 fn plugin_buf_load_file(s, path) {
     return _buf_load_file_into_active(s, path);
+}
+
+# === plugin_buf_load_file_split (v1.6.6) ===
+#
+# Open a file in a new split window. Same dedup + load semantics
+# as `plugin_buf_load_file` (re-uses the buflist when `path` is
+# already loaded; loads from disk otherwise) but splits the
+# active window first and moves focus to the new leaf.
+#
+# `direction`:
+#   SPLIT_HORIZONTAL (0)  — new pane appears below the current one
+#                           (matches `:sp` semantics).
+#   SPLIT_VERTICAL   (1)  — new pane appears to the right
+#                           (matches `:vsp` semantics).
+#   Other values are treated as SPLIT_HORIZONTAL.
+#
+# Returns:
+#   buf ptr on success; 0 on failure (path == 0, file missing,
+#   file too large, read error). On failure the editor's
+#   `last_error` is set, identical to `plugin_buf_load_file`.
+#
+# Edge: if `window_split_active` fails (degenerate window state —
+# no active leaf, etc.), this falls back to the in-place load
+# behaviour of `plugin_buf_load_file` so the call is never a
+# silent no-op. The caller still gets a buf back; just no split.
+#
+# Use case: cyim-lsp 1.5.0+ "open reference in split" — given a
+# destination URI from `textDocument/references` or
+# `textDocument/definition`, the consumer passes a split hint to
+# its on_select callback and routes through this ABI to keep the
+# current buffer visible while the destination opens beside it.
+
+var SPLIT_HORIZONTAL = 0;
+var SPLIT_VERTICAL   = 1;
+
+fn plugin_buf_load_file_split(s, path, direction) {
+    if (path == 0) {
+        editor_set_last_error(s, ERR_NO_FILE_NAME);
+        return 0;
+    }
+
+    bl_init(s, editor_buf(s));
+
+    # Resolve to a buflist index — dedup against existing entries
+    # before loading from disk.
+    var idx = _cmd_find_path(s, path);
+    if (idx < 0) {
+        var size = _cmd_file_size(path);
+        if (size < 0) {
+            editor_set_last_error(s, ERR_FILE_NOT_FOUND);
+            return 0;
+        }
+        if (size > editor_cfg_max_filesize(s)) {
+            editor_set_last_error(s, ERR_FILE_TOO_LARGE);
+            return 0;
+        }
+        var nb = buf_new();
+        var n = buf_load_file(nb, path);
+        if (n < 0) {
+            editor_set_last_error(s, ERR_FILE_NOT_FOUND);
+            return 0;
+        }
+        buf_move(nb, 0);
+        idx = bl_add(s, nb, path);
+    }
+
+    # Map the public direction constant to window.cyr's internal
+    # split-type. Unknown values default to horizontal so a future
+    # SPLIT_TAB / SPLIT_FLOAT etc. doesn't break this call site.
+    #
+    # Literal integers (1, 2) instead of the named WIN_SPLIT_H /
+    # WIN_SPLIT_V constants — Cyrius is single-pass and the test
+    # harnesses motion.tcyr / dispatch.tcyr include plugin.cyr
+    # without window.cyr, so referencing the named constants
+    # would break their compile. Function references defer to
+    # link-time; var references must resolve at parse-time. The
+    # mapping is asserted by `tests/plugin.tcyr`'s split tests
+    # which DO include window.cyr.
+    var split_type = 1;   # WIN_SPLIT_H
+    if (direction == SPLIT_VERTICAL) {
+        split_type = 2;   # WIN_SPLIT_V
+    }
+
+    var rc = window_split_active(s, split_type);
+    if (rc < 0) {
+        # Degenerate window state — fall back to in-place load so
+        # the caller still gets a buf rather than a silent failure.
+        bl_set_active(s, idx);
+        var leaf_a = editor_active_leaf(s);
+        if (leaf_a != 0) { window_set_buf_idx(leaf_a, idx); }
+        return bl_buf(s, idx);
+    }
+
+    # Post-split state: original leaf stays as child_a of the new
+    # split (focus unchanged); the freshly created sibling is
+    # child_b, showing the same buf_idx as the original. Find the
+    # sibling, point it at the loaded file, move focus there.
+    var orig_leaf = editor_active_leaf(s);
+    var parent = window_parent(orig_leaf);
+    var sibling = window_child_b(parent);
+
+    bl_set_active(s, idx);
+    editor_set_active_leaf(s, sibling);
+    window_set_buf_idx(sibling, idx);
+
+    return bl_buf(s, idx);
 }
 
 # === Fire-points (called by cyim's core) ===

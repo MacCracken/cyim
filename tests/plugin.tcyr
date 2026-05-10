@@ -337,6 +337,93 @@ fn main() {
     assert_eq(null_load, 0, "null path returns 0");
     assert_eq(editor_last_error(s6), ERR_NO_FILE_NAME, "ERR_NO_FILE_NAME set");
 
+    # === v1.6.6 — plugin_buf_load_file_split ABI ===
+
+    test_group("plugin_buf_load_file_split: SPLIT_HORIZONTAL constants");
+    assert_eq(SPLIT_HORIZONTAL, 0, "SPLIT_HORIZONTAL == 0 (matches :sp)");
+    assert_eq(SPLIT_VERTICAL,   1, "SPLIT_VERTICAL == 1 (matches :vsp)");
+
+    test_group("plugin_buf_load_file_split: horizontal split loads file + moves focus");
+    # Write second fixture so the dedup path doesn't kick in for the
+    # split-load tests (path different from /tmp/cyim-plugin-buf-load.txt).
+    var fix_split_path = "/tmp/cyim-plugin-buf-split.txt";
+    var split_fix_fd = sys_open(fix_split_path, 65, 420);
+    if (split_fix_fd >= 0) {
+        var split_fix_content = "split\n";
+        sys_write(split_fix_fd, split_fix_content, 6);
+        sys_close(split_fix_fd);
+    }
+    var sp_h = editor_new(buf_new());
+    bl_init(sp_h, editor_buf(sp_h));
+    window_init(sp_h);
+    var sp_h_root_pre = editor_window_root(sp_h);
+    var sp_h_active_pre = editor_active_leaf(sp_h);
+    assert_eq(window_is_leaf(sp_h_root_pre), 1, "pre: root is a single leaf");
+    assert_eq(sp_h_active_pre, sp_h_root_pre, "pre: active leaf == root leaf");
+    var sp_h_pre_count = bl_count(sp_h);
+
+    var sp_h_loaded = plugin_buf_load_file_split(sp_h, fix_split_path, SPLIT_HORIZONTAL);
+    assert_neq(sp_h_loaded, 0, "split-load returned non-null buf");
+    assert_eq(bl_count(sp_h), sp_h_pre_count + 1, "buflist grew by 1");
+    assert_eq(editor_buf(sp_h), sp_h_loaded, "active buffer == loaded buf");
+
+    # Window state: root is now a split, active leaf is the sibling
+    # showing the new file; original leaf still shows the original buf.
+    var sp_h_root_post = editor_window_root(sp_h);
+    assert_eq(window_is_leaf(sp_h_root_post), 0, "post: root is a split node, not a leaf");
+    var sp_h_active_post = editor_active_leaf(sp_h);
+    assert_neq(sp_h_active_post, sp_h_active_pre, "post: active leaf changed");
+    assert_eq(window_is_leaf(sp_h_active_post), 1, "post: new active leaf is a leaf");
+    assert_eq(window_parent(sp_h_active_post), sp_h_root_post, "post: active leaf's parent is the split");
+
+    test_group("plugin_buf_load_file_split: vertical split type wires through");
+    # Fresh editor — confirm SPLIT_VERTICAL routes to WIN_SPLIT_V.
+    var sp_v = editor_new(buf_new());
+    bl_init(sp_v, editor_buf(sp_v));
+    window_init(sp_v);
+    plugin_buf_load_file_split(sp_v, fix_split_path, SPLIT_VERTICAL);
+    var sp_v_root = editor_window_root(sp_v);
+    # window.cyr stores type at offset 0; WIN_SPLIT_V == 2.
+    assert_eq(load64(sp_v_root), WIN_SPLIT_V, "root split type is WIN_SPLIT_V (2)");
+
+    test_group("plugin_buf_load_file_split: unknown direction defaults to horizontal");
+    var sp_unk = editor_new(buf_new());
+    bl_init(sp_unk, editor_buf(sp_unk));
+    window_init(sp_unk);
+    plugin_buf_load_file_split(sp_unk, fix_split_path, 99);   # unknown
+    var sp_unk_root = editor_window_root(sp_unk);
+    assert_eq(load64(sp_unk_root), WIN_SPLIT_H, "unknown direction -> WIN_SPLIT_H (1)");
+
+    test_group("plugin_buf_load_file_split: dedups against existing buflist entry");
+    var sp_dd = editor_new(buf_new());
+    bl_init(sp_dd, editor_buf(sp_dd));
+    window_init(sp_dd);
+    # First load via plain path (no split).
+    var sp_dd_loaded = plugin_buf_load_file(sp_dd, fix_split_path);
+    assert_neq(sp_dd_loaded, 0, "initial in-place load succeeded");
+    var sp_dd_count_after = bl_count(sp_dd);
+    # Second load via split path; should reuse the existing buflist entry.
+    var sp_dd_split = plugin_buf_load_file_split(sp_dd, fix_split_path, SPLIT_HORIZONTAL);
+    assert_eq(sp_dd_split, sp_dd_loaded, "split-load returned same buf (dedup)");
+    assert_eq(bl_count(sp_dd), sp_dd_count_after, "buflist did not grow");
+
+    test_group("plugin_buf_load_file_split: missing file returns 0 + ERR_FILE_NOT_FOUND");
+    var sp_miss = editor_new(buf_new());
+    bl_init(sp_miss, editor_buf(sp_miss));
+    window_init(sp_miss);
+    editor_set_last_error(sp_miss, ERR_NONE);
+    var sp_miss_buf = plugin_buf_load_file_split(sp_miss, "/tmp/cyim-split-nonexistent-99999", SPLIT_HORIZONTAL);
+    assert_eq(sp_miss_buf, 0, "missing file -> 0");
+    assert_eq(editor_last_error(sp_miss), ERR_FILE_NOT_FOUND, "ERR_FILE_NOT_FOUND set");
+    # Window state unchanged: still a single leaf.
+    assert_eq(window_is_leaf(editor_window_root(sp_miss)), 1, "no split happened on miss");
+
+    test_group("plugin_buf_load_file_split: NULL path returns 0 + ERR_NO_FILE_NAME");
+    editor_set_last_error(sp_miss, ERR_NONE);
+    var sp_null = plugin_buf_load_file_split(sp_miss, 0, SPLIT_HORIZONTAL);
+    assert_eq(sp_null, 0, "null path -> 0");
+    assert_eq(editor_last_error(sp_miss), ERR_NO_FILE_NAME, "ERR_NO_FILE_NAME set");
+
     # === v1.5.0 — plugin_list_display ABI ===
 
     test_group("plugin_list_display: pre-display state is inactive");
