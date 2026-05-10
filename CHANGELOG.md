@@ -4,6 +4,98 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.4] — 2026-05-09
+
+**Basename-driven language detection.** Closes the dockerfile /
+makefile gap that 1.6.2's `tests/lang.tcyr` pinned as
+`-> "plain"`. vyakarana ships grammars for both, and for shell
+rc dotfiles the `.sh` / `.bash` extension probe was never going
+to catch (`.bashrc`, `.zshrc`, `.profile` aren't extension-
+keyed). 1.6.4 adds a basename probe that runs *before* the
+extension table.
+
+### Added
+
+- **`lang_basenames(i)` in `src/lang.cyr`** — parallel to
+  `lang_exts(i)`, returns space-separated **case-sensitive**
+  basenames per language. Populated for three indices:
+  - shell (`.bashrc .bash_profile .bash_aliases .zshrc
+    .zprofile .zshenv .profile`),
+  - dockerfile (`Dockerfile dockerfile Containerfile
+    containerfile`),
+  - makefile (`Makefile makefile GNUmakefile` — GNU Make's
+    documented lookup order).
+- **`_lang_path_basename_eq(path, name)`** — case-sensitive
+  equality with directory-boundary check. Char before the
+  basename must be `/` (47) or path-start; `foo.Dockerfile` and
+  `xMakefile` are correctly rejected.
+- **`_lang_path_has_any_basename(path, list)`** — walks the
+  space-separated list inline, mirrors
+  `_lang_path_has_any_ext`'s no-allocation shape (64 B local
+  buffer is enough for any sane basename).
+- **`detect_language_from_path` runs basename probe first**,
+  extension probe second. Ordering matters: a literal
+  `Dockerfile` shouldn't fall through to `.dockerfile`-as-
+  extension (which would case-fold to "dockerfile" and mismatch
+  every grammar's extension list anyway).
+- **`tests/lang.tcyr` extended 77 → 103 assertions** (+26 net):
+  4 new test groups for 1.6.4 — basename routing (11
+  assertions), directory-prefix paths (5), boundary correctness
+  (5: `foo.Dockerfile`, `xMakefile`, `notbashrc`, `MAKEFILE`,
+  `DOCKERFILE` — all "plain"), probe ordering (2:
+  `Dockerfile.txt -> plain`, `Dockerfile.json -> json`). The
+  pre-1.6.4 dockerfile / makefile fall-through assertions
+  flipped from `-> "plain"` to their proper grammar names; two
+  remaining assertions confirm the shell rc dotfiles excluded
+  from the basename list (`.bash_logout`, `.zlogin`) still fall
+  to "plain", as a defensive regression-guard against future
+  list growth.
+
+### Changed
+
+- **`src/lang.cyr` header comment** rewritten to document the
+  dual-probe shape: basename probe (case-sensitive,
+  directory-boundary checked) runs first; extension probe
+  (case-insensitive suffix) second. Examples updated to include
+  `Dockerfile` and `subdir/.bashrc`.
+
+### Conventions encoded (1.6.4)
+
+- **Case sensitivity is the basename probe's contract.** GNU
+  Make's lookup order distinguishes `Makefile` from `makefile`
+  from `GNUmakefile`; Docker's spec is case-sensitive on
+  `Dockerfile`. Encoding all canonical capitalizations
+  explicitly is more honest than case-folding.
+- **Excluded by design** (rarely customized; line-length cap on
+  `lang_basenames`): `.bash_logout`, `.zlogin`, `.zlogout`. Add
+  back if a user asks.
+- **`Justfile` / `Containerfile`** — `Containerfile` is in (it's
+  Docker's Podman alias). `Justfile` isn't — vyakarana doesn't
+  ship a grammar for it, so there's no destination to route to.
+
+### Binary
+
+- `build/cyim` (CYRIUS_DCE=1): **1,210,696 B** (+1,800 over
+  1.6.3's 1,208,896 B). Delta is `lang_basenames` if-chain
+  (~600 B), `_lang_path_basename_eq` (~500 B),
+  `_lang_path_has_any_basename` (~700 B). The basename probe
+  added one extra walk per `detect_language_from_path` call,
+  but that's one-shot per file open — not on the highlight hot
+  path.
+
+### Verification
+
+- `cyrius test` — **22 suites, 1113 assertions PASS** (+26 over
+  1.6.3 — net of +27 added in lang.tcyr minus -1 from the
+  dropped fall-through verification group's reorganization).
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 23 src files, 0 warnings each.
+- `cyrfmt --check` — 23 files clean.
+- `tests/cli_smoke.sh` — 118 PASS.
+- `tests/integration_smoke.py` — all PASS.
+- `cyrius smoke tests/smcyr/lsp_fold.smcyr` — 1 PASS.
+- `CYRIUS_DCE=1 cyrius build` — clean.
+
 ## [1.6.3] — 2026-05-09
 
 **cyim-lsp 1.3.0 pickup.** Third bite of the 1.6.x catch-up

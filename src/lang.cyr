@@ -1,20 +1,28 @@
 # lang.cyr — language detection from file path
 #
-# Maps a path's file extension to one of vyakarana's bundled grammar
-# names. Extension table mirrors vyakarana's grammar coverage; order
-# matters because longer extensions are checked first (so `.cyml`
-# beats `.toml`'s superset, and `.cyr`/`.tcyr`/`.bcyr`/`.fcyr` all
-# route to "cyrius").
+# Maps a path to one of vyakarana's bundled grammar names via two
+# probes (1.6.4):
 #
-# `detect_language_from_path("foo.py")` → `"python"`.
+#   1. Basename match (case-sensitive) — `Dockerfile`, `Makefile`,
+#      `.bashrc`, etc. For grammars where vyakarana ships a
+#      tokenizer keyed on filename, not extension. Runs first so a
+#      `Dockerfile` doesn't accidentally fall through.
+#   2. Extension match (case-insensitive suffix) — the original
+#      M2 probe. Order matters: longer extensions are checked
+#      first so `.cyml` beats `.toml`'s superset, and
+#      `.cyr`/`.tcyr`/`.bcyr`/`.fcyr` all route to `cyrius`.
+#
+# `detect_language_from_path("foo.py")`        → `"python"`.
+# `detect_language_from_path("Dockerfile")`    → `"dockerfile"`.
+# `detect_language_from_path("subdir/.bashrc")`→ `"shell"`.
 # Unknown / extension-less paths return `"plain"` — callers can pass
 # that to `highlight_buf` and get back 0 (no highlighting), which the
 # render path treats as "draw uncolored bytes".
 #
 # Future: shebang sniff (e.g. "#!/usr/bin/env python3" → python) and
 # content-based detection for JSON/YAML/Markdown openings. Owl has
-# both; we'll port them when extension detection's failure modes
-# start to bite.
+# both; we'll port them when basename + extension detection's
+# failure modes start to bite.
 #
 # Requires: stdlib (strlen, load8) only.
 
@@ -147,6 +155,35 @@ fn lang_exts(i) {
     return "";
 }
 
+# Space-separated **case-sensitive** basenames per language.
+# Used for files with no conventional extension (Dockerfile,
+# Makefile, GNUmakefile, …) or shell rc dotfiles where the
+# convention is the literal filename, not a suffix. Probed
+# *before* the extension table in `detect_language_from_path`,
+# so a path like `subdir/Makefile` routes to `makefile`
+# without first trying `_lang_path_ends_with_lower(".makefile")`
+# (which wouldn't match the canonical capitalization anyway).
+#
+# Conventions encoded:
+#   shell      — `.bashrc` / `.zshrc` / `.profile` family.
+#                 Case-sensitive lowercase per shell convention.
+#   dockerfile — `Dockerfile` (Docker spec canonical) plus
+#                 lowercase + Podman's `Containerfile` alias.
+#   makefile   — GNU Make's documented lookup order:
+#                 `GNUmakefile` > `makefile` > `Makefile`.
+#
+# All other indices return "" — no basename match.
+fn lang_basenames(i) {
+    # Shell init dotfiles users actually edit. `.bash_logout`,
+    # `.zlogin`, `.zlogout` excluded — rarely customized; can be
+    # added later if asked. Line-length cap (120 chars) shapes
+    # this list more than user research.
+    if (i == 1)  { return ".bashrc .bash_profile .bash_aliases .zshrc .zprofile .zshenv .profile"; }
+    if (i == 43) { return "Dockerfile dockerfile Containerfile containerfile"; }
+    if (i == 44) { return "Makefile makefile GNUmakefile"; }
+    return "";
+}
+
 # Case-folded suffix check: does `path` end with `ext` (lowercase)?
 # Letter compare uses the add-32-if-A-to-Z trick — branchless lower-case.
 fn _lang_path_ends_with_lower(path, ext) {
@@ -205,6 +242,70 @@ fn _lang_path_has_any_ext(path, list) {
     return 0;
 }
 
+# Case-sensitive basename equality with directory-boundary check.
+# Returns 1 iff path's last segment (after the final '/' or path
+# start) equals `name` byte-for-byte. Examples:
+#   _lang_path_basename_eq("/etc/Dockerfile", "Dockerfile")   -> 1
+#   _lang_path_basename_eq("Dockerfile",       "Dockerfile")   -> 1
+#   _lang_path_basename_eq("foo.Dockerfile",   "Dockerfile")   -> 0  (preceded by '.', not '/')
+#   _lang_path_basename_eq("dockerfile",       "Dockerfile")   -> 0  (case-sensitive)
+fn _lang_path_basename_eq(path, name) {
+    var plen = strlen(path);
+    var nlen = strlen(name);
+    if (nlen > plen) { return 0; }
+    var bstart = plen - nlen;
+    # Boundary: char before the basename must be '/' (47), or
+    # the basename starts at position 0.
+    if (bstart > 0) {
+        if (load8(path + bstart - 1) != 47) { return 0; }
+    }
+    var i = 0;
+    while (i < nlen) {
+        if (load8(path + bstart + i) != load8(name + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Walk a space-separated **case-sensitive** basename list, return 1
+# if any basename matches `path`. Mirrors `_lang_path_has_any_ext`'s
+# inline-tokenization shape — no allocation, list is a static literal.
+fn _lang_path_has_any_basename(path, list) {
+    var llen = strlen(list);
+    var i = 0;
+    while (i < llen) {
+        var skip = 1;
+        while (skip == 1) {
+            if (i >= llen) { skip = 0; }
+            if (skip == 1) {
+                if (load8(list + i) != 32) { skip = 0; }
+                if (skip == 1) { i = i + 1; }
+            }
+        }
+        if (i >= llen) { return 0; }
+
+        var nbuf[64];
+        var ni = 0;
+        var collecting = 1;
+        while (collecting == 1) {
+            if (i >= llen) { collecting = 0; }
+            if (collecting == 1) {
+                if (load8(list + i) == 32) { collecting = 0; }
+                if (collecting == 1) {
+                    if (ni < 63) {
+                        store8(&nbuf + ni, load8(list + i));
+                        ni = ni + 1;
+                    }
+                    i = i + 1;
+                }
+            }
+        }
+        store8(&nbuf + ni, 0);
+        if (_lang_path_basename_eq(path, &nbuf) == 1) { return 1; }
+    }
+    return 0;
+}
+
 # Look up a language by name. Returns the table index or -1.
 fn lang_index(name) {
     var i = 0;
@@ -220,10 +321,29 @@ fn lang_is_valid(name) {
     return 0;
 }
 
-# Map path → language name (by extension). Returns "plain" on no match.
-# Index 0 is "plain" with an empty exts list, so we start the walk at 1.
+# Map path → language name. Returns "plain" on no match.
+#
+# Two probes, in order:
+#   1. Basename match (case-sensitive). Catches Dockerfile-class
+#      filenames where the convention is the literal name, not
+#      a suffix. Runs first so `Dockerfile` doesn't get tested
+#      against (and miss) `.dockerfile`-as-extension.
+#   2. Extension match (case-insensitive suffix). The original
+#      probe; covers the bulk of the table.
+#
+# Index 0 is "plain" with empty basenames + exts, so the walks
+# start at 1.
 fn detect_language_from_path(path) {
     if (path == 0) { return "plain"; }
+    # Probe 1: basenames.
+    var bi = 1;
+    while (bi < LANG_COUNT) {
+        if (_lang_path_has_any_basename(path, lang_basenames(bi)) == 1) {
+            return lang_name(bi);
+        }
+        bi = bi + 1;
+    }
+    # Probe 2: extensions.
     var i = 1;
     while (i < LANG_COUNT) {
         if (_lang_path_has_any_ext(path, lang_exts(i)) == 1) {
