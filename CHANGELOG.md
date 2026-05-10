@@ -4,6 +4,84 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.8] — 2026-05-09
+
+**Closeout cut for the 1.6.x cycle.** Pure verification per
+CLAUDE.md "Closeout Pass" policy ("Run a closeout pass before
+tagging X.Y.0 or X.0.0. Ship as the last patch of the current
+minor"). All 11 audit steps PASS; **0 CRITICAL / 0 HIGH /
+0 MEDIUM / 0 LOW** new findings. Binary byte-identical to
+1.6.7 modulo `_VERSION_STR_CYIM` regen.
+
+The 1.6.x catch-up cycle ran 7 cuts deep (1.6.1 toolchain →
+1.6.7 final consumer activation), absorbing infrastructure
+drift accumulated across 1.4.x and 1.5.x feature work and
+closing every deferred-polish item that 1.5.2's audit triaged.
+
+Audit doc: [`docs/audit/2026-05-09-1.6x-closeout.md`](docs/audit/2026-05-09-1.6x-closeout.md).
+
+### Closeout findings
+
+**Carry-over from 1.5.2:**
+- **F-CO-2** (informational — "load uri + jump to lc" pattern at
+  2 instances): unchanged at 1.6.8. cyim-lsp 1.4.0 / 1.5.0 didn't
+  add a third LSP-jump-via-uri call site. Stays informational.
+
+**New in 1.6.x:** none.
+
+### Audit highlights
+
+- **Test surface 973 → 1150 assertions** (+177 across the cycle):
+  marks (+50), lang catch-up + basename (+79), plugin
+  split-ABI + arrow-keys (+37), plus +11 elsewhere.
+- **Cyim-side dead-code floor 24 → 22** (net -2): no removal
+  pass; both deltas absorbed naturally.
+- **Cold-tokenize regression 253 ms → 307 ms (+21%)** —
+  vyakarana 2.0.0 streaming-API alloc overhead, documented at
+  1.6.1 and accepted. One-shot per file open, not on the
+  interactive flow. Cache-hit (hot path) within sampling noise.
+- **Wait-for-third-instance:** all watch-list items at
+  instance 1 or 2; nothing crossed the threshold. No refactor
+  extracted.
+- **Security re-scan:** 0 new findings. No `sys_system` /
+  `exec_vec` additions; one new `var buf[N]` declaration
+  (`nbuf[64]` in `_lang_path_has_any_basename`) is bounds-clamped
+  inline-list-token destination — no untrusted input reaches it.
+- **Downstream check:** agnoshi / aethersafha do not yet
+  reference cyim — informational only at this stage.
+- **Version sync:** `VERSION` / `cyrius.cyml` / `version_str.cyr`
+  / CHANGELOG header / intended git tag all match `1.6.8`.
+
+### Binary
+
+- `build/cyim` (CYRIUS_DCE=1): **1,214,656 B** —
+  byte-identical to 1.6.7 modulo the regenerated
+  `_VERSION_STR_CYIM` literal (`"cyim 1.6.7\n"` →
+  `"cyim 1.6.8\n"`, same byte length, byte-equivalent diff).
+
+### Verification
+
+- `cyrius test` — **22 suites, 1150 assertions PASS** (no
+  test additions; closeout is verification).
+- `cyrius fuzz` — 3 PASS.
+- `cyrius lint` — 24 src files, 0 warnings each.
+- `cyrfmt --check` — 24 files clean.
+- `tests/cli_smoke.sh` — 118 PASS.
+- `tests/integration_smoke.py` — all PASS.
+- `cyrius smoke tests/smcyr/lsp_fold.smcyr` — 1 PASS.
+- `rm -rf build && cyrius deps && CYRIUS_DCE=1 cyrius build` — clean.
+
+### Carry-forward to v1.7.0
+
+The 1.6.8 bench numbers become the v1.7.0 baseline. v1.7.0 is
+anticipated to be a mechanical refresh: cyrius toolchain 5.10.10
+→ 5.10.20 + new `[deps.darshana]` block (TUI lib being extracted
+from cyim's `src/tty.cyr` + `src/render.cyr`). Cut as a minor
+per the toolchain-bump-as-minor convention vyakarana 2.2.0 set.
+
+**The 1.6.x cycle is closed.** The next cycle opens demand-gated;
+the catch-up channel work converges here.
+
 ## [1.6.7] — 2026-05-09
 
 **cyim-lsp 1.5.0 pickup — open-in-split for `:lsp-find-refs`,
