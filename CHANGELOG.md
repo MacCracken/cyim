@@ -4,6 +4,79 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.1] — 2026-05-20
+
+**Patch — darshana 0.4.0 + cyrius 6.0.1 dep refresh.**
+
+Forward-compat dep bump closing darshana's M3 milestone (cyim
+integration). cyim has been the live darshana consumer since 1.7.0
+picked up darshana 0.2.0; 1.7.1 advances to darshana 0.4.0 and the
+ecosystem-wide cyrius 6.0.1 pin. **No behavior change** at the cyim
+surface — `src/tty.cyr` stays the 37-line `tty_probe`-only shim,
+`src/main.cyr` is untouched, no callsite of darshana's expanded API
+landed in cyim this cut.
+
+The darshana 0.4.0 surface adds primitives cyim does not yet call
+but is now forward-compat to use without another dep bump:
+
+- `tty_winsize(fd, &rows, &cols)` — TIOCGWINSZ ioctl for dynamic
+  resize support (darshana v0.3.0).
+- `tty_open_signalfd(mask)` + `TTY_SIGMASK_EXIT`/`TTY_SIGMASK_WINCH`
+  — signalfd-routed HUP/INT/TERM cleanup and SIGWINCH resize, no
+  rt_sigaction sa_restorer trampoline trap (v0.3.0).
+- `tty_clear_to_eol()` / `tty_clear_to_end()` — partial-clear
+  helpers for region-repaint loops (v0.3.0).
+- `tty_sgr(code)` + `tty_sgr_reset()` + 16 `TTY_FG_*` foreground
+  color constants (v0.3.5), with `tty_sgr` now rejecting codes
+  outside `[0, 999]` before any write reaches fd 1 (v0.4.0).
+
+Also new at darshana 0.4.0: ADR 0002 codifies the "darshana provides
+primitives; consumers own teardown" posture — cyim's existing exit
+wiring already conforms (`tty_cooked` is idempotent and reaches the
+module-global saved state from any handler), so this is
+informational for cyim, not actionable.
+
+### Changed
+
+- **`cyrius.cyml`** — `[package].cyrius` `5.10.20` → `6.0.1`
+  (ecosystem-wide cycc bump that landed at darshana v0.3.5 and
+  bannermanor M5). cyim-lsp's own pin will move in lockstep at its
+  next cut; cyim's `[deps.cyim-lsp].tag` stays at 1.5.0 — same
+  pattern as 1.7.0's lockstep handling with the 5.10.10 → 5.10.20
+  window.
+- **`cyrius.cyml`** — `[deps.darshana].tag` `0.2.0` → `0.4.0`.
+  Comment block expanded to record the bumped surface and the
+  rationale (forward-compat refresh, no cyim callsites yet).
+- **`cyrius.lock`** — auto-refreshed by `cyrius deps`.
+
+### Unchanged (deliberately)
+
+- `src/tty.cyr` — still the cyim-internal `tty_probe()` and the
+  `#ifdef CYRIUS_TARGET_LINUX` guard. No callsite ports to the new
+  darshana surface in this cut.
+- `src/main.cyr` — include chain identical to 1.7.0.
+- Every other cyim source file — no functional edits.
+
+### Stdlib drift inherited (informational)
+
+The 5.10.20 → 6.0.1 cyrius window crosses a major cycc release.
+cyim's local `lib/` carries in-progress type-annotation refresh
+edits (`lib/io.cyr`, `lib/regex.cyr`, `lib/string.cyr`) that align
+with 6.0.1's stricter signature surface (`path: cstring`, `: i64`
+return annotations). The shadow-lib note from `cyrius build` is
+expected and benign while those edits are in flight; the
+version-pinned snapshot at `~/.cyrius/versions/6.0.1/lib/` is the
+upstream reference.
+
+### Verification
+
+- `cyrius build src/main.cyr build/cyim` — OK on the bumped manifest.
+- `cyrius test src/test.cyr` — exit 0.
+- Local-cached darshana 0.4.0 (seeded from the live darshana
+  working tree) — drops in cleanly; `lib/darshana.cyr` materialized
+  as a regular file (was a symlink on the 5.10.20 cache; cosmetic
+  shift introduced by the 6.0.1 cycc cache layout).
+
 ## [1.7.0] — 2026-05-09
 
 **Minor — toolchain refresh + darshana TUI dep pickup.**
