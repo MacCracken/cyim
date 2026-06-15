@@ -4,6 +4,79 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.2] — 2026-06-15
+
+**Patch — cyrius 6.2.7 toolchain bump + dep refresh + vendored-stdlib
+re-sync.**
+
+Unlike 1.7.1 (a no-op forward-compat refresh), this cut lands real
+cyim-side callsite changes: darshana 0.7.0 renamed two of the
+symbols cyim actually calls, and the vendored stdlib in `lib/` is
+re-synced to the 6.2.7 snapshot — the pin moved at 1.7.1 but the
+vendored stdlib was never advanced off the 6.0.1-era files, so every
+build was compiling the 6.2.7 cycc against stale 6.0.1 stdlib source
+(`note: cwd ./lib/ shadows version-pinned …` on every invocation).
+
+### Changed
+
+- **`cyrius.cyml`** — `[package].cyrius` `6.0.1` → `6.2.7`.
+- **`cyrius.cyml`** — `[deps.darshana].tag` `0.4.0` → `0.7.0`.
+  0.7.0 is the first darshana cut to **break** the API for symbols
+  cyim consumes (see Fixed). Comment block updated to record the
+  rename and the new pin.
+- **`cyrius.cyml`** — `[deps.vyakarana].tag` `2.2.1` → `2.2.3`.
+  Tokenizer/grammar refresh; no cyim callsite change (the 45-grammar
+  routing in `src/lang.cyr` is unaffected).
+- **`cyim-lsp`** — pin stays `1.5.0` (already latest); the bundle is
+  self-contained and rebuilds clean against 6.2.7.
+- **`lib/` (vendored stdlib)** — re-synced to the 6.2.7 snapshot via
+  `cyrius lib sync` (97 files), then the 11 modules 6.2.7 dropped
+  from stdlib (`audio`, `base64`, `bigint`, `csv`, `cyml`, `json`,
+  `linalg`, `matrix`, `toml`, `u128`, `vidya`) were removed so `lib/`
+  is now an exact 6.2.7 mirror + the three resolved dep distfiles.
+  Silences the shadow-lib drift note on every build.
+- **`src/cli.cyr`, `src/window.cyr`** — reformatted to 6.2.7
+  `cyrfmt`'s revised continuation-line indent rule (paren-alignment →
+  fixed indent). Whitespace-only, token-identical, idempotent; no
+  behavior change. Restores `cyrfmt --check` clean under the new pin.
+- **`cyrius.lock`** — auto-refreshed by `cyrius deps` (107 entries).
+
+### Fixed
+
+- **darshana 0.7.0 API drift** — three callsites ported:
+  - `tty_itoa(buf, pos, n)` → `tty_dec_buf(buf, pos, n)`; the return
+    changed from digit-count to the new write position.
+    `src/render.cyr`'s `_render_leaf_status` recovers the digit count
+    with `… - pos` (at `pos == 0` in the test the two coincide).
+  - `tty_cooked(0)` → `tty_cooked()` — the no-longer-needed arg was
+    dropped (`src/main.cyr`, `src/tty.cyr`).
+  - `tty_apply_raw_flags` → `_tty_apply_raw_flags` — darshana
+    privatized it; the white-box `tests/tty.tcyr` group still reaches
+    it by name (same compilation unit) but is now redundant with
+    darshana's own suite and flagged for a future drop.
+- **Stale stdlib include in `tests/smcyr/lsp_fold.smcyr`** — dropped
+  the vestigial `include "lib/json.cyr"` (left over from the
+  cyim-lsp 1.0.2 era). The 1.5.0 bundle references no `json_*`
+  symbol — `lsp_content_to_json_string` is its own — so the include
+  only survived because the 6.0.1 `lib/json.cyr` happened to be
+  vendored. With `json` dropped from 6.2.7 stdlib the include broke
+  the smoke; removing it restores the 13-assertion PASS.
+
+### Verification
+
+- `cyrius test` — 22 suites, **1150 assertions** PASS, 0 failures.
+- `cyrius fuzz` — 3 harnesses PASS (driver 5000 keystrokes, tokenizer
+  100×1KB, buffer 10000 ops).
+- `tests/cli_smoke.sh` — 118 PASS; `tests/integration_smoke.py` — all
+  PASS; `tests/smcyr/lsp_fold.smcyr` — 13 PASS.
+- `cyrius lint` — 0 warnings; `cyrfmt --check` — clean.
+
+### Binary
+
+- **`build/cyim`** (CYRIUS_DCE=1): **1,226,704 B** — +12,048 B over
+  1.7.1's 1,214,656 B (6.2.7 codegen + the darshana 0.7.0 / vyakarana
+  2.2.3 surface).
+
 ## [1.7.1] — 2026-05-20
 
 **Patch — darshana 0.4.0 + cyrius 6.0.1 dep refresh.**

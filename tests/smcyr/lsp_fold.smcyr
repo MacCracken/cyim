@@ -39,7 +39,6 @@ include "lib/string.cyr"
 include "lib/str.cyr"
 include "lib/vec.cyr"
 include "lib/process.cyr"
-include "lib/json.cyr"
 include "lib/assert.cyr"
 
 # The bundled cyim-lsp distfile. `cyrius deps` resolves

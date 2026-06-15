@@ -527,8 +527,8 @@ fn _cli_substitute_m(src, m, new, mode) {
         return _cli_substitute(src, _matcher_needle(m), new, mode);
     }
     return _cli_substitute_regex(src, _matcher_flavor(m), _matcher_nfa(m),
-                                 _matcher_plen(m), _matcher_max_edits(m),
-                                 new, mode);
+    _matcher_plen(m), _matcher_max_edits(m),
+    new, mode);
 }
 
 # Read all of stdin into `b`. Returns total bytes read.
@@ -1423,596 +1423,596 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
 # modifier where applicable.
 
 fn _dispatch_grep(ac) {
-        # Modifier-parsing dispatch (v1.1.4): --context=<n> is the
-        # only modifier today; default 0 (no context) preserves the
-        # v1.1.0–v1.1.3 single-line-per-match output bytes-for-bytes.
-        var g_ctx = 0;
-        var g_p0 = 0;
-        var g_p1 = 0;
-        var g_npos = 0;
-        var g_ctx_seen = 0;
-        var g_regex_flavor = FLAVOR_LITERAL;
-        var g_regex_seen = 0;
-        var g_fuzzy_edits = 0 - 1;
-        var g_fz_seen = 0;
-        var g_idx = 2;
-        while (g_idx < ac) {
-            var arg = argv(g_idx);
-            var consumed = 0;
-            if (consumed == 0) {
-                var sf = _cli_argprefix(arg, "--regex=");
-                if (sf != 0) {
-                    if (strlen(sf) == 0) {
-                        syscall(1, 2, "cyim --grep: --regex requires a flavor (e.g. --regex=ere)\n", 58);
-                        return 2;
-                    }
-                    if (g_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
-                    var fid = _regex_flavor_id(sf);
-                    if (_flavor_validate("--grep", fid) == 0) { return 2; }
-                    g_regex_flavor = fid;
-                    g_regex_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
-                if (sfe != 0) {
-                    var nfe = _cli_atoi_nn(sfe);
-                    if (nfe < 0) {
-                        syscall(1, 2, "cyim --grep: --fuzzy-edits requires a non-negative integer\n", 60);
-                        return 2;
-                    }
-                    if (g_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
-                    g_fuzzy_edits = nfe;
-                    g_fz_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var sc = _cli_argprefix(arg, "--context=");
-                if (sc != 0) {
-                    var nc = _cli_atoi_nn(sc);
-                    if (nc < 0) {
-                        syscall(1, 2, "cyim --grep: --context requires a non-negative integer\n", 56);
-                        return 2;
-                    }
-                    if (g_ctx_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --context\n", 32); return 2; }
-                    g_ctx = nc;
-                    g_ctx_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                if (g_npos == 0) { g_p0 = arg; }
-                if (g_npos == 1) { g_p1 = arg; }
-                if (g_npos >= 2) {
-                    syscall(1, 2, "cyim --grep: unexpected extra argument\n", 40);
+    # Modifier-parsing dispatch (v1.1.4): --context=<n> is the
+    # only modifier today; default 0 (no context) preserves the
+    # v1.1.0–v1.1.3 single-line-per-match output bytes-for-bytes.
+    var g_ctx = 0;
+    var g_p0 = 0;
+    var g_p1 = 0;
+    var g_npos = 0;
+    var g_ctx_seen = 0;
+    var g_regex_flavor = FLAVOR_LITERAL;
+    var g_regex_seen = 0;
+    var g_fuzzy_edits = 0 - 1;
+    var g_fz_seen = 0;
+    var g_idx = 2;
+    while (g_idx < ac) {
+        var arg = argv(g_idx);
+        var consumed = 0;
+        if (consumed == 0) {
+            var sf = _cli_argprefix(arg, "--regex=");
+            if (sf != 0) {
+                if (strlen(sf) == 0) {
+                    syscall(1, 2, "cyim --grep: --regex requires a flavor (e.g. --regex=ere)\n", 58);
                     return 2;
                 }
-                g_npos = g_npos + 1;
+                if (g_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                var fid = _regex_flavor_id(sf);
+                if (_flavor_validate("--grep", fid) == 0) { return 2; }
+                g_regex_flavor = fid;
+                g_regex_seen = 1;
+                consumed = 1;
             }
-            g_idx = g_idx + 1;
         }
-        if (g_npos < 2) {
-            syscall(1, 2, "usage: cyim --grep [--context=<n>] <pattern> <file>\n", 53);
-            return 2;
+        if (consumed == 0) {
+            var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+            if (sfe != 0) {
+                var nfe = _cli_atoi_nn(sfe);
+                if (nfe < 0) {
+                    syscall(1, 2, "cyim --grep: --fuzzy-edits requires a non-negative integer\n", 60);
+                    return 2;
+                }
+                if (g_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                g_fuzzy_edits = nfe;
+                g_fz_seen = 1;
+                consumed = 1;
+            }
         }
-        if (g_fz_seen == 1) {
-            if (g_regex_flavor != FLAVOR_FUZZY) {
-                syscall(1, 2, "cyim --grep: --fuzzy-edits requires --regex=fuzzy\n", 51);
+        if (consumed == 0) {
+            var sc = _cli_argprefix(arg, "--context=");
+            if (sc != 0) {
+                var nc = _cli_atoi_nn(sc);
+                if (nc < 0) {
+                    syscall(1, 2, "cyim --grep: --context requires a non-negative integer\n", 56);
+                    return 2;
+                }
+                if (g_ctx_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --context\n", 32); return 2; }
+                g_ctx = nc;
+                g_ctx_seen = 1;
+                consumed = 1;
+            }
+        }
+        if (consumed == 0) {
+            if (g_npos == 0) { g_p0 = arg; }
+            if (g_npos == 1) { g_p1 = arg; }
+            if (g_npos >= 2) {
+                syscall(1, 2, "cyim --grep: unexpected extra argument\n", 40);
                 return 2;
             }
+            g_npos = g_npos + 1;
         }
-        return run_grep(g_p0, g_p1, g_ctx, g_regex_flavor, g_fuzzy_edits);
+        g_idx = g_idx + 1;
+    }
+    if (g_npos < 2) {
+        syscall(1, 2, "usage: cyim --grep [--context=<n>] <pattern> <file>\n", 53);
+        return 2;
+    }
+    if (g_fz_seen == 1) {
+        if (g_regex_flavor != FLAVOR_FUZZY) {
+            syscall(1, 2, "cyim --grep: --fuzzy-edits requires --regex=fuzzy\n", 51);
+            return 2;
+        }
+    }
+    return run_grep(g_p0, g_p1, g_ctx, g_regex_flavor, g_fuzzy_edits);
 }
 
 fn _dispatch_grepfiles(ac) {
-        # Multi-file grep. PATTERN is the first non-flag positional;
-        # every subsequent non-flag arg is a FILE. --context=<n>
-        # threads through to _cli_grep_one with cross-file separator
-        # handling (matches `grep -n -C N` output for two+ files).
-        var gf_ctx = 0;
-        var gf_pat = 0;
-        var gf_pat_seen = 0;
-        var gf_ctx_seen = 0;
-        var gf_regex_flavor = FLAVOR_LITERAL;
-        var gf_regex_seen = 0;
-        var gf_fuzzy_edits = 0 - 1;
-        var gf_fz_seen = 0;
-        var gf_alloc_n = (ac - 2) * 8;
-        if (gf_alloc_n < 8) { gf_alloc_n = 8; }
-        var gf_files = alloc(gf_alloc_n);
-        var gf_fcount = 0;
-        var gf_idx = 2;
-        while (gf_idx < ac) {
-            var arg = argv(gf_idx);
-            var consumed = 0;
-            if (consumed == 0) {
-                var sf = _cli_argprefix(arg, "--regex=");
-                if (sf != 0) {
-                    if (strlen(sf) == 0) {
-                        syscall(1, 2, "cyim --grepfiles: --regex requires a flavor (e.g. --regex=ere)\n", 63);
-                        return 2;
-                    }
-                    if (gf_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
-                    var fid = _regex_flavor_id(sf);
-                    if (_flavor_validate("--grepfiles", fid) == 0) { return 2; }
-                    gf_regex_flavor = fid;
-                    gf_regex_seen = 1;
-                    consumed = 1;
+    # Multi-file grep. PATTERN is the first non-flag positional;
+    # every subsequent non-flag arg is a FILE. --context=<n>
+    # threads through to _cli_grep_one with cross-file separator
+    # handling (matches `grep -n -C N` output for two+ files).
+    var gf_ctx = 0;
+    var gf_pat = 0;
+    var gf_pat_seen = 0;
+    var gf_ctx_seen = 0;
+    var gf_regex_flavor = FLAVOR_LITERAL;
+    var gf_regex_seen = 0;
+    var gf_fuzzy_edits = 0 - 1;
+    var gf_fz_seen = 0;
+    var gf_alloc_n = (ac - 2) * 8;
+    if (gf_alloc_n < 8) { gf_alloc_n = 8; }
+    var gf_files = alloc(gf_alloc_n);
+    var gf_fcount = 0;
+    var gf_idx = 2;
+    while (gf_idx < ac) {
+        var arg = argv(gf_idx);
+        var consumed = 0;
+        if (consumed == 0) {
+            var sf = _cli_argprefix(arg, "--regex=");
+            if (sf != 0) {
+                if (strlen(sf) == 0) {
+                    syscall(1, 2, "cyim --grepfiles: --regex requires a flavor (e.g. --regex=ere)\n", 63);
+                    return 2;
                 }
+                if (gf_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                var fid = _regex_flavor_id(sf);
+                if (_flavor_validate("--grepfiles", fid) == 0) { return 2; }
+                gf_regex_flavor = fid;
+                gf_regex_seen = 1;
+                consumed = 1;
             }
-            if (consumed == 0) {
-                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
-                if (sfe != 0) {
-                    var nfe = _cli_atoi_nn(sfe);
-                    if (nfe < 0) {
-                        syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires a non-negative integer\n", 65);
-                        return 2;
-                    }
-                    if (gf_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
-                    gf_fuzzy_edits = nfe;
-                    gf_fz_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var sc = _cli_argprefix(arg, "--context=");
-                if (sc != 0) {
-                    var nc = _cli_atoi_nn(sc);
-                    if (nc < 0) {
-                        syscall(1, 2, "cyim --grepfiles: --context requires a non-negative integer\n", 61);
-                        return 2;
-                    }
-                    if (gf_ctx_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --context\n", 32); return 2; }
-                    gf_ctx = nc;
-                    gf_ctx_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                if (gf_pat_seen == 0) {
-                    gf_pat = arg;
-                    gf_pat_seen = 1;
-                } else {
-                    store64(gf_files + gf_fcount * 8, arg);
-                    gf_fcount = gf_fcount + 1;
-                }
-            }
-            gf_idx = gf_idx + 1;
         }
-        if (gf_pat_seen == 0) {
-            syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 61);
+        if (consumed == 0) {
+            var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+            if (sfe != 0) {
+                var nfe = _cli_atoi_nn(sfe);
+                if (nfe < 0) {
+                    syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires a non-negative integer\n", 65);
+                    return 2;
+                }
+                if (gf_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                gf_fuzzy_edits = nfe;
+                gf_fz_seen = 1;
+                consumed = 1;
+            }
+        }
+        if (consumed == 0) {
+            var sc = _cli_argprefix(arg, "--context=");
+            if (sc != 0) {
+                var nc = _cli_atoi_nn(sc);
+                if (nc < 0) {
+                    syscall(1, 2, "cyim --grepfiles: --context requires a non-negative integer\n", 61);
+                    return 2;
+                }
+                if (gf_ctx_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --context\n", 32); return 2; }
+                gf_ctx = nc;
+                gf_ctx_seen = 1;
+                consumed = 1;
+            }
+        }
+        if (consumed == 0) {
+            if (gf_pat_seen == 0) {
+                gf_pat = arg;
+                gf_pat_seen = 1;
+            } else {
+                store64(gf_files + gf_fcount * 8, arg);
+                gf_fcount = gf_fcount + 1;
+            }
+        }
+        gf_idx = gf_idx + 1;
+    }
+    if (gf_pat_seen == 0) {
+        syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 61);
+        return 2;
+    }
+    if (gf_fcount == 0) {
+        syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 61);
+        return 2;
+    }
+    if (gf_fz_seen == 1) {
+        if (gf_regex_flavor != FLAVOR_FUZZY) {
+            syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires --regex=fuzzy\n", 56);
             return 2;
         }
-        if (gf_fcount == 0) {
-            syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 61);
-            return 2;
-        }
-        if (gf_fz_seen == 1) {
-            if (gf_regex_flavor != FLAVOR_FUZZY) {
-                syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires --regex=fuzzy\n", 56);
-                return 2;
-            }
-        }
-        return run_grepfiles(gf_pat, gf_files, gf_fcount, gf_ctx, gf_regex_flavor, gf_fuzzy_edits);
+    }
+    return run_grepfiles(gf_pat, gf_files, gf_fcount, gf_ctx, gf_regex_flavor, gf_fuzzy_edits);
 }
 
 fn _dispatch_replace(ac) {
-        # Modifiers and the OLD/NEW/FILE positionals may interleave in
-        # any order after the verb. v1.1.0 bailed at the first non-flag
-        # arg, so a trailing modifier (e.g. `--replace OLD NEW
-        # --expect-1 FILE`) was misread as FILE, and the actual FILE
-        # was dropped — surfacing as exit-3 "file not found".
-        var r_wc = 0;
-        var r_expect_n = 0 - 1;
-        var r_p0 = 0;
-        var r_p1 = 0;
-        var r_p2 = 0;
-        var r_npos = 0;
-        var r_wc_seen = 0;
-        var r_expect_seen = 0;
-        var r_regex_flavor = FLAVOR_LITERAL;
-        var r_regex_seen = 0;
-        var r_fuzzy_edits = 0 - 1;
-        var r_fz_seen = 0;
-        var r_idx = 2;
-        while (r_idx < ac) {
-            var arg = argv(r_idx);
-            var consumed = 0;
-            if (streq(arg, "--wc")        == 1) {
-                if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                r_wc = 1; r_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--wc=l")      == 1) {
-                if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                r_wc = 2; r_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--wc=long")   == 1) {
-                if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                r_wc = 2; r_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--expect-1")  == 1) {
-                if (r_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
-                r_expect_n = 1; r_expect_seen = 1; consumed = 1;
-            }
-            if (consumed == 0) {
-                var sf = _cli_argprefix(arg, "--regex=");
-                if (sf != 0) {
-                    if (strlen(sf) == 0) {
-                        syscall(1, 2, "cyim --replace: --regex requires a flavor (e.g. --regex=ere)\n", 61);
-                        return 2;
-                    }
-                    if (r_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
-                    var fid = _regex_flavor_id(sf);
-                    if (_flavor_validate("--replace", fid) == 0) { return 2; }
-                    r_regex_flavor = fid;
-                    r_regex_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
-                if (sfe != 0) {
-                    var nfe = _cli_atoi_nn(sfe);
-                    if (nfe < 0) {
-                        syscall(1, 2, "cyim --replace: --fuzzy-edits requires a non-negative integer\n", 63);
-                        return 2;
-                    }
-                    if (r_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
-                    r_fuzzy_edits = nfe;
-                    r_fz_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var s = _cli_argprefix(arg, "--expect-N=");
-                if (s != 0) {
-                    var n = _cli_atoi_nn(s);
-                    if (n < 0) {
-                        syscall(1, 2, "cyim --replace: --expect-N requires a non-negative integer\n", 59);
-                        return 2;
-                    }
-                    if (r_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
-                    r_expect_n = n;
-                    r_expect_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                if (r_npos == 0) { r_p0 = arg; }
-                if (r_npos == 1) { r_p1 = arg; }
-                if (r_npos == 2) { r_p2 = arg; }
-                if (r_npos >= 3) {
-                    syscall(1, 2, "cyim --replace: unexpected extra argument\n", 42);
+    # Modifiers and the OLD/NEW/FILE positionals may interleave in
+    # any order after the verb. v1.1.0 bailed at the first non-flag
+    # arg, so a trailing modifier (e.g. `--replace OLD NEW
+    # --expect-1 FILE`) was misread as FILE, and the actual FILE
+    # was dropped — surfacing as exit-3 "file not found".
+    var r_wc = 0;
+    var r_expect_n = 0 - 1;
+    var r_p0 = 0;
+    var r_p1 = 0;
+    var r_p2 = 0;
+    var r_npos = 0;
+    var r_wc_seen = 0;
+    var r_expect_seen = 0;
+    var r_regex_flavor = FLAVOR_LITERAL;
+    var r_regex_seen = 0;
+    var r_fuzzy_edits = 0 - 1;
+    var r_fz_seen = 0;
+    var r_idx = 2;
+    while (r_idx < ac) {
+        var arg = argv(r_idx);
+        var consumed = 0;
+        if (streq(arg, "--wc")        == 1) {
+            if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            r_wc = 1; r_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--wc=l")      == 1) {
+            if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            r_wc = 2; r_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--wc=long")   == 1) {
+            if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            r_wc = 2; r_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--expect-1")  == 1) {
+            if (r_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+            r_expect_n = 1; r_expect_seen = 1; consumed = 1;
+        }
+        if (consumed == 0) {
+            var sf = _cli_argprefix(arg, "--regex=");
+            if (sf != 0) {
+                if (strlen(sf) == 0) {
+                    syscall(1, 2, "cyim --replace: --regex requires a flavor (e.g. --regex=ere)\n", 61);
                     return 2;
                 }
-                r_npos = r_npos + 1;
+                if (r_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                var fid = _regex_flavor_id(sf);
+                if (_flavor_validate("--replace", fid) == 0) { return 2; }
+                r_regex_flavor = fid;
+                r_regex_seen = 1;
+                consumed = 1;
             }
-            r_idx = r_idx + 1;
         }
-        if (r_npos < 3) {
-            syscall(1, 2, "usage: cyim --replace [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 80);
-            return 2;
+        if (consumed == 0) {
+            var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+            if (sfe != 0) {
+                var nfe = _cli_atoi_nn(sfe);
+                if (nfe < 0) {
+                    syscall(1, 2, "cyim --replace: --fuzzy-edits requires a non-negative integer\n", 63);
+                    return 2;
+                }
+                if (r_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                r_fuzzy_edits = nfe;
+                r_fz_seen = 1;
+                consumed = 1;
+            }
         }
-        if (r_fz_seen == 1) {
-            if (r_regex_flavor != FLAVOR_FUZZY) {
-                syscall(1, 2, "cyim --replace: --fuzzy-edits requires --regex=fuzzy\n", 54);
+        if (consumed == 0) {
+            var s = _cli_argprefix(arg, "--expect-N=");
+            if (s != 0) {
+                var n = _cli_atoi_nn(s);
+                if (n < 0) {
+                    syscall(1, 2, "cyim --replace: --expect-N requires a non-negative integer\n", 59);
+                    return 2;
+                }
+                if (r_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
+                r_expect_n = n;
+                r_expect_seen = 1;
+                consumed = 1;
+            }
+        }
+        if (consumed == 0) {
+            if (r_npos == 0) { r_p0 = arg; }
+            if (r_npos == 1) { r_p1 = arg; }
+            if (r_npos == 2) { r_p2 = arg; }
+            if (r_npos >= 3) {
+                syscall(1, 2, "cyim --replace: unexpected extra argument\n", 42);
                 return 2;
             }
+            r_npos = r_npos + 1;
         }
-        return run_replace(r_p0, r_p1, r_p2, 0, r_wc, r_expect_n, r_regex_flavor, r_fuzzy_edits);
+        r_idx = r_idx + 1;
+    }
+    if (r_npos < 3) {
+        syscall(1, 2, "usage: cyim --replace [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 80);
+        return 2;
+    }
+    if (r_fz_seen == 1) {
+        if (r_regex_flavor != FLAVOR_FUZZY) {
+            syscall(1, 2, "cyim --replace: --fuzzy-edits requires --regex=fuzzy\n", 54);
+            return 2;
+        }
+    }
+    return run_replace(r_p0, r_p1, r_p2, 0, r_wc, r_expect_n, r_regex_flavor, r_fuzzy_edits);
 }
 
 fn _dispatch_replace_all(ac) {
-        # Same interspersed-modifier semantics as --replace.
-        var ra_wc = 0;
-        var ra_expect_n = 0 - 1;
-        var ra_p0 = 0;
-        var ra_p1 = 0;
-        var ra_p2 = 0;
-        var ra_npos = 0;
-        var ra_wc_seen = 0;
-        var ra_expect_seen = 0;
-        var ra_regex_flavor = FLAVOR_LITERAL;
-        var ra_regex_seen = 0;
-        var ra_fuzzy_edits = 0 - 1;
-        var ra_fz_seen = 0;
-        var ra_idx = 2;
-        while (ra_idx < ac) {
-            var arg = argv(ra_idx);
-            var consumed = 0;
-            if (streq(arg, "--wc")        == 1) {
-                if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                ra_wc = 1; ra_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--wc=l")      == 1) {
-                if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                ra_wc = 2; ra_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--wc=long")   == 1) {
-                if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                ra_wc = 2; ra_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--expect-1")  == 1) {
-                if (ra_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
-                ra_expect_n = 1; ra_expect_seen = 1; consumed = 1;
-            }
-            if (consumed == 0) {
-                var sf = _cli_argprefix(arg, "--regex=");
-                if (sf != 0) {
-                    if (strlen(sf) == 0) {
-                        syscall(1, 2, "cyim --replace-all: --regex requires a flavor (e.g. --regex=ere)\n", 65);
-                        return 2;
-                    }
-                    if (ra_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
-                    var fid = _regex_flavor_id(sf);
-                    if (_flavor_validate("--replace-all", fid) == 0) { return 2; }
-                    ra_regex_flavor = fid;
-                    ra_regex_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
-                if (sfe != 0) {
-                    var nfe = _cli_atoi_nn(sfe);
-                    if (nfe < 0) {
-                        syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires a non-negative integer\n", 67);
-                        return 2;
-                    }
-                    if (ra_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
-                    ra_fuzzy_edits = nfe;
-                    ra_fz_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var s = _cli_argprefix(arg, "--expect-N=");
-                if (s != 0) {
-                    var n = _cli_atoi_nn(s);
-                    if (n < 0) {
-                        syscall(1, 2, "cyim --replace-all: --expect-N requires a non-negative integer\n", 63);
-                        return 2;
-                    }
-                    if (ra_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
-                    ra_expect_n = n;
-                    ra_expect_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                if (ra_npos == 0) { ra_p0 = arg; }
-                if (ra_npos == 1) { ra_p1 = arg; }
-                if (ra_npos == 2) { ra_p2 = arg; }
-                if (ra_npos >= 3) {
-                    syscall(1, 2, "cyim --replace-all: unexpected extra argument\n", 46);
+    # Same interspersed-modifier semantics as --replace.
+    var ra_wc = 0;
+    var ra_expect_n = 0 - 1;
+    var ra_p0 = 0;
+    var ra_p1 = 0;
+    var ra_p2 = 0;
+    var ra_npos = 0;
+    var ra_wc_seen = 0;
+    var ra_expect_seen = 0;
+    var ra_regex_flavor = FLAVOR_LITERAL;
+    var ra_regex_seen = 0;
+    var ra_fuzzy_edits = 0 - 1;
+    var ra_fz_seen = 0;
+    var ra_idx = 2;
+    while (ra_idx < ac) {
+        var arg = argv(ra_idx);
+        var consumed = 0;
+        if (streq(arg, "--wc")        == 1) {
+            if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            ra_wc = 1; ra_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--wc=l")      == 1) {
+            if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            ra_wc = 2; ra_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--wc=long")   == 1) {
+            if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            ra_wc = 2; ra_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--expect-1")  == 1) {
+            if (ra_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+            ra_expect_n = 1; ra_expect_seen = 1; consumed = 1;
+        }
+        if (consumed == 0) {
+            var sf = _cli_argprefix(arg, "--regex=");
+            if (sf != 0) {
+                if (strlen(sf) == 0) {
+                    syscall(1, 2, "cyim --replace-all: --regex requires a flavor (e.g. --regex=ere)\n", 65);
                     return 2;
                 }
-                ra_npos = ra_npos + 1;
+                if (ra_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                var fid = _regex_flavor_id(sf);
+                if (_flavor_validate("--replace-all", fid) == 0) { return 2; }
+                ra_regex_flavor = fid;
+                ra_regex_seen = 1;
+                consumed = 1;
             }
-            ra_idx = ra_idx + 1;
         }
-        if (ra_npos < 3) {
-            syscall(1, 2, "usage: cyim --replace-all [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 84);
-            return 2;
+        if (consumed == 0) {
+            var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+            if (sfe != 0) {
+                var nfe = _cli_atoi_nn(sfe);
+                if (nfe < 0) {
+                    syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires a non-negative integer\n", 67);
+                    return 2;
+                }
+                if (ra_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                ra_fuzzy_edits = nfe;
+                ra_fz_seen = 1;
+                consumed = 1;
+            }
         }
-        if (ra_fz_seen == 1) {
-            if (ra_regex_flavor != FLAVOR_FUZZY) {
-                syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires --regex=fuzzy\n", 58);
+        if (consumed == 0) {
+            var s = _cli_argprefix(arg, "--expect-N=");
+            if (s != 0) {
+                var n = _cli_atoi_nn(s);
+                if (n < 0) {
+                    syscall(1, 2, "cyim --replace-all: --expect-N requires a non-negative integer\n", 63);
+                    return 2;
+                }
+                if (ra_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
+                ra_expect_n = n;
+                ra_expect_seen = 1;
+                consumed = 1;
+            }
+        }
+        if (consumed == 0) {
+            if (ra_npos == 0) { ra_p0 = arg; }
+            if (ra_npos == 1) { ra_p1 = arg; }
+            if (ra_npos == 2) { ra_p2 = arg; }
+            if (ra_npos >= 3) {
+                syscall(1, 2, "cyim --replace-all: unexpected extra argument\n", 46);
                 return 2;
             }
+            ra_npos = ra_npos + 1;
         }
-        return run_replace(ra_p0, ra_p1, ra_p2, 1, ra_wc, ra_expect_n, ra_regex_flavor, ra_fuzzy_edits);
+        ra_idx = ra_idx + 1;
+    }
+    if (ra_npos < 3) {
+        syscall(1, 2, "usage: cyim --replace-all [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 84);
+        return 2;
+    }
+    if (ra_fz_seen == 1) {
+        if (ra_regex_flavor != FLAVOR_FUZZY) {
+            syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires --regex=fuzzy\n", 58);
+            return 2;
+        }
+    }
+    return run_replace(ra_p0, ra_p1, ra_p2, 1, ra_wc, ra_expect_n, ra_regex_flavor, ra_fuzzy_edits);
 }
 
 fn _dispatch_replace_files(ac) {
-        # OLD/NEW are FILE PATHS, not byte strings — content is
-        # slurped by run_replace_files. Modifier shape and
-        # positional order match --replace exactly so callers can
-        # one-line port a `--replace OLD NEW FILE` invocation by
-        # writing OLD/NEW to disk and switching the verb.
-        var rf_wc = 0;
-        var rf_expect_n = 0 - 1;
-        var rf_p0 = 0;
-        var rf_p1 = 0;
-        var rf_p2 = 0;
-        var rf_npos = 0;
-        var rf_wc_seen = 0;
-        var rf_expect_seen = 0;
-        var rf_regex_flavor = FLAVOR_LITERAL;
-        var rf_regex_seen = 0;
-        var rf_fuzzy_edits = 0 - 1;
-        var rf_fz_seen = 0;
-        var rf_idx = 2;
-        while (rf_idx < ac) {
-            var arg = argv(rf_idx);
-            var consumed = 0;
-            if (streq(arg, "--wc")        == 1) {
-                if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                rf_wc = 1; rf_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--wc=l")      == 1) {
-                if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                rf_wc = 2; rf_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--wc=long")   == 1) {
-                if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                rf_wc = 2; rf_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--expect-1")  == 1) {
-                if (rf_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
-                rf_expect_n = 1; rf_expect_seen = 1; consumed = 1;
-            }
-            if (consumed == 0) {
-                var sf = _cli_argprefix(arg, "--regex=");
-                if (sf != 0) {
-                    if (strlen(sf) == 0) {
-                        syscall(1, 2, "cyim --replace-files: --regex requires a flavor (e.g. --regex=ere)\n", 67);
-                        return 2;
-                    }
-                    if (rf_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
-                    var fid = _regex_flavor_id(sf);
-                    if (_flavor_validate("--replace-files", fid) == 0) { return 2; }
-                    rf_regex_flavor = fid;
-                    rf_regex_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
-                if (sfe != 0) {
-                    var nfe = _cli_atoi_nn(sfe);
-                    if (nfe < 0) {
-                        syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires a non-negative integer\n", 69);
-                        return 2;
-                    }
-                    if (rf_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
-                    rf_fuzzy_edits = nfe;
-                    rf_fz_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var s = _cli_argprefix(arg, "--expect-N=");
-                if (s != 0) {
-                    var n = _cli_atoi_nn(s);
-                    if (n < 0) {
-                        syscall(1, 2, "cyim --replace-files: --expect-N requires a non-negative integer\n", 65);
-                        return 2;
-                    }
-                    if (rf_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
-                    rf_expect_n = n;
-                    rf_expect_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                if (rf_npos == 0) { rf_p0 = arg; }
-                if (rf_npos == 1) { rf_p1 = arg; }
-                if (rf_npos == 2) { rf_p2 = arg; }
-                if (rf_npos >= 3) {
-                    syscall(1, 2, "cyim --replace-files: unexpected extra argument\n", 48);
+    # OLD/NEW are FILE PATHS, not byte strings — content is
+    # slurped by run_replace_files. Modifier shape and
+    # positional order match --replace exactly so callers can
+    # one-line port a `--replace OLD NEW FILE` invocation by
+    # writing OLD/NEW to disk and switching the verb.
+    var rf_wc = 0;
+    var rf_expect_n = 0 - 1;
+    var rf_p0 = 0;
+    var rf_p1 = 0;
+    var rf_p2 = 0;
+    var rf_npos = 0;
+    var rf_wc_seen = 0;
+    var rf_expect_seen = 0;
+    var rf_regex_flavor = FLAVOR_LITERAL;
+    var rf_regex_seen = 0;
+    var rf_fuzzy_edits = 0 - 1;
+    var rf_fz_seen = 0;
+    var rf_idx = 2;
+    while (rf_idx < ac) {
+        var arg = argv(rf_idx);
+        var consumed = 0;
+        if (streq(arg, "--wc")        == 1) {
+            if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            rf_wc = 1; rf_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--wc=l")      == 1) {
+            if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            rf_wc = 2; rf_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--wc=long")   == 1) {
+            if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            rf_wc = 2; rf_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--expect-1")  == 1) {
+            if (rf_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+            rf_expect_n = 1; rf_expect_seen = 1; consumed = 1;
+        }
+        if (consumed == 0) {
+            var sf = _cli_argprefix(arg, "--regex=");
+            if (sf != 0) {
+                if (strlen(sf) == 0) {
+                    syscall(1, 2, "cyim --replace-files: --regex requires a flavor (e.g. --regex=ere)\n", 67);
                     return 2;
                 }
-                rf_npos = rf_npos + 1;
+                if (rf_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                var fid = _regex_flavor_id(sf);
+                if (_flavor_validate("--replace-files", fid) == 0) { return 2; }
+                rf_regex_flavor = fid;
+                rf_regex_seen = 1;
+                consumed = 1;
             }
-            rf_idx = rf_idx + 1;
         }
-        if (rf_npos < 3) {
-            syscall(1, 2, "usage: cyim --replace-files [--wc[=l]] [--expect-N=<n>|--expect-1] ", 67);
-            syscall(1, 2, "<old-file> <new-file> <file>\n", 29);
-            return 2;
+        if (consumed == 0) {
+            var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+            if (sfe != 0) {
+                var nfe = _cli_atoi_nn(sfe);
+                if (nfe < 0) {
+                    syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires a non-negative integer\n", 69);
+                    return 2;
+                }
+                if (rf_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                rf_fuzzy_edits = nfe;
+                rf_fz_seen = 1;
+                consumed = 1;
+            }
         }
-        if (rf_fz_seen == 1) {
-            if (rf_regex_flavor != FLAVOR_FUZZY) {
-                syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires --regex=fuzzy\n", 60);
+        if (consumed == 0) {
+            var s = _cli_argprefix(arg, "--expect-N=");
+            if (s != 0) {
+                var n = _cli_atoi_nn(s);
+                if (n < 0) {
+                    syscall(1, 2, "cyim --replace-files: --expect-N requires a non-negative integer\n", 65);
+                    return 2;
+                }
+                if (rf_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
+                rf_expect_n = n;
+                rf_expect_seen = 1;
+                consumed = 1;
+            }
+        }
+        if (consumed == 0) {
+            if (rf_npos == 0) { rf_p0 = arg; }
+            if (rf_npos == 1) { rf_p1 = arg; }
+            if (rf_npos == 2) { rf_p2 = arg; }
+            if (rf_npos >= 3) {
+                syscall(1, 2, "cyim --replace-files: unexpected extra argument\n", 48);
                 return 2;
             }
+            rf_npos = rf_npos + 1;
         }
-        return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor, rf_fuzzy_edits);
+        rf_idx = rf_idx + 1;
+    }
+    if (rf_npos < 3) {
+        syscall(1, 2, "usage: cyim --replace-files [--wc[=l]] [--expect-N=<n>|--expect-1] ", 67);
+        syscall(1, 2, "<old-file> <new-file> <file>\n", 29);
+        return 2;
+    }
+    if (rf_fz_seen == 1) {
+        if (rf_regex_flavor != FLAVOR_FUZZY) {
+            syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires --regex=fuzzy\n", 60);
+            return 2;
+        }
+    }
+    return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor, rf_fuzzy_edits);
 }
 
 fn _dispatch_replace_files_all(ac) {
-        # Same shape as --replace-files, mode = REPLACE_ALL.
-        var rfa_wc = 0;
-        var rfa_expect_n = 0 - 1;
-        var rfa_p0 = 0;
-        var rfa_p1 = 0;
-        var rfa_p2 = 0;
-        var rfa_npos = 0;
-        var rfa_wc_seen = 0;
-        var rfa_expect_seen = 0;
-        var rfa_regex_flavor = FLAVOR_LITERAL;
-        var rfa_regex_seen = 0;
-        var rfa_fuzzy_edits = 0 - 1;
-        var rfa_fz_seen = 0;
-        var rfa_idx = 2;
-        while (rfa_idx < ac) {
-            var arg = argv(rfa_idx);
-            var consumed = 0;
-            if (streq(arg, "--wc")        == 1) {
-                if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                rfa_wc = 1; rfa_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--wc=l")      == 1) {
-                if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                rfa_wc = 2; rfa_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--wc=long")   == 1) {
-                if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-                rfa_wc = 2; rfa_wc_seen = 1; consumed = 1;
-            }
-            if (streq(arg, "--expect-1")  == 1) {
-                if (rfa_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
-                rfa_expect_n = 1; rfa_expect_seen = 1; consumed = 1;
-            }
-            if (consumed == 0) {
-                var sf = _cli_argprefix(arg, "--regex=");
-                if (sf != 0) {
-                    if (strlen(sf) == 0) {
-                        syscall(1, 2, "cyim --replace-files-all: --regex requires a flavor (e.g. --regex=ere)\n", 71);
-                        return 2;
-                    }
-                    if (rfa_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
-                    var fid = _regex_flavor_id(sf);
-                    if (_flavor_validate("--replace-files-all", fid) == 0) { return 2; }
-                    rfa_regex_flavor = fid;
-                    rfa_regex_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
-                if (sfe != 0) {
-                    var nfe = _cli_atoi_nn(sfe);
-                    if (nfe < 0) {
-                        syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires a non-negative integer\n", 73);
-                        return 2;
-                    }
-                    if (rfa_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
-                    rfa_fuzzy_edits = nfe;
-                    rfa_fz_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                var s = _cli_argprefix(arg, "--expect-N=");
-                if (s != 0) {
-                    var n = _cli_atoi_nn(s);
-                    if (n < 0) {
-                        syscall(1, 2, "cyim --replace-files-all: --expect-N requires a non-negative integer\n", 69);
-                        return 2;
-                    }
-                    if (rfa_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
-                    rfa_expect_n = n;
-                    rfa_expect_seen = 1;
-                    consumed = 1;
-                }
-            }
-            if (consumed == 0) {
-                if (rfa_npos == 0) { rfa_p0 = arg; }
-                if (rfa_npos == 1) { rfa_p1 = arg; }
-                if (rfa_npos == 2) { rfa_p2 = arg; }
-                if (rfa_npos >= 3) {
-                    syscall(1, 2, "cyim --replace-files-all: unexpected extra argument\n", 52);
+    # Same shape as --replace-files, mode = REPLACE_ALL.
+    var rfa_wc = 0;
+    var rfa_expect_n = 0 - 1;
+    var rfa_p0 = 0;
+    var rfa_p1 = 0;
+    var rfa_p2 = 0;
+    var rfa_npos = 0;
+    var rfa_wc_seen = 0;
+    var rfa_expect_seen = 0;
+    var rfa_regex_flavor = FLAVOR_LITERAL;
+    var rfa_regex_seen = 0;
+    var rfa_fuzzy_edits = 0 - 1;
+    var rfa_fz_seen = 0;
+    var rfa_idx = 2;
+    while (rfa_idx < ac) {
+        var arg = argv(rfa_idx);
+        var consumed = 0;
+        if (streq(arg, "--wc")        == 1) {
+            if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            rfa_wc = 1; rfa_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--wc=l")      == 1) {
+            if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            rfa_wc = 2; rfa_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--wc=long")   == 1) {
+            if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
+            rfa_wc = 2; rfa_wc_seen = 1; consumed = 1;
+        }
+        if (streq(arg, "--expect-1")  == 1) {
+            if (rfa_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
+            rfa_expect_n = 1; rfa_expect_seen = 1; consumed = 1;
+        }
+        if (consumed == 0) {
+            var sf = _cli_argprefix(arg, "--regex=");
+            if (sf != 0) {
+                if (strlen(sf) == 0) {
+                    syscall(1, 2, "cyim --replace-files-all: --regex requires a flavor (e.g. --regex=ere)\n", 71);
                     return 2;
                 }
-                rfa_npos = rfa_npos + 1;
+                if (rfa_regex_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --regex\n", 30); return 2; }
+                var fid = _regex_flavor_id(sf);
+                if (_flavor_validate("--replace-files-all", fid) == 0) { return 2; }
+                rfa_regex_flavor = fid;
+                rfa_regex_seen = 1;
+                consumed = 1;
             }
-            rfa_idx = rfa_idx + 1;
         }
-        if (rfa_npos < 3) {
-            syscall(1, 2, "usage: cyim --replace-files-all [--wc[=l]] ", 43);
-            syscall(1, 2, "[--expect-N=<n>|--expect-1] <old-file> <new-file> <file>\n", 57);
-            return 2;
+        if (consumed == 0) {
+            var sfe = _cli_argprefix(arg, "--fuzzy-edits=");
+            if (sfe != 0) {
+                var nfe = _cli_atoi_nn(sfe);
+                if (nfe < 0) {
+                    syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires a non-negative integer\n", 73);
+                    return 2;
+                }
+                if (rfa_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
+                rfa_fuzzy_edits = nfe;
+                rfa_fz_seen = 1;
+                consumed = 1;
+            }
         }
-        if (rfa_fz_seen == 1) {
-            if (rfa_regex_flavor != FLAVOR_FUZZY) {
-                syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires --regex=fuzzy\n", 64);
+        if (consumed == 0) {
+            var s = _cli_argprefix(arg, "--expect-N=");
+            if (s != 0) {
+                var n = _cli_atoi_nn(s);
+                if (n < 0) {
+                    syscall(1, 2, "cyim --replace-files-all: --expect-N requires a non-negative integer\n", 69);
+                    return 2;
+                }
+                if (rfa_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-N\n", 33); return 2; }
+                rfa_expect_n = n;
+                rfa_expect_seen = 1;
+                consumed = 1;
+            }
+        }
+        if (consumed == 0) {
+            if (rfa_npos == 0) { rfa_p0 = arg; }
+            if (rfa_npos == 1) { rfa_p1 = arg; }
+            if (rfa_npos == 2) { rfa_p2 = arg; }
+            if (rfa_npos >= 3) {
+                syscall(1, 2, "cyim --replace-files-all: unexpected extra argument\n", 52);
                 return 2;
             }
+            rfa_npos = rfa_npos + 1;
         }
-        return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor, rfa_fuzzy_edits);
+        rfa_idx = rfa_idx + 1;
+    }
+    if (rfa_npos < 3) {
+        syscall(1, 2, "usage: cyim --replace-files-all [--wc[=l]] ", 43);
+        syscall(1, 2, "[--expect-N=<n>|--expect-1] <old-file> <new-file> <file>\n", 57);
+        return 2;
+    }
+    if (rfa_fz_seen == 1) {
+        if (rfa_regex_flavor != FLAVOR_FUZZY) {
+            syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires --regex=fuzzy\n", 64);
+            return 2;
+        }
+    }
+    return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor, rfa_fuzzy_edits);
 }
 

@@ -262,7 +262,7 @@ fn run_editor(file_path) {
     }
 
     tty_alt_leave();
-    tty_cooked(0);
+    tty_cooked();
     return 0;
 }
 

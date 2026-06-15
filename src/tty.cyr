@@ -1,7 +1,7 @@
 # tty.cyr — cyim-internal raw-mode smoke
 #
 # v1.7.0: the bulk of this file's surface (termios bit-twiddling,
-# `tty_raw` / `tty_cooked`, ANSI helpers, `tty_move` / `tty_itoa`) was
+# `tty_raw` / `tty_cooked`, ANSI helpers, `tty_move` / `tty_dec_buf`) was
 # extracted into the darshana TUI library — cyim was the primary
 # donor. Consumers of those symbols continue to call them by their
 # original names; the definitions just live in `lib/darshana.cyr`
@@ -30,7 +30,7 @@ fn tty_probe() {
     store64(&ts, 0);
     store64(&ts + 8, 50000000);
     syscall(35, &ts, 0);
-    tty_cooked(0);
+    tty_cooked();
     syscall(1, 1, "[cyim tty probe: restored]\n", 27);
     return 0;
 }

@@ -5,7 +5,7 @@ description = "Sovereign Cyrius-native text editor — VIM-inspired, zero attack
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/cyim"
 language = "cyrius"
-cyrius = "6.0.1"
+cyrius = "6.2.7"
 
 [build]
 entry = "src/main.cyr"
@@ -63,7 +63,7 @@ stdlib = [
 # resolved at runtime via /proc/self/exe (binary-relative).
 [deps.vyakarana]
 git = "https://github.com/MacCracken/vyakarana.git"
-tag = "2.2.1"
+tag = "2.2.3"
 modules = ["dist/vyakarana.cyr"]
 
 # cyim-lsp — LSP client plugin. v1.0.2 ships a self-contained
@@ -82,17 +82,18 @@ modules = ["dist/cyim-lsp.cyr"]
 # cyim is the primary donor and first consumer (per the saved
 # project-memory rule). 1.7.0 picked it up at darshana 0.2.0 + shed
 # the donor definitions from cyim's tty.cyr — only `tty_probe()` (a
-# cyim-internal raw-mode smoke) stays local. Bumped to 0.4.0 to
-# close darshana's M3 milestone alongside the ecosystem-wide cyrius
-# 6.0.1 pin (was 5.10.20). The 0.4.0 surface adds `tty_winsize`,
-# `tty_open_signalfd` + `TTY_SIGMASK_EXIT/WINCH`, the partial-clear
-# helpers (`tty_clear_to_eol/to_end`), SGR (`tty_sgr` + 16 `TTY_FG_*`
-# constants), and the bounds-checked `tty_sgr` from v0.4.0. None
-# called from cyim today; bump is a forward-compat dep refresh.
+# cyim-internal raw-mode smoke) stays local; 1.7.1 advanced to 0.4.0.
+# 1.7.2 bumps to 0.7.0 alongside the cyrius 6.2.7 pin. 0.7.0 is the
+# first darshana cut to BREAK the API for symbols cyim actually
+# calls: `tty_itoa` → `tty_dec_buf` (return is now the write
+# position, not the digit count), `tty_cooked(0)` → `tty_cooked()`
+# (arg dropped), and `tty_apply_raw_flags` → `_tty_apply_raw_flags`
+# (privatized). Callsites in `src/{render,main,tty}.cyr` and
+# `tests/tty.tcyr` were ported in lockstep — see CHANGELOG 1.7.2.
 # Bundled distfile is `dist/darshana.cyr`; consumer-side
 # `include "lib/darshana.cyr"` in `src/main.cyr` brings the module
 # bodies into cyim's compilation unit at fold-in time.
 [deps.darshana]
 git = "https://github.com/MacCracken/darshana.git"
-tag = "0.4.0"
+tag = "0.7.0"
 modules = ["dist/darshana.cyr"]

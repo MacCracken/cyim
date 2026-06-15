@@ -1,9 +1,15 @@
 # tests/tty.tcyr — TTY flag-mask invariants and ANSI itoa helper
 #
 # We can't unit-test ioctl side effects without a real PTY (cyrius test runs
-# headless). The test target is the pure flag-mask half — `tty_apply_raw_flags`
+# headless). The test target is the pure flag-mask half — `_tty_apply_raw_flags`
 # operates on an in-memory 60-byte termios buffer and is the load-bearing
 # correctness boundary. If this is right, the ioctl wrapper is just plumbing.
+#
+# NOTE: darshana 0.7.0 privatized this to `_tty_apply_raw_flags` (it's no
+# longer part of darshana's public contract). This white-box test still
+# reaches it by name — first-party + same compilation unit. darshana also
+# covers this directly in its own suite, so this group is now redundant and
+# could be dropped on a future cyim cleanup.
 #
 # Strategy: hand-build a "fully cooked" termios (all bits we want cleared are
 # set, c_cflag CSIZE is non-CS8, CC chars zeroed) → apply → assert flags.
@@ -41,7 +47,7 @@ fn main() {
     # c_lflag: ECHO|ICANON|IEXTEN|ISIG + bystander 0x40000000
     tio_store32(&t, 12, TIO_ECHO | TIO_ICANON | TIO_IEXTEN | TIO_ISIG | 0x40000000);
 
-    tty_apply_raw_flags(&t);
+    _tty_apply_raw_flags(&t);
 
     var iflag = tio_load32(&t, 0);
     assert_eq(iflag & TIO_BRKINT, 0, "iflag BRKINT cleared");
@@ -70,7 +76,7 @@ fn main() {
     # Pre-poison both before apply.
     store8(&t + TIO_CC_BASE + TIO_VMIN, 0xAA);
     store8(&t + TIO_CC_BASE + TIO_VTIME, 0xBB);
-    tty_apply_raw_flags(&t);
+    _tty_apply_raw_flags(&t);
     assert_eq(load8(&t + TIO_CC_BASE + TIO_VMIN), 1, "VMIN forced to 1");
     assert_eq(load8(&t + TIO_CC_BASE + TIO_VTIME), 0, "VTIME forced to 0");
 
@@ -79,29 +85,32 @@ fn main() {
     # a fixed point — bystanders preserved, raw bits still off.
     var iflag_before = tio_load32(&t, 0);
     var lflag_before = tio_load32(&t, 12);
-    tty_apply_raw_flags(&t);
+    _tty_apply_raw_flags(&t);
     assert_eq(tio_load32(&t, 0), iflag_before, "iflag unchanged on second apply");
     assert_eq(tio_load32(&t, 12), lflag_before, "lflag unchanged on second apply");
 
-    test_group("tty_itoa formats decimal");
+    # darshana 0.7.0 renamed tty_itoa -> tty_dec_buf; its return is now
+    # the new write position, which at pos 0 equals the digit count, so
+    # these values are unchanged.
+    test_group("tty_dec_buf formats decimal");
     var ib[32];
     var i0 = 0;
     while (i0 < 32) { store8(&ib + i0, 0); i0 = i0 + 1; }
 
-    var n0 = tty_itoa(&ib, 0, 0);
+    var n0 = tty_dec_buf(&ib, 0, 0);
     assert_eq(n0, 1, "0 is one digit");
     assert_eq(load8(&ib + 0), 0x30, "0 byte == '0'");
 
-    var n1 = tty_itoa(&ib, 0, 7);
+    var n1 = tty_dec_buf(&ib, 0, 7);
     assert_eq(n1, 1, "7 is one digit");
     assert_eq(load8(&ib + 0), 0x37, "7 byte == '7'");
 
-    var n2 = tty_itoa(&ib, 0, 42);
+    var n2 = tty_dec_buf(&ib, 0, 42);
     assert_eq(n2, 2, "42 is two digits");
     assert_eq(load8(&ib + 0), 0x34, "first byte '4'");
     assert_eq(load8(&ib + 1), 0x32, "second byte '2'");
 
-    var n3 = tty_itoa(&ib, 0, 1024);
+    var n3 = tty_dec_buf(&ib, 0, 1024);
     assert_eq(n3, 4, "1024 is four digits");
     assert_eq(load8(&ib + 0), 0x31, "[0] '1'");
     assert_eq(load8(&ib + 1), 0x30, "[1] '0'");

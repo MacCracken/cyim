@@ -169,7 +169,7 @@ fn window_collect_leaves(w, out_leaves) {
 fn window_count_leaves(w) {
     if (window_is_leaf(w) == 1) { return 1; }
     return window_count_leaves(window_child_a(w))
-         + window_count_leaves(window_child_b(w));
+    + window_count_leaves(window_child_b(w));
 }
 
 # Find the leaf containing the given (row, col). Returns 0 when the

@@ -420,8 +420,11 @@ fn _render_leaf_status(s, leaf) {
     if (is_active == 1) { store8(&sbuf + pos, 42); } else { store8(&sbuf + pos, 32); }
     pos = pos + 1; visible = visible + 1;
 
-    # Buffer idx (decimal).
-    var nd = tty_itoa(&sbuf, pos, bidx);
+    # Buffer idx (decimal). darshana 0.7.0 renamed tty_itoa ->
+    # tty_dec_buf and changed its return from digit-count to the new
+    # write position; subtract pos to recover the digit count both
+    # `pos` and `visible` advance by.
+    var nd = tty_dec_buf(&sbuf, pos, bidx) - pos;
     pos = pos + nd; visible = visible + nd;
 
     store8(&sbuf + pos, 58); pos = pos + 1; visible = visible + 1;
