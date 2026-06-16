@@ -4,6 +4,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.3] — 2026-06-15
+
+**Patch — cyrius `6.2.7` → `6.2.11` toolchain pin bump + vendored-stdlib
+re-sync.**
+
+Pure pin move. Unlike 1.7.2 (which ported a darshana breaking rename),
+this cut has **no cyim-side callsite changes** — the editor source is
+byte-for-byte unchanged. The vendored stdlib in `lib/` was re-synced to
+the 6.2.11 snapshot via `cyrius lib sync`; the delta is confined to 8
+modules cyim does not link (`net`, `tls*`, `sandhi`, `mabda`), so the
+DCE binary is **byte-identical to 1.7.2 at 1,226,704 B**. No dep version
+moved (darshana 0.7.0 / vyakarana 2.2.3 hold).
+
+### Changed
+- `cyrius.cyml [package].cyrius`: `6.2.7` → `6.2.11`.
+- `lib/` re-synced to the 6.2.11 stdlib snapshot (8 unlinked modules
+  updated; no modules added or dropped).
+
+### Build
+- DCE binary: **1,226,704 B** — 0 B delta vs 1.7.2 (changed stdlib
+  modules are outside cyim's link graph).
+
+### Tests
+- `cyrius test` 22 suites / 1150 assertions PASS, `cyrius fuzz` 3/3
+  PASS, `cyrius lint` 0 warnings, `cyrfmt --check` clean.
+
 ## [1.7.2] — 2026-06-15
 
 **Patch — cyrius 6.2.7 toolchain bump + dep refresh + vendored-stdlib

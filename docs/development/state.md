@@ -2,20 +2,20 @@
 
 > **Volatile.** This file is the **live state** of the project — current version, sizes, test counts, in-flight slot, consumer build status. Refreshed every release. Don't put durable rules here (those live in [`CLAUDE.md`](../../CLAUDE.md)); don't put release history here (that lives in [`CHANGELOG.md`](../../CHANGELOG.md)); don't put sequencing here (that lives in [`roadmap.md`](roadmap.md)).
 
-*Last bumped: 2026-06-15 (v1.7.2 — cyrius 6.0.1 → 6.2.7 pin, darshana 0.4.0 → 0.7.0 (breaking API rename ported), vyakarana 2.2.1 → 2.2.3, vendored `lib/` stdlib re-synced to the 6.2.7 snapshot via `cyrius lib sync`. See [CHANGELOG](../../CHANGELOG.md#172--2026-06-15) for full entry.)*
+*Last bumped: 2026-06-15 (v1.7.3 — cyrius 6.2.7 → 6.2.11 pin, vendored `lib/` stdlib re-synced to the 6.2.11 snapshot via `cyrius lib sync` (8 unlinked modules updated; binary byte-identical). No cyim-side source or dep changes. See [CHANGELOG](../../CHANGELOG.md#173--2026-06-15) for full entry.)*
 
 ---
 
 ## Version
 
-- **VERSION**: `1.7.2`
-- **Cyrius toolchain pin**: `6.2.7`
-- **Last release**: `1.7.2` — Patch; cyrius 6.2.7 + dep refresh (darshana 0.7.0, vyakarana 2.2.3) + vendored-stdlib re-sync to the 6.2.7 snapshot. 2026-06-15. Full entry in CHANGELOG.
+- **VERSION**: `1.7.3`
+- **Cyrius toolchain pin**: `6.2.11`
+- **Last release**: `1.7.3` — Patch; cyrius 6.2.7 → 6.2.11 pin + vendored-stdlib re-sync to the 6.2.11 snapshot. No cyim-side source/dep changes; binary byte-identical. 2026-06-15. Full entry in CHANGELOG.
 
 ## Binary
 
 - **`build/cyim`** (CYRIUS_DCE=1): **1,226,704 B**
-  - Last delta: +12,048 B over 1.7.1's 1,214,656 B (6.2.7 codegen + the darshana 0.7.0 / vyakarana 2.2.3 surface).
+  - Last delta: 0 B at 1.7.3 (6.2.11 pin re-synced only unlinked stdlib modules; codegen byte-identical to 1.7.2).
   - Per-release size history is in CHANGELOG's per-version Binary sections.
 
 ## Tests

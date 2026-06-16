@@ -5,7 +5,7 @@ description = "Sovereign Cyrius-native text editor — VIM-inspired, zero attack
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/cyim"
 language = "cyrius"
-cyrius = "6.2.7"
+cyrius = "6.2.11"
 
 [build]
 entry = "src/main.cyr"

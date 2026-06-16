@@ -14,5 +14,5 @@
 # compiler itself uses the same pattern (see cyrius's
 # `src/version_str.cyr` + `scripts/version-bump.sh`).
 
-var _VERSION_STR_CYIM = "cyim 1.7.2\n";
+var _VERSION_STR_CYIM = "cyim 1.7.3\n";
 var _VERSION_LEN_CYIM = 11;
