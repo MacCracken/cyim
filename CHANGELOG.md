@@ -4,6 +4,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.4] — 2026-06-22
+
+**Patch — darshana `0.7.0` → `0.8.0` dependency refresh.**
+
+darshana 0.8.0 adds an agnos `tty_winsize` branch (backed by the kernel `winsize`#60
+syscall, agnos 1.45.13). Additive only: cyim vendors the `tty_winsize` symbol but does
+not yet call it (resize-aware editor rendering remains a future feature), so this brings
+the symbol's agnos variant in with no cyim behavior change. The pre-0.8.0 darshana
+breaking changes were already absorbed at cyim's 0.7.0 pin, so this is a clean additive
+bump.
+
 ## [1.7.3] — 2026-06-15
 
 **Patch — cyrius `6.2.7` → `6.2.11` toolchain pin bump + vendored-stdlib

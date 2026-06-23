@@ -95,5 +95,5 @@ modules = ["dist/cyim-lsp.cyr"]
 # bodies into cyim's compilation unit at fold-in time.
 [deps.darshana]
 git = "https://github.com/MacCracken/darshana.git"
-tag = "0.7.0"
+tag = "0.8.0"
 modules = ["dist/darshana.cyr"]
