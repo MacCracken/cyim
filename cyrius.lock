@@ -1,3 +1,6 @@
+commit	a20268d8beca7301436cc88cc8b0a004dfed1bad	vyakarana	https://github.com/MacCracken/vyakarana.git	2.2.3
+commit	2c780d8cc0c2a0d9cc70497b42b76ea3392b05a1	cyim-lsp	https://github.com/MacCracken/cyim-lsp.git	1.5.0
+commit	04e04efab7a572d7d4ae89d4cb38ee71c06b9142	darshana	https://github.com/MacCracken/darshana.git	0.8.0
 d9f3b17ddbbe1bba48917c3a679807b01c39c4a1ce776efdbdfbb7a1680e86e4  lib/tagged.cyr
 b0d475d8facaa8ab281bba5d411add5af2bdb595d69f5da28db27cc847ae353a  lib/net.cyr
 e84c090fd0f8532700d967ca3190837780a52a42630f4c6a0a4567ad9a49ab6b  lib/cffi.cyr
@@ -92,7 +95,7 @@ efd5e32a3ff24466ccdf85928d884369255d2b87733f410d3b5918d5a8177709  lib/unicode/no
 7c42f230a2c4c8bc253b8070f5950a2ac562923b036c57249a3e5682f2e4864d  lib/tls_native_hs12.cyr
 9fd6444e8cfcf7950837e955473adc5bab6d7bf4fa2c15f8ce2578360c4100eb  lib/hashmap.cyr
 af30844628c715c51cad83addf05c9de4fb12d4b84f97801322448b2df1091b1  lib/fnptr.cyr
-4b9a5d605431fbe7929fd59b436643ea7ba636980d664374fc4e2e833f6cb7cd  lib/darshana.cyr
+a04b539f893feeab60232a35fd54afc546d9828b38ac6e4430c9c83069c73ed2  lib/darshana.cyr
 16937b59f0b038f9a4e2a42dcd1ddc7deeb13edb520e82466fb60ecfd92ae09b  lib/syscalls_windows.cyr
 bcc6f7929a25630bf7de9d61c5330c66cbe373c5ee4ddcd35c3481d02448e816  lib/tls_native_hs13.cyr
 de4598e4862fdc8d02195688b9aacc91e888d5f6b85d9fac08f4b7af9daaca19  lib/random.cyr

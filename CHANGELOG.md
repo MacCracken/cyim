@@ -4,6 +4,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.5] — 2026-06-22
+
+### Changed
+
+- **cyrius toolchain pin `6.2.11` → `6.2.36`** — aligns with the latest cyrius (closes the
+  6.2.11→6.2.36 gap; 6.2.31–6.2.36 agnos-stdlib fixes). Host + `--agnos` builds re-verified
+  clean. No source change.
+
 ## [1.7.4] — 2026-06-22
 
 **Patch — darshana `0.7.0` → `0.8.0` dependency refresh.**
