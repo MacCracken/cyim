@@ -207,6 +207,7 @@ not slated.
 
 | Feature | Trigger | Notes |
 |---|---|---|
+| **`o` / `O` — open line below/above** (open a fresh line and enter INSERT) | **Ready to implement** — surfaced 2026-07-08 during agnos full-screen bring-up (`i` works; `o`/`O` have no handler — no `ACT_OPEN_*`). A core vim command, so it jumps the queue when normal-mode editing next earns a bite (unlike the deliberately-deferred rows below). | `src/mode.cyr`: map `o` → `ACT_OPEN_BELOW`, `O` → `ACT_OPEN_ABOVE`; handler (near the `i`/`a`/`A` insert-entry paths in `insert.cyr`) inserts a `\n` below/above the cursor's line, moves the cursor onto the new blank line, and switches to INSERT mode. Add coverage to `tests/`. |
 | **System clipboard** | Wayland integration via `aethersafha` | Belongs in compositor layer, not editor. cyim's yank/paste single-register stays the in-editor primitive. |
 | **Terminal emulator embed** | Third user asks for `:term` | Until then, `Ctrl-z` + shell is fine. |
 | **Macros** (`q<reg>` recording) | Recurring user need surfaces | Vim's macro DSL is a sequence-replay primitive, not a scripting language — fits the no-embedded-scripting refusal. |
