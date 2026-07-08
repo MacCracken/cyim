@@ -620,6 +620,19 @@ fn _cyim_lsp_gr(s) {
 # twice double-registers.
 
 fn cyim_lsp_init() {
+    # LSP is Linux-only. cyim-lsp drives a language server as a child
+    # process over bidirectional stdin/stdout pipes — fork + execve +
+    # dup2 in lib/cyim-lsp.cyr's subprocess path (lsp_proc_spawn). agnos
+    # has none of those: the frozen syscall surface offers only the
+    # run-to-completion exec band (execwait#37 / spawn_path#43), which
+    # can't host the persistent bidirectional connection LSP needs — and
+    # there is no language server to spawn on agnos anyway. Registering
+    # nothing on --agnos leaves every LSP handler un-address-taken, so
+    # the whole spawn chain is unreachable and sys_fork / sys_execve /
+    # sys_dup2 drop from reachable-undef errors to warn-only notes. cyim
+    # still runs on agnos as an editor, just without LSP. Same class of
+    # target gate as the kii / kriya agnos conversions.
+    #ifndef CYRIUS_TARGET_AGNOS
     plugin_register_post_save_hook(&_cyim_lsp_post_save);
     plugin_register_post_change_hook(&_cyim_lsp_post_change);
     plugin_register_status_segment(&_cyim_lsp_status_segment);
@@ -635,5 +648,6 @@ fn cyim_lsp_init() {
     # mirror; consume cyim 1.6.6's plugin_buf_load_file_split ABI).
     plugin_register_ex_command("lsp-find-refs-split",  &_cyim_lsp_ex_find_refs_split);
     plugin_register_ex_command("lsp-find-refs-vsplit", &_cyim_lsp_ex_find_refs_vsplit);
+    #endif
     return 0;
 }

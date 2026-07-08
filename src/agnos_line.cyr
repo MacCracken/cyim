@@ -1,0 +1,572 @@
+# agnos_line.cyr — ed/ex-style line editor for the agnos target
+#
+# Why this exists: agnos's console is line-disciplined (canonical-lite,
+# kernel-owned since 1.41.15) — read(fd 0) blocks until Enter, echoes +
+# handles backspace itself, and returns one whole line. There is no
+# ring-3 per-key raw character input, so cyim's full-screen render/motion
+# loop (src/main.cyr run_editor) cannot run on agnos. This module is the
+# "drop to a line REPL" fallback (the same pattern thoth/chakshu take when
+# darshana's tty_raw returns < 0), giving a genuinely usable line editor
+# over the cooked console: view, goto, print ranges, substitute, insert /
+# append / change / delete lines, and write.
+#
+# The WHOLE file is guarded by CYRIUS_TARGET_AGNOS, so it compiles to
+# nothing on Linux / macOS / Windows (where run_editor is used instead).
+# It builds on cyim's existing gap buffer (src/buffer.cyr) — no editor /
+# window / render state is needed.
+#
+# Command grammar (addresses are 1-indexed; `.` = current, `$` = last,
+# `%` = whole file; `A,B` = range):
+#   (blank)        advance to + print next line
+#   N              goto + print line N
+#   p              print current line     A,Bp / %p   print range / all
+#   =              line number + count    A=          number of line A
+#   a <text>       append line after current
+#   i <text>       insert line before current
+#   c <text>       change current line to <text>
+#   d              delete current line    A,Bd        delete range
+#   s/old/new/     substitute all old->new on line (A,Bs for a range)
+#   w [file]       write   wq [file]  write + quit
+#   q / q!         quit / discard unsaved changes
+#   h or ?         help
+
+#ifdef CYRIUS_TARGET_AGNOS
+
+# ---- editor session state (scalar globals — no var-array sizing quirk) ----
+var _al_cur = 0;        # current line, 0-indexed
+var _al_modified = 0;   # 1 once the buffer diverges from disk
+var _al_path = 0;       # cstr path to write to (0 = none yet)
+var _al_pi = 0;         # parse cursor into the command line
+
+# ---- carry-buffered stdin line reader ----
+# One agnos read(fd 0) returns a single kernel line, but under mirshi
+# stdin is a Linux pipe that hands back a multi-line blob in one read; the
+# carry buffer splits it into one line per call (same reason agnsh buffers
+# — see agnoshi/src/agnsh.cyr read_line).
+var _al_rl_ptr = 0;
+var _al_rl_cap = 8192;
+var _al_rl_len = 0;
+var _al_rl_pos = 0;
+
+# ---- low-level output (agnos SYS_WRITE = 1, fd 1 = stdout) ----
+fn _al_slen(s) {
+    var n = 0;
+    while (load8(s + n) != 0) { n = n + 1; }
+    return n;
+}
+fn _al_puts(s) { syscall(1, 1, s, _al_slen(s)); return 0; }
+fn _al_write(p, n) { if (n > 0) { syscall(1, 1, p, n); } return 0; }
+fn _al_putc(ch) {
+    var one[1];
+    store8(&one, ch);
+    syscall(1, 1, &one, 1);
+    return 0;
+}
+fn _al_put_uint(v) {
+    if (v == 0) { syscall(1, 1, "0", 1); return 0; }
+    var tmp[24];
+    var i = 0;
+    var n = v;
+    while (n > 0) {
+        store8(&tmp + i, 48 + n % 10);
+        i = i + 1;
+        n = n / 10;
+    }
+    var out[24];
+    var j = 0;
+    while (i > 0) {
+        i = i - 1;
+        store8(&out + j, load8(&tmp + i));
+        j = j + 1;
+    }
+    syscall(1, 1, &out, j);
+    return 0;
+}
+
+# Read one line into `out` (NUL-terminated; trailing \n / \r stripped).
+# Returns the line length, or -1 at EOF with nothing buffered.
+fn _al_read_line(out, maxlen) {
+    if (_al_rl_ptr == 0) {
+        _al_rl_ptr = alloc(_al_rl_cap);
+        if (_al_rl_ptr == 0) { return 0 - 1; }
+    }
+    var oi = 0;
+    while (1 == 1) {
+        if (_al_rl_pos >= _al_rl_len) {
+            _al_rl_pos = 0;
+            _al_rl_len = 0;
+            # blocking read; a4=0 explicit (agnos routes r10 as the block flag,
+            # so a 3-arg read would deliver garbage there — see agnsh's note).
+            var n = syscall(5, 0, _al_rl_ptr, _al_rl_cap, 0);
+            if (n <= 0) {
+                if (oi > 0) { store8(out + oi, 0); return oi; }
+                return 0 - 1;
+            }
+            _al_rl_len = n;
+        }
+        while (_al_rl_pos < _al_rl_len) {
+            var c = load8(_al_rl_ptr + _al_rl_pos);
+            _al_rl_pos = _al_rl_pos + 1;
+            if (c == 10) { store8(out + oi, 0); return oi; }
+            if (c != 13) {
+                if (oi < maxlen - 1) { store8(out + oi, c); oi = oi + 1; }
+            }
+        }
+    }
+    return oi;
+}
+
+# ---- line geometry over the gap buffer ----
+# Byte offset one past the last printable byte of the line starting at
+# `start` (i.e. the position of its '\n', or buf_len for the last line).
+fn _al_line_content_end(b, start) {
+    var len = buf_len(b);
+    var e = start;
+    while (e < len) {
+        if (buf_get(b, e) == 10) { return e; }
+        e = e + 1;
+    }
+    return e;
+}
+
+# Print a 0-indexed line as "<n+1>  <text>".
+fn _al_print_line(b, line0) {
+    var start = buf_pos_of_line(b, line0);
+    var end = _al_line_content_end(b, start);
+    _al_put_uint(line0 + 1);
+    syscall(1, 1, "  ", 2);
+    var n = end - start;
+    if (n > 0) {
+        var tmp = alloc(n);
+        if (tmp != 0) {
+            var i = 0;
+            while (i < n) { store8(tmp + i, buf_get(b, start + i)); i = i + 1; }
+            syscall(1, 1, tmp, n);
+        }
+    }
+    _al_putc(10);
+    return 0;
+}
+
+# ---- line mutations ----
+# Delete a whole 0-indexed line, including its trailing '\n'.
+fn _al_delete_line(b, line0) {
+    var count = buf_line_count(b);
+    var start = buf_pos_of_line(b, line0);
+    var end = buf_len(b);
+    if (line0 < count - 1) { end = buf_pos_of_line(b, line0 + 1); }
+    buf_move(b, start);
+    var k = end - start;
+    while (k > 0) { buf_delete_right(b); k = k - 1; }
+    return 0;
+}
+
+# Replace a 0-indexed line's content (its '\n' is preserved).
+fn _al_replace_line_content(b, line0, text, tlen) {
+    var start = buf_pos_of_line(b, line0);
+    var end = _al_line_content_end(b, start);
+    buf_move(b, start);
+    var k = end - start;
+    while (k > 0) { buf_delete_right(b); k = k - 1; }
+    buf_move(b, start);
+    if (tlen > 0) { buf_insert(b, text, tlen); }
+    return 0;
+}
+
+# Insert `text` as a new line BEFORE 0-indexed line0.
+fn _al_insert_line_before(b, line0, text, tlen) {
+    var pos = buf_pos_of_line(b, line0);
+    buf_move(b, pos);
+    if (tlen > 0) { buf_insert(b, text, tlen); }
+    buf_insert_byte(b, 10);
+    return 0;
+}
+
+# Insert `text` as a new line AFTER 0-indexed line0.
+fn _al_append_line_after(b, line0, text, tlen) {
+    var count = buf_line_count(b);
+    if (line0 < count - 1) {
+        _al_insert_line_before(b, line0 + 1, text, tlen);
+        return 0;
+    }
+    # Appending after the last line: land at end-of-buffer and make sure a
+    # separating '\n' exists before the new text, then terminate the file.
+    var len = buf_len(b);
+    buf_move(b, len);
+    if (len > 0) {
+        if (buf_get(b, len - 1) != 10) { buf_insert_byte(b, 10); }
+    }
+    if (tlen > 0) { buf_insert(b, text, tlen); }
+    buf_insert_byte(b, 10);
+    return 0;
+}
+
+# ---- substitution ----
+# First index >= `from` where `ndl` (nlen) occurs in `hay` (hlen), or -1.
+fn _al_memfind(hay, hlen, ndl, nlen, from) {
+    if (nlen == 0) { return 0 - 1; }
+    var i = from;
+    while (i + nlen <= hlen) {
+        var j = 0;
+        var hit = 1;
+        while (j < nlen) {
+            if (load8(hay + i + j) != load8(ndl + j)) { hit = 0; break; }
+            j = j + 1;
+        }
+        if (hit == 1) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+# Replace every occurrence of old->new on 0-indexed line0. Returns count.
+fn _al_subst_line(b, line0, oldp, oldlen, newp, newlen) {
+    if (oldlen == 0) { return 0; }
+    var start = buf_pos_of_line(b, line0);
+    var end = _al_line_content_end(b, start);
+    var n = end - start;
+    if (n <= 0) { return 0; }
+    var src = alloc(n);
+    if (src == 0) { return 0; }
+    var i = 0;
+    while (i < n) { store8(src + i, buf_get(b, start + i)); i = i + 1; }
+    # Count matches (non-overlapping).
+    var reps = 0;
+    var pos = 0;
+    while (1 == 1) {
+        var idx = _al_memfind(src, n, oldp, oldlen, pos);
+        if (idx < 0) { break; }
+        reps = reps + 1;
+        pos = idx + oldlen;
+    }
+    if (reps == 0) { return 0; }
+    var outcap = n - reps * oldlen + reps * newlen;
+    if (outcap < 1) { outcap = 1; }
+    var out = alloc(outcap);
+    if (out == 0) { return 0; }
+    var oi = 0;
+    pos = 0;
+    while (1 == 1) {
+        var idx = _al_memfind(src, n, oldp, oldlen, pos);
+        if (idx < 0) {
+            var k = pos;
+            while (k < n) { store8(out + oi, load8(src + k)); oi = oi + 1; k = k + 1; }
+            break;
+        }
+        var k2 = pos;
+        while (k2 < idx) { store8(out + oi, load8(src + k2)); oi = oi + 1; k2 = k2 + 1; }
+        var m = 0;
+        while (m < newlen) { store8(out + oi, load8(newp + m)); oi = oi + 1; m = m + 1; }
+        pos = idx + oldlen;
+    }
+    _al_replace_line_content(b, line0, out, oi);
+    return reps;
+}
+
+# ---- command implementations ----
+fn _al_help() {
+    _al_puts("cyim agnos line editor:\n");
+    _al_puts("  (blank) next line   N goto line N   p print   A,Bp / %p range/all\n");
+    _al_puts("  a <text> append      i <text> insert   c <text> change   d delete (A,Bd)\n");
+    _al_puts("  s/old/new/ subst     = line#/count    w [file] write   wq write+quit\n");
+    _al_puts("  q quit   q! discard   h/? help\n");
+    return 0;
+}
+
+# Parse and run a substitute, with _al_pi pointing just past 's'.
+fn _al_cmd_subst(b, a1, a2, line, llen) {
+    if (_al_pi >= llen) { _al_puts("? usage: s/old/new/\n"); return 0; }
+    var delim = load8(line + _al_pi);
+    _al_pi = _al_pi + 1;
+    var ostart = _al_pi;
+    while (_al_pi < llen) {
+        if (load8(line + _al_pi) == delim) { break; }
+        _al_pi = _al_pi + 1;
+    }
+    var oend = _al_pi;
+    if (_al_pi < llen) { _al_pi = _al_pi + 1; }
+    var nstart = _al_pi;
+    while (_al_pi < llen) {
+        if (load8(line + _al_pi) == delim) { break; }
+        _al_pi = _al_pi + 1;
+    }
+    var nend = _al_pi;
+    var oldp = line + ostart;
+    var oldlen = oend - ostart;
+    var newp = line + nstart;
+    var newlen = nend - nstart;
+    if (oldlen == 0) { _al_puts("? empty pattern\n"); return 0; }
+    var total = 0;
+    var ln = a1;
+    while (ln <= a2) {
+        total = total + _al_subst_line(b, ln, oldp, oldlen, newp, newlen);
+        ln = ln + 1;
+    }
+    if (total == 0) { _al_puts("? pattern not found\n"); return 0; }
+    _al_modified = 1;
+    _al_cur = a2;
+    var l2 = a1;
+    while (l2 <= a2) { _al_print_line(b, l2); l2 = l2 + 1; }
+    return 0;
+}
+
+# Write to `path` (or the argument filename). do_quit=1 -> caller quits.
+fn _al_cmd_write(b, arg, arglen, do_quit) {
+    var path = _al_path;
+    if (arglen > 0) {
+        var p = alloc(arglen + 1);
+        if (p != 0) {
+            var i = 0;
+            while (i < arglen) { store8(p + i, load8(arg + i)); i = i + 1; }
+            store8(p + arglen, 0);
+            path = p;
+            _al_path = p;
+        }
+    }
+    if (path == 0) { _al_puts("? no file name (w <file>)\n"); return 0; }
+    var wr = buf_save_file(b, path);
+    if (wr < 0) { _al_puts("? write failed\n"); return 0; }
+    _al_puts("wrote ");
+    _al_put_uint(wr);
+    _al_puts(" bytes to ");
+    _al_puts(path);
+    _al_putc(10);
+    _al_modified = 0;
+    if (do_quit == 1) { return 1; }
+    return 0;
+}
+
+# Parse a single address token at _al_pi (1-indexed / . / $). Returns the
+# 0-indexed line, or -1 if no address token is present (cursor unmoved).
+fn _al_parse_addr(line, llen, count, cur) {
+    if (_al_pi >= llen) { return 0 - 1; }
+    var c = load8(line + _al_pi);
+    if (c == 46) { _al_pi = _al_pi + 1; return cur; }            # '.'
+    if (c == 36) { _al_pi = _al_pi + 1; return count - 1; }      # '$'
+    if (c >= 48) {
+        if (c <= 57) {
+            var v = 0;
+            while (_al_pi < llen) {
+                var d = load8(line + _al_pi);
+                if (d < 48) { break; }
+                if (d > 57) { break; }
+                v = v * 10 + (d - 48);
+                _al_pi = _al_pi + 1;
+            }
+            if (v < 1) { v = 1; }
+            if (v > count) { v = count; }
+            return v - 1;
+        }
+    }
+    return 0 - 1;
+}
+
+fn _al_skip_spaces(line, llen) {
+    while (_al_pi < llen) {
+        if (load8(line + _al_pi) != 32) { break; }
+        _al_pi = _al_pi + 1;
+    }
+    return 0;
+}
+
+# Dispatch one command line. Returns 1 to quit the REPL, 0 to continue.
+fn _al_dispatch(b, line, llen) {
+    _al_pi = 0;
+    var count = buf_line_count(b);
+    _al_skip_spaces(line, llen);
+
+    # Bare Enter: advance to and print the next line.
+    if (_al_pi >= llen) {
+        if (_al_cur < count - 1) { _al_cur = _al_cur + 1; }
+        _al_print_line(b, _al_cur);
+        return 0;
+    }
+
+    # Addresses.
+    var a1 = _al_cur;
+    var a2 = _al_cur;
+    var have_a1 = 0;
+    var have_range = 0;
+    if (load8(line + _al_pi) == 37) {                 # '%'
+        _al_pi = _al_pi + 1;
+        a1 = 0; a2 = count - 1; have_a1 = 1; have_range = 1;
+    } else {
+        var p1 = _al_parse_addr(line, llen, count, _al_cur);
+        if (p1 != 0 - 1) {
+            a1 = p1; a2 = p1; have_a1 = 1;
+            _al_skip_spaces(line, llen);
+            if (_al_pi < llen) {
+                if (load8(line + _al_pi) == 44) {     # ','
+                    _al_pi = _al_pi + 1;
+                    _al_skip_spaces(line, llen);
+                    var p2 = _al_parse_addr(line, llen, count, _al_cur);
+                    if (p2 != 0 - 1) { a2 = p2; } else { a2 = count - 1; }
+                    have_range = 1;
+                }
+            }
+        }
+    }
+    _al_skip_spaces(line, llen);
+
+    # Command verb (0 = none).
+    var cmd = 0;
+    if (_al_pi < llen) { cmd = load8(line + _al_pi); }
+
+    # 's' takes the rest verbatim (delimiter-driven), so branch before we
+    # advance past the verb / eat spaces.
+    if (cmd == 115) {                                 # 's'
+        _al_pi = _al_pi + 1;
+        return _al_cmd_subst(b, a1, a2, line, llen);
+    }
+
+    # 'w' / 'wq' (multi-char), consume then read an optional filename arg.
+    if (cmd == 119) {                                 # 'w'
+        _al_pi = _al_pi + 1;
+        var do_quit = 0;
+        if (_al_pi < llen) {
+            if (load8(line + _al_pi) == 113) { do_quit = 1; _al_pi = _al_pi + 1; }  # 'q'
+        }
+        _al_skip_spaces(line, llen);
+        return _al_cmd_write(b, line + _al_pi, llen - _al_pi, do_quit);
+    }
+
+    if (_al_pi < llen) { _al_pi = _al_pi + 1; }       # consume the verb char
+    _al_skip_spaces(line, llen);
+    var arg = line + _al_pi;
+    var arglen = llen - _al_pi;
+
+    # Address alone (no verb): goto + print.
+    if (cmd == 0) {
+        if (have_a1 == 1) {
+            if (have_range == 1) {
+                var ln = a1;
+                while (ln <= a2) { _al_print_line(b, ln); ln = ln + 1; }
+                _al_cur = a2;
+            } else {
+                _al_cur = a1;
+                _al_print_line(b, _al_cur);
+            }
+        }
+        return 0;
+    }
+
+    if (cmd == 112) {                                 # 'p'
+        var ln = a1;
+        while (ln <= a2) { _al_print_line(b, ln); ln = ln + 1; }
+        _al_cur = a2;
+        return 0;
+    }
+    if (cmd == 61) {                                  # '='
+        if (have_a1 == 1) {
+            _al_put_uint(a1 + 1);
+            _al_putc(10);
+        } else {
+            _al_puts("line ");
+            _al_put_uint(_al_cur + 1);
+            _al_puts(" of ");
+            _al_put_uint(count);
+            _al_putc(10);
+        }
+        return 0;
+    }
+    if (cmd == 100) {                                 # 'd'
+        var ln = a2;
+        while (1 == 1) {
+            _al_delete_line(b, ln);
+            if (ln == a1) { break; }
+            ln = ln - 1;
+        }
+        _al_modified = 1;
+        var nc = buf_line_count(b);
+        if (a1 < nc) { _al_cur = a1; } else { _al_cur = nc - 1; }
+        _al_puts("deleted\n");
+        return 0;
+    }
+    if (cmd == 97) {                                  # 'a'
+        if (arglen <= 0) { _al_puts("? a needs text (a <text>)\n"); return 0; }
+        _al_append_line_after(b, a1, arg, arglen);
+        _al_modified = 1;
+        # New line lands at a1+1, except on an empty buffer where the very
+        # first append becomes line 0 (there was no real line to follow).
+        _al_cur = a1 + 1;
+        var nc = buf_line_count(b);
+        if (_al_cur > nc - 1) { _al_cur = nc - 1; }
+        _al_print_line(b, _al_cur);
+        return 0;
+    }
+    if (cmd == 105) {                                 # 'i'
+        if (arglen <= 0) { _al_puts("? i needs text (i <text>)\n"); return 0; }
+        _al_insert_line_before(b, a1, arg, arglen);
+        _al_modified = 1;
+        _al_cur = a1;
+        _al_print_line(b, _al_cur);
+        return 0;
+    }
+    if (cmd == 99) {                                  # 'c'
+        _al_replace_line_content(b, a1, arg, arglen);
+        _al_modified = 1;
+        _al_cur = a1;
+        _al_print_line(b, _al_cur);
+        return 0;
+    }
+    if (cmd == 113) {                                 # 'q'
+        if (arglen > 0) {
+            if (load8(arg) == 33) { return 1; }       # 'q!'
+        }
+        if (_al_modified == 1) {
+            _al_puts("? unsaved changes (w to save, q! to discard)\n");
+            return 0;
+        }
+        return 1;
+    }
+    if (cmd == 104) { return _al_help(); }            # 'h'
+    if (cmd == 63)  { return _al_help(); }            # '?'
+
+    _al_puts("? unknown command (h for help)\n");
+    return 0;
+}
+
+# Entry point: open `file_path` in the line editor and run the REPL.
+fn run_agnos_line_mode(file_path) {
+    var b = buf_new();
+    _al_path = file_path;
+    _al_cur = 0;
+    _al_modified = 0;
+    if (file_path != 0) {
+        if (file_exists(file_path) == 1) {
+            buf_load_file(b, file_path);
+            buf_move(b, 0);
+        }
+    }
+
+    _al_puts("cyim — agnos line editor (h for help, q to quit)\n");
+    if (file_path != 0) {
+        _al_putc(34);
+        _al_puts(file_path);
+        _al_putc(34);
+        _al_puts("  ");
+        var lc = buf_line_count(b);
+        _al_put_uint(lc);
+        _al_puts(" line");
+        if (lc != 1) { _al_putc(115); }
+        _al_putc(10);
+        if (buf_len(b) > 0) { _al_print_line(b, 0); }
+    } else {
+        _al_puts("(no file — empty buffer)\n");
+    }
+
+    var cmdline[1024];
+    var quit = 0;
+    while (quit == 0) {
+        _al_puts(":");
+        var llen = _al_read_line(&cmdline, 1024);
+        if (llen < 0) { quit = 1; }
+        else {
+            if (_al_dispatch(b, &cmdline, llen) == 1) { quit = 1; }
+        }
+    }
+    _al_putc(10);
+    return 0;
+}
+
+#endif

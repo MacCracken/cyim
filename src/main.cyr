@@ -80,6 +80,11 @@ include "src/driver.cyr"
 include "src/tty.cyr"
 include "src/render.cyr"
 include "src/cli.cyr"
+# agnos-only full-screen keyboard input (kbscan#42 → terminal byte stream)
+# and the ed/ex-style line editor (`--line` fallback). Both files are guarded
+# by #ifdef CYRIUS_TARGET_AGNOS, so they compile to nothing on other targets.
+include "src/agnos_kbd.cyr"
+include "src/agnos_line.cyr"
 
 var DEFAULT_ROWS = 24;
 var DEFAULT_COLS = 80;
@@ -232,11 +237,29 @@ fn run_editor(file_path) {
     bl_init(s, b);
     window_init(s);
 
+    # agnos has no termios raw mode (darshana's tty_raw returns -1) — its
+    # per-key channel is kbscan#42 (see src/agnos_kbd.cyr), which needs no
+    # setup, so skip the tty_raw gate there. Other targets require it.
+    #ifndef CYRIUS_TARGET_AGNOS
     if (tty_raw(0) < 0) {
         syscall(1, 2, "cyim: stdin is not a TTY\n", 25);
         return 1;
     }
+    #endif
     tty_alt_enter();
+
+    # Screen grid: agnos reports the live framebuffer console via winsize#60;
+    # other targets keep cyim's fixed 24x80 (unchanged behaviour).
+    var scr_rows = DEFAULT_ROWS;
+    var scr_cols = DEFAULT_COLS;
+    #ifdef CYRIUS_TARGET_AGNOS
+    var wr = 0;
+    var wc = 0;
+    if (tty_winsize(0, &wr, &wc) == 0) {
+        if (wr > 0) { scr_rows = wr; }
+        if (wc > 0) { scr_cols = wc; }
+    }
+    #endif
 
     var quit = 0;
     while (quit == 0) {
@@ -244,14 +267,20 @@ fn run_editor(file_path) {
         # M2 per the roadmap; an incremental retokenize lands when the
         # M5 perf pass surfaces a real workload that complains.
         var tb = highlight_buf(b, lang);
-        render_frame(s, DEFAULT_ROWS, DEFAULT_COLS, tb);
+        render_frame(s, scr_rows, scr_cols, tb);
         # 8-byte read buffer accommodates the longest interactive
         # sequences cyim cares about (CSI arrow = 3 bytes; CSI
         # extended = up to ~7). editor_feed parses ESC [ <final>
         # CSI codes as a unit; everything else routes through
         # editor_step byte-by-byte.
         var key_buf[8];
-        var n = file_read(0, &key_buf, 8);
+        var n = 0;
+        #ifdef CYRIUS_TARGET_AGNOS
+        n = _agnos_kbd_read(&key_buf, 8);   # blocks until a real key (kbscan#42)
+        #endif
+        #ifndef CYRIUS_TARGET_AGNOS
+        n = file_read(0, &key_buf, 8);
+        #endif
         if (n <= 0) {
             quit = 1;
         }
@@ -271,6 +300,9 @@ fn main() {
     args_init();
     plugin_init();
     trailing_ws_init();
+    # cyim_lsp_init registers nothing on --agnos (LSP is Linux-only —
+    # see the guard in src/plugins/lsp_glue.cyr); the call stays here
+    # so the Linux build path is unchanged.
     cyim_lsp_init();
     marks_init();
 
@@ -286,6 +318,15 @@ fn main() {
             if (ac > 2) { hfp = argv(2); }
             return run_headless(hfp);
         }
+        # agnos-only: force the ed/ex line editor instead of the full-screen
+        # editor (useful over a pipe / when the framebuffer console isn't up).
+        #ifdef CYRIUS_TARGET_AGNOS
+        if (streq(a1, "--line") == 1) {
+            var lfp = 0;
+            if (ac > 2) { lfp = argv(2); }
+            return run_agnos_line_mode(lfp);
+        }
+        #endif
         if (streq(a1, "--grep") == 1) {
             return _dispatch_grep(ac);
         }
@@ -455,8 +496,22 @@ fn main() {
         }
         fpath = a1;
     }
+    # Full-screen editor on every target. On agnos run_editor drives the
+    # framebuffer console via ANSI + per-key kbscan#42 input (src/agnos_kbd.cyr);
+    # the ed/ex line editor stays available as the `--line` fallback above.
     return run_editor(fpath);
 }
 
-var exit_code = main();
-syscall(60, exit_code);
+# Bare-call entry (NOT `var exit_code = main();`): on the agnos target a
+# module-scope `var = main()` makes main a gvar-initializer that runs BEFORE
+# cycc's init-rsp capture (placed after gvar-inits, cyrius 6.1.14), so
+# argc()/argv() read 0/null AND main runs a second time at the real entry. A
+# bare statement runs in PARSE_PROG, after the capture, so args resolve and
+# main runs once. SYS_EXIT (not literal 60) is correct on both targets —
+# agnos renumbers exit to 0 (60 is winsize there). Matches kii / agnsh / owl.
+fn _agnos_entry(): i64 {
+    var exit_code = main();
+    syscall(SYS_EXIT, exit_code);
+    return 0;
+}
+_agnos_entry();

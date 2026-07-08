@@ -4,6 +4,52 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-07-08
+
+**cyim runs on AGNOS — full-screen on the framebuffer console, or an ed/ex line
+editor.** First `cyrius build --agnos src/main.cyr` that emits + runs; unblocks
+cyim in the agnos-dev Docker toolset (`agnosticos/docker/build-dev.sh`).
+Verified on the real kernel under QEMU (typed via `sendkey` → hardware Set-1
+scancodes) and under mirshi (≥ 1.11.0, emulated `kbscan#42`); Linux/macOS builds
+byte-unchanged.
+
+### Added
+
+- **Full-screen editor on agnos** (`src/agnos_kbd.cyr`, new). agnos has no
+  termios raw mode — its per-key channel is `kbscan#42`, a non-blocking drain of
+  the kernel's raw Set-1 scancode ring. The new module polls it, tracks
+  shift/ctrl/caps from make/break codes, and reverse-maps scancodes to the exact
+  byte stream a raw terminal delivers (printable ASCII, `ESC`, `CR`, `DEL`, `TAB`,
+  Ctrl-letters, `ESC[A/B/C/D` arrows) — so the existing `editor_feed` drives
+  full-screen unchanged. `run_editor` skips the `tty_raw` gate on agnos, sizes to
+  the framebuffer console via `winsize#60`, and renders with the ANSI the agnos
+  fb console already parses (absolute `CUP`, `ED`, `SGR`). QEMU proof: `i`→insert,
+  type, `ESC`, `:wq` inserts + saves to disk.
+- **`src/agnos_line.cyr` — ed/ex-style line editor** for agnos, reachable via
+  `cyim --line <file>` (and the fallback when the framebuffer console isn't up).
+  Reads whole lines off the cooked console; commands: `p`/`N`/`A,Bp`/`%p`,
+  `a`/`i`/`c`/`d`, `s/old/new/`, `w`/`wq`/`q`/`q!`, `=`, `h`. Reuses the gap buffer.
+
+### Fixed
+
+- **Entry point double-ran on agnos.** The module-scope `var exit_code = main();`
+  made `main` a gvar-initializer that ran before cyrius's init-rsp capture (empty
+  `argv`) AND a second time at the real entry; literal `syscall(60, …)` is
+  `winsize` on agnos, not exit. Switched to the bare-call `_agnos_entry()` pattern
+  (kii/agnsh/owl), correct on both targets (`SYS_EXIT` = 60 Linux / 0 agnos).
+- **`--agnos` build failed on 6 reachable-undef functions.** `sys_fork`/
+  `sys_execve`/`sys_dup2` (LSP subprocess spawn in the `cyim-lsp` bundle) are
+  gated Linux-only by wrapping `cyim_lsp_init`'s registrations in
+  `#ifndef CYRIUS_TARGET_AGNOS` (address-taken handlers stay reachability roots
+  even in an uncalled fn — gating the call alone is not enough), so LSP is a
+  Linux-only feature and the spawn chain is unreachable on agnos. `tty_probe`
+  gained an agnos peer.
+
+### Changed
+
+- **darshana `0.8.0` → `0.8.2`** for the agnos `tty_raw`/`tty_cooked`/`tty_isatty`
+  peers (agnos has no `ioctl` termios; the peers are no-op/console-grid based).
+
 ## [1.7.5] — 2026-06-22
 
 ### Changed

@@ -36,3 +36,18 @@ fn tty_probe() {
 }
 
 #endif
+
+#ifdef CYRIUS_TARGET_AGNOS
+
+# agnos peer. agnos has no termios raw mode — darshana's agnos `tty_raw`
+# returns -1 because the kernel console runs its own line discipline, so
+# the enter-raw / restore round-trip the Linux probe performs has nothing
+# to toggle. Report the honest verdict (`syscall #1` = write on agnos too)
+# and return -1, at parity with the Linux "stdin is not a TTY" failure
+# path. When agnos grows a raw-input mechanism this becomes its real peer.
+fn tty_probe() {
+    syscall(1, 1, "[cyim tty probe: raw mode unavailable on agnos]\n", 48);
+    return 0 - 1;
+}
+
+#endif

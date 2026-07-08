@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.6.0 — released.** The 1.x series shipped:
+**1.7.5 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -50,6 +50,11 @@ for humanity. Consumers:
   prefix-clear hardening, URL-decode for `file://` URIs via cyim-lsp 1.2.1).
 - **v1.6.0** — VIM-style marks (`m<letter>` / `'<letter>`; per-buffer
   a-z + global A-Z). First feature minor of the post-1.5.x cycle.
+- **v1.7.x** — toolchain + dep-currency cycle: darshana TUI dep pickup
+  (cyim is the donor and first consumer) at 1.7.0, then forward-compat
+  darshana / cyrius pin refreshes (1.7.1–1.7.5). cyrius toolchain pin now
+  `6.2.36`, darshana `0.8.0`. No editor-surface behavior change across the
+  cycle.
 
 Live state in [`docs/development/state.md`](docs/development/state.md);
 sequencing + deferred LSP polish in
@@ -99,7 +104,7 @@ Daily-driver bindings (full reference: [`docs/guides/keymap.md`](docs/guides/key
 
 ## LSP integration
 
-cyim 1.5.x ships [cyim-lsp 1.2.0](https://github.com/MacCracken/cyim-lsp) folded
+cyim ships [cyim-lsp 1.5.0](https://github.com/MacCracken/cyim-lsp) folded
 in via the sandhi pattern. With `cyrius-lsp` on PATH (the cyrius toolchain installs
 it at `~/.cyrius/bin/cyrius-lsp`), opening a `.cyr` file lazily spawns the server
 and surfaces:

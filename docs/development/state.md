@@ -2,15 +2,15 @@
 
 > **Volatile.** This file is the **live state** of the project — current version, sizes, test counts, in-flight slot, consumer build status. Refreshed every release. Don't put durable rules here (those live in [`CLAUDE.md`](../../CLAUDE.md)); don't put release history here (that lives in [`CHANGELOG.md`](../../CHANGELOG.md)); don't put sequencing here (that lives in [`roadmap.md`](roadmap.md)).
 
-*Last bumped: 2026-06-15 (v1.7.3 — cyrius 6.2.7 → 6.2.11 pin, vendored `lib/` stdlib re-synced to the 6.2.11 snapshot via `cyrius lib sync` (8 unlinked modules updated; binary byte-identical). No cyim-side source or dep changes. See [CHANGELOG](../../CHANGELOG.md#173--2026-06-15) for full entry.)*
+*Last bumped: 2026-07-08 (v1.8.0 — cyim runs on AGNOS: full-screen on the framebuffer console via `kbscan#42` per-key input (`src/agnos_kbd.cyr`) + an ed/ex `--line` editor (`src/agnos_line.cyr`); LSP gated Linux-only; `_agnos_entry` entry fix; darshana `0.8.0→0.8.2`. QEMU + mirshi-proven. See [CHANGELOG](../../CHANGELOG.md#180--2026-07-08) for full entry.)*
 
 ---
 
 ## Version
 
-- **VERSION**: `1.7.3`
-- **Cyrius toolchain pin**: `6.2.11`
-- **Last release**: `1.7.3` — Patch; cyrius 6.2.7 → 6.2.11 pin + vendored-stdlib re-sync to the 6.2.11 snapshot. No cyim-side source/dep changes; binary byte-identical. 2026-06-15. Full entry in CHANGELOG.
+- **VERSION**: `1.8.0`
+- **Cyrius toolchain pin**: `6.2.36`
+- **Last release**: `1.8.0` — Minor; AGNOS support — full-screen editor (`kbscan#42` input + `winsize#60` + ANSI on the fb console) & `--line` ed/ex editor; LSP Linux-only gate; agnos entry-point fix; darshana 0.8.2. Verified on the real kernel (QEMU `sendkey`/`screendump`) and mirshi ≥ 1.11.0. 2026-07-08. Full entry in CHANGELOG.
 
 ## Binary
 
