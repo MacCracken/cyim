@@ -5,7 +5,7 @@ description = "Sovereign Cyrius-native text editor — VIM-inspired, zero attack
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/cyim"
 language = "cyrius"
-cyrius = "6.2.36"
+cyrius = "6.5.18"
 
 [build]
 entry = "src/main.cyr"
@@ -72,9 +72,28 @@ modules = ["dist/vyakarana.cyr"]
 # cyim-side editor symbols. Consumer-side hook registration lives
 # in `src/plugins/lsp_glue.cyr`, adapted from cyim-lsp's
 # `docs/examples/cyim_glue.cyr` reference.
+#
+# 1.5.0 → 1.5.2 is the fix for cyim's OWN `--agnos` build, which failed inside
+# this dep: `lib/cyim-lsp.cyr:459: 'sys_waitpid' expects 1 argument, got 3`.
+# agnos's `sys_waitpid(pid)` takes one argument and returns the child's exit
+# code directly; the bundle used Linux's three-argument form unconditionally,
+# which cyrius only warned about until 6.5.1 made a wrong argument count a hard
+# error. 1.5.2 branches it per target and gates the rest of the spawn half
+# (`sys_fork` / `sys_execve` / `sys_dup2`, none of which agnos has) behind
+# matched `#ifdef` / `#ifndef CYRIUS_TARGET_AGNOS` definitions, exposing
+# `LSP_HAVE_SUBPROC` / `lsp_have_subproc()` so a consumer can branch on the
+# capability. cyim needs no source change for this: `cyim_lsp_init()` in
+# `src/plugins/lsp_glue.cyr` already registers nothing under `--agnos`, so LSP
+# is simply absent there and cyim runs on agnos as a plain editor.
+#
+# 1.5.2 also DROPS `json` from its stdlib leaves (declared since v0.2.0, never
+# called; cyrius folded `json` into `bayan`, so it no longer resolves) and ADDS
+# `args` (agnos-only: io.cyr's `getenv()` delegates to `args_agnos.cyr`). Both
+# arrive automatically via the `dist/cyim-lsp.deps` sidecar — cyim already
+# declares `args`, so no change is needed on this side.
 [deps.cyim-lsp]
 git = "https://github.com/MacCracken/cyim-lsp.git"
-tag = "1.5.0"
+tag = "1.5.2"
 modules = ["dist/cyim-lsp.cyr"]
 
 # darshana — TTY/raw-mode primitives (termios + ANSI + cursor).

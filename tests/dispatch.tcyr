@@ -4,9 +4,23 @@
 # Buffer ops aren't exercised here; bites 5–7 cover those. This bite proves
 # the API surface is right for both the human-TTY and headless-agent drivers.
 
+# Include order follows src/main.cyr — the compiler is single-pass, so each
+# module may only reference symbols defined earlier. This test drives mode
+# dispatch, which reaches transitively into marks (KEY_M / KEY_QUOTE prefixes),
+# buflist + window (split / buffer-switch actions) and command (`:e` path
+# resolution via _cmd_find_path / _buf_load_file_into_active). Only buffer /
+# plugin / mode were listed, which was warn-only until cyrius stopped emitting
+# binaries with reachable undefined functions.
 include "src/buffer.cyr"
 include "src/plugin.cyr"
+include "src/marks.cyr"
 include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
 
 fn main() {
     alloc_init();

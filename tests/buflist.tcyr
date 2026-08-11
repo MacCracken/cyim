@@ -7,6 +7,11 @@
 # of the new commands.
 
 include "src/buffer.cyr"
+# marks.cyr must precede mode.cyr: mode's KEY_M / KEY_QUOTE prefix dispatch
+# calls marks_set / marks_get / marks_set_global / marks_get_global, and the
+# compiler is single-pass. Omitting it was warn-only until cyrius stopped
+# emitting binaries with reachable undefined functions.
+include "src/marks.cyr"
 include "src/mode.cyr"
 include "src/buflist.cyr"
 include "src/window.cyr"

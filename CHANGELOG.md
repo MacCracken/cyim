@@ -4,6 +4,106 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.1] — 2026-08-11
+
+**The agnos build works again.** 1.8.0 shipped cyim onto agnos; this restores
+the ability to *rebuild* it. `cyrius build --agnos src/main.cyr` had been failing
+inside the vendored `cyim-lsp` bundle, so `stage-tools.sh --build` in the agnos
+repo could not regenerate `/bin/cyim` and the rootfs kept whatever stale binary
+was already staged. Patch cut: the editor's own behaviour is unchanged on every
+target, and LSP remains Linux/macOS-only exactly as before.
+
+Fix-only cycle — dep bump (`cyim-lsp` 1.5.0 → 1.5.2), toolchain pin bump
+(cyrius 6.2.36 → 6.5.18), and the two classes of latent breakage that pin bump
+exposed. **No cyim source change was required for the agnos fix itself**:
+`cyim_lsp_init()` in `src/plugins/lsp_glue.cyr` already registered nothing under
+`--agnos`, so the gate only had to land upstream.
+
+### Fixed
+
+- **`cyrius build --agnos src/main.cyr` was broken, and `/bin/cyim` in the agnos
+  rootfs could not be regenerated.** The build failed with
+  `error:lib/cyim-lsp.cyr:459: 'sys_waitpid' expects 1 argument, got 3`, so
+  `stage-tools.sh --build` in the agnos repo printed `ERROR: cyim (agnos) build
+  failed` and shipped whatever stale binary was already staged.
+
+  The defect was entirely inside the vendored dep: agnos's `sys_waitpid(pid)`
+  takes one argument and returns the child's exit code directly, against Linux's
+  three-argument `sys_waitpid(pid, statusp, options)`, and cyim-lsp's
+  `lsp_proc_close` used the Linux shape unconditionally. cyrius only *warned*
+  about a wrong argument count until **6.5.1** made it a hard error — which is
+  why this surfaced now rather than when it was written. Fixed upstream and
+  picked up here as **`[deps.cyim-lsp]` 1.5.0 → 1.5.2**; no cyim source change
+  was required, because `cyim_lsp_init()` in `src/plugins/lsp_glue.cyr` already
+  registers nothing under `--agnos`.
+
+  1.5.2 also gates the rest of the spawn half (`sys_fork` / `sys_execve` /
+  `sys_dup2` — none of which agnos has) behind matched `#ifdef` / `#ifndef
+  CYRIUS_TARGET_AGNOS` definitions rather than leaving it unreachable, and
+  exposes `LSP_HAVE_SUBPROC` / `lsp_have_subproc()`. LSP remains Linux/macOS
+  only; cyim runs on agnos as a plain editor, unchanged.
+
+- **10 of 21 test files did not compile** after the toolchain bump, all from
+  missing `include`s that had been latent for as long as they existed. Nine
+  (`dot`, `insert`, `buflist`, `plugin`, `window`, `undo`, `visual`, `command`,
+  `search`) include `src/mode.cyr` without its `src/marks.cyr` prerequisite —
+  mode's `KEY_M` / `KEY_QUOTE` prefix dispatch calls `marks_set` / `marks_get` /
+  `marks_set_global` / `marks_get_global`, and the compiler is single-pass.
+  `dispatch.tcyr` additionally reached into buflist, window and command
+  (`bl_*`, `window_*`, `editor_*_leaf`, `_cmd_find_path`,
+  `_buf_load_file_into_active`) while declaring only buffer / plugin / mode.
+  Harmless while undefined functions were warnings; a hard failure now that
+  cyrius refuses to emit a binary with reachable undefined ones. Includes added
+  in `src/main.cyr` order. Suite **1129 assertions across 21 files, 0 failed**
+  (was 11 files passing, 10 failing to compile).
+
+### Changed
+
+- **Toolchain pin cyrius `6.2.36` → `6.5.18`** (current release), with vendored
+  `lib/` re-synced via `cyrius lib sync --full` (107 modules). This clears the
+  shadow warning — 8 bundled libs were behind the pin (`bayan` 1.0.1, `sakshi`
+  2.3.0, `sigil` 3.7.13, `sandhi` 1.6.2, `yukti` 2.2.5, `patra` 1.11.2, `mabda`
+  3.1.1, `sankoch` 2.3.1) — and the pin-drift warning. Both builds now complete
+  with **zero warnings**.
+
+  ⚠ `cyrius lib sync --full` copies the **stdlib** and leaves `lib/<dep>.cyr`
+  alone; what re-materializes a dep is `cyrius build` after the tag moves. The
+  two operations are independent and both were needed here.
+
+### Verification
+
+`cyrius build` and `cyrius build --agnos` both OK, zero warnings. Tests **21
+files / 1129 assertions, 0 failed**. Fuzz **4 harnesses passed** (10K random
+buffer ops, 5K keystrokes, 100×1KB tokenizer buffers) — the check that matters
+after a bump, since cyrius 6.3.13 moved function-local `var X[N]` onto a
+guard-paged stack and detonates latent undersized buffers that used to be
+benign. PTY integration smoke passed; DCE parity build byte-identical
+(1175856 bytes) with the smoke re-run green; CLI smoke 118 passed; bench harness
+compiles and reports; `cyrius lint` 0 non-cosmetic warnings across `src/`.
+
+⚠ **Known failure, pre-existing and not from this cut:** `cyrius smoke`
+(`tests/smcyr/lsp_fold.smcyr`) reports **4 passed, 9 failed** —
+`lsp_client_start_default()` answers -1, so the spawn-plus-`initialize`
+handshake against a real `cyrius-lsp` does not complete. Pinning
+`[deps.cyim-lsp]` back to **1.5.0** reproduces the identical 4/9 split, so this
+predates the 1.5.2 bump rather than being caused by it. It is the host/Linux
+path, unrelated to the agnos gate. The server is not the fault: `cyrius-lsp` is
+on PATH, answers a hand-fed `initialize` with a well-formed frame, and writes
+its startup banner to stderr rather than polluting the stdout protocol stream.
+`cyrius smoke` is not a CI gate, which is how it drifted to failing unnoticed
+while `docs/development/state.md` still recorded "13 PASS". Left open for its
+own investigation rather than folded into a fix-only patch cut.
+
+### Binary
+
+- **`build/cyim`** (CYRIUS_DCE=1): **1,175,856 B** — **−50,848 B** vs 1.8.0's
+  1,226,704 B. Attributed to the toolchain pin crossing three minors
+  (6.2.36 → 6.5.18) plus the dep bump; not broken down further, since the delta
+  is the sum of everything 6.3/6.4/6.5 changed in codegen rather than one
+  identifiable win.
+- **`build/cyim_agnos`**: 1,184,016 B — static x86-64 ELF64, passes the
+  file-type gate in `stage_one` (agnos `scripts/burn/stage-tools.sh`).
+
 ## [1.8.0] — 2026-07-08
 
 **cyim runs on AGNOS — full-screen on the framebuffer console, or an ed/ex line
