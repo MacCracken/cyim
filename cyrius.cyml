@@ -5,7 +5,7 @@ description = "Sovereign Cyrius-native text editor — VIM-inspired, zero attack
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/cyim"
 language = "cyrius"
-cyrius = "6.5.18"
+cyrius = "6.5.35"
 
 [build]
 entry = "src/main.cyr"
@@ -61,9 +61,17 @@ stdlib = [
 # pulls the bundled distlib (`dist/vyakarana.cyr`); grammar files
 # (`grammars/<lang>.cyml`) are bundled separately in cyim's repo and
 # resolved at runtime via /proc/self/exe (binary-relative).
+#
+# 2.2.3 → 2.4.0 is grammar coverage plus streaming correctness, no public-API
+# signature change: 45 → 46 bundled grammars (`openqasm` added at 2.3.5) and
+# five independent chunk-boundary bugs fixed at 2.4.0, so a chunk-fed consumer
+# now gets the same tokens a whole-buffer consumer gets on 15 of 20 corpora
+# (was 7). cyim tokenizes whole buffers, so the streaming half is latent here —
+# it matters if incremental re-tokenization ever lands. The grammar count is
+# asserted in `tests/lang.tcyr`; `grammars/` is re-synced from the tag.
 [deps.vyakarana]
 git = "https://github.com/MacCracken/vyakarana.git"
-tag = "2.2.3"
+tag = "2.4.0"
 modules = ["dist/vyakarana.cyr"]
 
 # cyim-lsp — LSP client plugin. v1.0.2 ships a self-contained
@@ -112,7 +120,26 @@ modules = ["dist/cyim-lsp.cyr"]
 # Bundled distfile is `dist/darshana.cyr`; consumer-side
 # `include "lib/darshana.cyr"` in `src/main.cyr` brings the module
 # bodies into cyim's compilation unit at fold-in time.
+#
+# 0.8.2 → 1.0.0 is the API FREEZE: 29 public fns + 37 public constants named
+# and enumerated in darshana's ADR 0003, machine-checked bidirectionally
+# against the bundle on every upstream CI run. 1.0.0 itself is byte-identical
+# to 0.9.4; the code-shaped content cyim picks up is 0.9.0–0.9.3:
+#   • 0.9.1 — toolchain pin 6.2.36 → 6.5.35, matching cyim's own pin here.
+#   • 0.9.2 — aarch64-Linux ioctl fix: darshana's local `SYS_IOCTL = 16`
+#     shadowed the stdlib's arch-aware definition, so all five ioctl callsites
+#     issued `fremovexattr` on aarch64. Latent for cyim (x86_64 host), live for
+#     the out-of-band Pi target.
+#   • 0.9.3 — two pre-freeze BREAKS, neither of which cyim trips:
+#     `tty_sgr_reset_buf` / `tty_dec_buf` gain a `-1` return for a negative
+#     `pos` (cyim's nine `tty_dec_buf` callsites all pass a non-negative
+#     compile-visible offset), and the four `AGNOS_*` constants become
+#     `_AGNOS_*` (cyim references none). `tty_open_signalfd`'s failure return
+#     also normalizes from `-errno` to exactly `-1` — cyim does not call it.
+# `dist/darshana.deps` (the sidecar cyrius 6.5.35's `distlib` emits) declares
+# darshana's four stdlib leaves — `syscalls`, `alloc`, `io`, `assert` — all of
+# which cyim already declares above, so `[deps].stdlib` needs no change.
 [deps.darshana]
 git = "https://github.com/MacCracken/darshana.git"
-tag = "0.8.2"
+tag = "1.0.0"
 modules = ["dist/darshana.cyr"]

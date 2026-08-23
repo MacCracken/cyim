@@ -254,7 +254,7 @@ fn _cyim_lsp_ex_goto_def(s) {
     var blen_slot[8];
     store64(&blen_slot, 0);
     var resp = lsp_nav_request_sync(uri, load64(&line_slot), load64(&char_slot),
-                                    "textDocument/definition", &blen_slot);
+      "textDocument/definition", &blen_slot);
     if (resp == 0) {
         editor_set_status(s, "lsp: no response from server");
         return 0 - 1;
@@ -299,7 +299,7 @@ fn _cyim_lsp_ex_goto_def(s) {
     var nb_content = _cyim_lsp_buf_to_flat(new_b, &nb_clen_slot);
     if (nb_content == 0) { return 0 - 1; }
     var nb_off = lsp_pos_lc_to_offset(nb_content, load64(&nb_clen_slot),
-                                       dest_line, dest_char);
+      dest_line, dest_char);
     buf_move(new_b, nb_off);
     return 0;
 }
@@ -374,14 +374,14 @@ fn _cyim_lsp_parse_refs(body, blen, uris, lines, chars) {
                             var line_np_slot[8];
                             store64(&line_np_slot, 0);
                             var line_val = _lsp_diag_parse_int(body, blen,
-                                                                line_p + 7, &line_np_slot);
+                              line_p + 7, &line_np_slot);
                             var char_p = _lsp_diags_find(body, blen, line_p, "\"character\":");
                             if (char_p < 0) { go = 0; }
                             if (go == 1) {
                                 var char_np_slot[8];
                                 store64(&char_np_slot, 0);
                                 var char_val = _lsp_diag_parse_int(body, blen,
-                                                                    char_p + 12, &char_np_slot);
+                                  char_p + 12, &char_np_slot);
                                 vec_push(uris,  uri);
                                 vec_push(lines, line_val);
                                 vec_push(chars, char_val);
@@ -536,7 +536,7 @@ fn _cyim_lsp_ex_find_refs_with_mode(s, mode) {
     var blen_slot[8];
     store64(&blen_slot, 0);
     var resp = lsp_nav_request_sync(uri, load64(&line_slot), load64(&char_slot),
-                                    "textDocument/references", &blen_slot);
+      "textDocument/references", &blen_slot);
     if (resp == 0) {
         editor_set_status(s, "lsp: no response from server");
         return 0 - 1;
@@ -557,8 +557,8 @@ fn _cyim_lsp_ex_find_refs_with_mode(s, mode) {
     var i = 0;
     while (i < n) {
         var label = _cyim_lsp_label_for_ref(vec_get(uris, i),
-                                             vec_get(lines, i),
-                                             vec_get(chars, i));
+          vec_get(lines, i),
+          vec_get(chars, i));
         if (label != 0) { vec_push(labels, label); }
         i = i + 1;
     }

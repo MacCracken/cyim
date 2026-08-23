@@ -98,19 +98,106 @@ fn _hl_resolve_dir() {
     return 0;
 }
 
-# Concatenate "<dir><name>" into path_buf and call vyakarana's grammar_load;
-# push the result into the registry on success. path_buf is reused across
-# calls so we don't alloc per-language.
+# Concatenate "<dir><name>.cyml" into path_buf and call vyakarana's
+# grammar_load; push the result into the registry on success. path_buf is
+# reused across calls so we don't alloc per-language. `name` is the bare
+# grammar name (as `hl_grammar_name` returns it) — the ".cyml" suffix is
+# appended here so the one table can serve both the loader and the
+# routing drift guard in `tests/lang.tcyr`.
 fn _hl_load_one(dir, dir_len, name, path_buf) {
     var nlen = strlen(name);
     var i = 0;
     while (i < dir_len) { store8(path_buf + i, load8(dir + i)); i = i + 1; }
     var j = 0;
     while (j < nlen) { store8(path_buf + dir_len + j, load8(name + j)); j = j + 1; }
-    store8(path_buf + dir_len + nlen, 0);
+    var suffix = ".cyml";
+    var k = 0;
+    while (k < 5) { store8(path_buf + dir_len + nlen + k, load8(suffix + k)); k = k + 1; }
+    store8(path_buf + dir_len + nlen + 5, 0);
     var g = grammar_load(path_buf);
     if (g != 0) { registry_add(g); }
     return 0;
+}
+
+# Every grammar `grammars/` ships, as a bare name. Indexed
+# 0..HL_GRAMMAR_COUNT-1; the ".cyml" suffix is appended by `_hl_load_one`.
+#
+# ⚠ This table must cover every name `lang_name()` (`src/lang.cyr`) can
+# return, and `highlight_init`'s `_grammars_bootstrapped = 1` is why.
+# That flag turns OFF vyakarana's own `bootstrap_grammars()`, which loads
+# all 46 grammars by *cwd-relative* path — the fallback that would
+# otherwise cover anything omitted here. So a routed language missing
+# from this table does not degrade to a slower path; it gets no grammar
+# at all, and `highlight_buf` silently renders it uncolored.
+#
+# That is exactly what happened between 1.6.2 and 1.8.2: `src/lang.cyr`
+# grew from 11 languages to 45 and the load list did not follow, so **34
+# of the 45 routed languages had no grammar loaded** on the normal
+# /proc/self/exe path. It stayed invisible because the failure mode is
+# "no color" rather than an error, and because the only test touching
+# this path (`tests/highlight.tcyr`) deliberately does *not* call
+# `highlight_init` — it exercises the cwd fallback, where vyakarana's
+# bootstrap loads everything and the gap cannot appear.
+#
+# `tests/lang.tcyr` now asserts the invariant against this table
+# directly, which is why the list is data rather than 46 call sites: the
+# guard has to be checkable without resolving `grammars/` from disk,
+# because under `cyrius test` the harness binary lives in a temp dir and
+# `_hl_resolve_dir()` answers 0 there.
+#
+# `asm_aarch64` is shipped and loaded but not currently routed —
+# `src/lang.cyr` sends `.s` / `.asm` to `asm_x86_64` (primary dev arch).
+# The invariant is one-way: routed ⊆ loaded.
+var HL_GRAMMAR_COUNT = 46;
+
+fn hl_grammar_name(i) {
+    if (i ==  0) { return "asm_aarch64"; }
+    if (i ==  1) { return "asm_x86_64"; }
+    if (i ==  2) { return "c"; }
+    if (i ==  3) { return "cpp"; }
+    if (i ==  4) { return "crystal"; }
+    if (i ==  5) { return "csharp"; }
+    if (i ==  6) { return "css"; }
+    if (i ==  7) { return "cyml"; }
+    if (i ==  8) { return "cyrius"; }
+    if (i ==  9) { return "dockerfile"; }
+    if (i == 10) { return "elixir"; }
+    if (i == 11) { return "go"; }
+    if (i == 12) { return "graphql"; }
+    if (i == 13) { return "haskell"; }
+    if (i == 14) { return "html"; }
+    if (i == 15) { return "ini"; }
+    if (i == 16) { return "java"; }
+    if (i == 17) { return "javascript"; }
+    if (i == 18) { return "json"; }
+    if (i == 19) { return "julia"; }
+    if (i == 20) { return "kotlin"; }
+    if (i == 21) { return "llvm_ir"; }
+    if (i == 22) { return "lua"; }
+    if (i == 23) { return "makefile"; }
+    if (i == 24) { return "markdown"; }
+    if (i == 25) { return "nix"; }
+    if (i == 26) { return "ocaml"; }
+    if (i == 27) { return "openqasm"; }
+    if (i == 28) { return "php"; }
+    if (i == 29) { return "powershell"; }
+    if (i == 30) { return "protobuf"; }
+    if (i == 31) { return "python"; }
+    if (i == 32) { return "ruby"; }
+    if (i == 33) { return "rust"; }
+    if (i == 34) { return "scss"; }
+    if (i == 35) { return "shell"; }
+    if (i == 36) { return "sql"; }
+    if (i == 37) { return "svelte"; }
+    if (i == 38) { return "swift"; }
+    if (i == 39) { return "terraform"; }
+    if (i == 40) { return "toml"; }
+    if (i == 41) { return "typescript"; }
+    if (i == 42) { return "vue"; }
+    if (i == 43) { return "xml"; }
+    if (i == 44) { return "yaml"; }
+    if (i == 45) { return "zig"; }
+    return "";
 }
 
 var _hl_initialized = 0;
@@ -120,9 +207,16 @@ var _hl_initialized = 0;
 # by setting `_grammars_bootstrapped = 1`. Idempotent. Cheap on the
 # second call.
 #
-# When /proc/self/exe is unavailable (no /proc, hardened sandbox),
-# we leave vyakarana to its lazy bootstrap — the editor still works
-# from a cwd that has grammars/.
+# When /proc/self/exe is unavailable (no /proc, hardened sandbox) or no
+# `grammars/` sits next to the binary, we return BEFORE setting the flag
+# and leave vyakarana to its lazy cwd-relative bootstrap — the editor
+# still works from a cwd that has grammars/.
+#
+# Cost, measured on the dev host: **1.95 ms** for all 46 against
+# **0.42 ms** for the 11-name list this replaced — about **+1.5 ms**,
+# once, at editor start-up. vyakarana's own `bootstrap_grammars()` does
+# the same 46 loads, so this is the shape the library already assumes;
+# cyim was paying less only by being broken.
 fn highlight_init() {
     if (_hl_initialized == 1) { return 0; }
     _hl_initialized = 1;
@@ -134,17 +228,11 @@ fn highlight_init() {
     var path = alloc(1024);
     var dlen = strlen(dir);
 
-    _hl_load_one(dir, dlen, "shell.cyml",      path);
-    _hl_load_one(dir, dlen, "toml.cyml",       path);
-    _hl_load_one(dir, dlen, "json.cyml",       path);
-    _hl_load_one(dir, dlen, "cyrius.cyml",     path);
-    _hl_load_one(dir, dlen, "rust.cyml",       path);
-    _hl_load_one(dir, dlen, "yaml.cyml",       path);
-    _hl_load_one(dir, dlen, "markdown.cyml",   path);
-    _hl_load_one(dir, dlen, "c.cyml",          path);
-    _hl_load_one(dir, dlen, "typescript.cyml", path);
-    _hl_load_one(dir, dlen, "javascript.cyml", path);
-    _hl_load_one(dir, dlen, "python.cyml",     path);
+    var i = 0;
+    while (i < HL_GRAMMAR_COUNT) {
+        _hl_load_one(dir, dlen, hl_grammar_name(i), path);
+        i = i + 1;
+    }
 
     _grammars_bootstrapped = 1;
     return 0;

@@ -4,6 +4,272 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.2] — 2026-08-23
+
+**Catch-up cut: toolchain, deps and vendored stdlib all pulled to current — and
+two things found underneath.** Every pin in the tree had drifted behind its
+upstream: the toolchain by 17 patches, darshana by a major, vyakarana by two
+minors, and `grammars/` by everything vyakarana shipped since 2.2.3.
+
+Closing them turned up more than the bump: **34 of cyim's 45 routed languages
+had no syntax highlighting at all** (regression since 1.6.2, fixed here), and
+**BUG-002 is root-caused** to a slot-vs-byte buffer in the cyim-lsp bundle. The
+highlighting fix is the one user-visible behaviour change in this cut.
+
+### Changed
+
+- **cyrius toolchain pin `6.5.18` → `6.5.35`** in `cyrius.cyml
+  [package].cyrius`. The wrapper had been on 6.5.35 for a while, so every build
+  was emitting the pin-drift warning. Nothing in the 17-patch span breaks cyim's
+  source; the two that touch how this repo is *worked on* rather than what it
+  compiles to:
+  - **6.5.28 made `cyrius fmt` rewrite files in place** (it was stdout-only;
+    `--dry` is now the report-only mode). Anything piping `cyrius fmt f.cyr >
+    f.new` must move to `--dry`. cyim has no such script — the only fmt use here
+    is `--check`.
+  - **6.5.28 also gave `cyrfmt` parenthesis tracking**, which it never had, so
+    three files that passed `--check` under 6.5.18 no longer do. Reformatted:
+    `src/cli.cyr`, `src/plugins/lsp_glue.cyr`, `tests/plugin.tcyr` — whitespace
+    only, seven continuation blocks moving from align-under-open-paren to the
+    canonical 2-per-paren indent. Same class of toolchain-driven reformat as
+    1.7.2's, and the same non-event.
+
+- **`darshana` `0.8.2` → `1.0.0` — the API freeze.** 1.0.0 is byte-identical to
+  0.9.4; what cyim actually picks up is the code-shaped content of 0.9.0–0.9.3,
+  and the promise that the 29 functions and 37 constants it enumerates stop
+  moving. The relevant three:
+  - **0.9.1** carried darshana's own pin to 6.5.35 — the same toolchain cyim now
+    pins, so the bundle and its consumer agree again.
+  - **0.9.2** fixed an **aarch64-Linux** defect that cyim was exposed to: a local
+    `SYS_IOCTL = 16` inside darshana's arch-blind `CYRIUS_TARGET_LINUX` gate
+    shadowed the stdlib's arch-aware definition, so all five ioctl callsites
+    (`tty_raw`, `tty_cooked`, `tty_winsize` ×2, `tty_isatty`) issued syscall 16 —
+    which on aarch64 is `fremovexattr`, not `ioctl`. Raw mode, cooked restore and
+    window-size query would each have failed at runtime on the Pi. Latent on the
+    x86_64 dev host; live on the out-of-band aarch64 target, which is why the
+    `--aarch64` cross-build is re-verified below.
+  - **0.9.3** made two deliberate pre-freeze **breaks**, neither of which cyim
+    trips. `tty_dec_buf` and `tty_sgr_reset_buf` gain a `-1` return for a
+    negative `pos`: cyim's nine `tty_dec_buf` callsites (`src/render.cyr`,
+    `src/main.cyr`, `tests/tty.tcyr`) all pass a non-negative compile-visible
+    offset. The four `AGNOS_*` constants became `_AGNOS_*`: cyim references
+    none. Checked by inventorying every `tty_*` / `tio_*` / `TIO_*` / `TTY_*`
+    symbol cyim names — 27 distinct, all still frozen public surface.
+
+- **`vyakarana` `2.2.3` → `2.4.0`**, and **`grammars/` re-synced to match**. All
+  45 bundled grammar files cyim ships were stale against upstream; every one of
+  them changed. The user-visible half is fixes to grammars cyim highlights every
+  day — markdown treated `"` and `'` as errors (any prose with a quotation mark
+  or an apostrophe emitted error tokens), Go raw strings and struct tags fell
+  through to `TK_ERROR`, C block comments had no rule, and markdown prose now
+  coalesces UTF-8 instead of erroring per byte. 2.4.0's five chunk-boundary
+  fixes are latent here — cyim tokenizes whole buffers — but they land if
+  incremental re-tokenization ever does.
+
+- **`lib/` (vendored stdlib) re-synced to the 6.5.35 snapshot** via
+  `cyrius lib sync --full` — 108 modules, an exact mirror. `lib/async_macos.cyr`
+  is new (6.5.27 gave macOS a real kqueue reactor).
+
+- **`lib/agnosys.cyr` deleted.** cyrius **retired it from the stdlib at
+  6.2.37**; `lib sync` copies but does not prune, so it had ridden along in
+  cyim's tree ever since, and `cyrius.lock` was still hashing it. cyim never
+  referenced it. This is the same stale-vendored-module trap that bit `cyim-lsp`
+  at 1.5.2 with `lib/json.cyr`, from the same cause.
+
+- **`cyim-lsp` holds at `1.5.2`** — already the latest tag. See **Investigated**
+  for why the next one matters.
+
+### Fixed
+
+- **34 of 45 routed languages were never highlighted.** `src/lang.cyr` says
+  which languages cyim *routes*; `src/highlight.cyr`'s `highlight_init()` says
+  which grammars it *loads*. v1.6.2 grew the first from 11 languages to 45 and
+  left the second at its original 11. Go, SQL, HTML, CSS, C++, Java, Ruby, PHP,
+  Lua, TOML-adjacent `.cyml`, Dockerfiles, Makefiles — all routed correctly to a
+  grammar name, and all rendered uncolored.
+
+  What made it silent rather than loud is the flag: `highlight_init()` sets
+  vyakarana's `_grammars_bootstrapped = 1` to suppress the library's own
+  cwd-relative `bootstrap_grammars()`, which loads all 46. So an omission here
+  does not fall back to a slower path — it gets **no grammar**, and
+  `tokenize_stream_new` returns 0, and `highlight_buf` returns 0, and the render
+  path treats that as "draw uncolored bytes", which is also exactly what it does
+  for a genuinely unknown file type. There is no error anywhere in that chain.
+
+  It survived every gate because the only test touching this path,
+  `tests/highlight.tcyr`, **deliberately does not call `highlight_init()`** — its
+  header says so: it exercises the cwd fallback, where vyakarana's bootstrap
+  loads all 46 and the gap cannot appear. The test suite runs from the project
+  root, which has `grammars/`. The bug only exists on the path a *user* takes.
+
+  Measured A/B against a binary built from 1.8.1's `src/highlight.cyr`, both run
+  from `/tmp` (a cwd with no `grammars/`), driving the real editor under a pty:
+
+  | file | 1.8.1 | 1.8.2 |
+  |---|---|---|
+  | `hlchk.go` | 0 colors | keyword / string / operator |
+  | `hlchk.sql` | 0 colors | keyword / number / operator |
+  | `hlchk.qasm` | 0 colors | keyword / number |
+  | `hlchk.cyr` | keyword / number / operator | unchanged |
+
+  `cyrius` was one of the original 11, which is why day-to-day editing of cyim's
+  own source never showed the problem.
+
+  **Fix:** the load list is now a table — `hl_grammar_name(i)` over
+  `HL_GRAMMAR_COUNT = 46` — and `highlight_init()` loops it. Data rather than 46
+  call sites specifically so the invariant is checkable in-process:
+  `tests/lang.tcyr` now asserts both directions — every `lang_name(i)` appears in
+  the load table, and every load-table entry is a grammar `grammars/` actually
+  ships. Both assertions were mutation-tested (drop a routed language → 2
+  failures; point an entry at a grammar that isn't shipped → 2 failures).
+
+  The guard deliberately compares tables rather than calling
+  `tokenize_stream_new`, because a runtime check cannot work here: under
+  `cyrius test` the harness binary lives in a temp dir, `_hl_resolve_dir()`
+  answers 0, `highlight_init()` returns before setting the flag, and vyakarana's
+  cwd bootstrap loads all 46 — masking exactly the gap being tested. That
+  masking is why this went unnoticed for six minor versions, so the guard had to
+  be built to be immune to it.
+
+  Cost: `highlight_init()` now loads 46 grammars instead of 11 — **1.95 ms vs
+  0.42 ms**, measured, so about **+1.5 ms once** at editor start-up. vyakarana's
+  own bootstrap does the same 46 loads; cyim was paying less only by being
+  broken.
+
+- **`src/lang.cyr`'s header comment claimed `dockerfile` / `makefile` route to
+  `"plain"`** — true only through v1.6.3. v1.6.4 added `lang_basenames` and made
+  `detect_language_from_path` probe it *before* the extension table. Stale
+  shipped comment, and the source of `cyrius lint`'s one untracked-deferral note
+  on the file ("filename detection is a future bite" — it shipped two years of
+  cuts ago). Corrected; lint is clean.
+
+### Added
+
+- **`openqasm` language routing** (`src/lang.cyr`). vyakarana 2.3.5 added an
+  OpenQASM 2.0 + 3.x grammar, taking its bundle from 45 to 46; cyim's routing
+  table is what turns a bundled grammar into a highlighted file. `LANG_COUNT`
+  45 → 46, `lang_name(45)` → `"openqasm"`, `lang_exts(45)` → `".qasm"`.
+  Append-only, so every existing index keeps its slot. +4 assertions in
+  `tests/lang.tcyr` — and, thanks to the fix above, it actually highlights.
+
+- **`hl_grammar_name(i)` / `HL_GRAMMAR_COUNT`** (`src/highlight.cyr`) — the
+  grammar load list as data, described under **Fixed**. Not a plugin ABI
+  addition; internal to the highlight module.
+
+### Removed
+
+- **`tests/cyim.bcyr`** — a scaffold stub, untouched since the initial commit,
+  that calls a `bench(name, fp, iters)` helper which does not exist in any
+  cyrius `lib/bench.cyr` (the real API is `bench_new` / `bench_start` /
+  `bench_stop`). It has therefore never compiled, and it benchmarked a function
+  whose body is `return 0;`. Invisible because CI runs `cyrius bench
+  tests/perf.bcyr` by name; only `cyrius audit`, which sweeps every `.bcyr`,
+  ever reached it — and its failure is what surfaced this. `tests/perf.bcyr` is
+  and remains the bench suite. `cyrius audit` now completes clean.
+
+### Investigated — BUG-002 is root-caused: `var argv[4]` is sized in slots, not bytes
+
+`tests/smcyr/lsp_fold.smcyr` has reported **4 passed / 9 failed** since 1.8.1,
+with `lsp_client_start_default()` answering -1. It still does after this cut —
+the fix is not cyim's to make — but it is no longer unowned.
+
+**The defect is `cyim-lsp/src/subprocess.cyr:180`, `var argv[4]`.** In Cyrius
+that reserves **four bytes**; `_lsp_proc_exec` then stores up to four 64-bit
+pointers into it, so `lsp_client_start_default()`'s
+`("/usr/bin/env", "cyrius-lsp", 0)` writes bytes `[0, 24)` into a 4-byte stack
+slot. `execve` gets a clobbered `argv`, fails, and the child falls through to
+its own `sys_exit(127)`. `var fallback[1]` eleven lines down is the same bug.
+
+Narrowed with a four-step diagnostic against the unmodified 1.5.2 bundle,
+answering the "spawn or handshake?" question the issue doc opened with: spawn
+**succeeds** (real pid, both pipe writes return their full byte counts), the
+read returns **0 — EOF**, and the reaped child's status is **exit 127, no
+signal**, with *nothing* on stderr. That last detail is the tell: had `execve`
+taken and `env` merely failed to find `cyrius-lsp`, `env` would have printed
+`env: 'cyrius-lsp': No such file or directory` first. Confirmed by construction
+— a harness re-implementing the spawn byte-for-byte except `argv[4]` → `argv[32]`
+and `fallback[1]` → `fallback[8]`, linked against the same bundle for everything
+else, gets a 397-byte `initialize` response on the first try and finally shows
+the server's stderr banner.
+
+**Why it looked like a mystery:** this is the same bug class the 1.5.2 audit
+already fixed once *in this file* — `lsp_proc_close`'s `var status_buf[1]`, whose
+fix comment 150 lines up even names the mechanism ("latent before cyrius 6.3.13
+moved locals onto the stack behind a guard page"). That sweep caught the reap
+buffer and missed the exec buffer. 6.3.13 is also why the failure became
+deterministic, and cyim's pin crossed it at 1.8.1 (`6.2.36 → 6.5.18`) — exactly
+when the smoke was first seen failing. The 1.5.0 control run reproduced the same
+4/9 because it varied the *bundle*, not the *toolchain*.
+
+**Fix is a `cyim-lsp` cut**; cyim picks it up with a `tag` bump and no source
+change, as at 1.8.1. cyim's own tree was swept for the same class during this
+cut — every `var NAME[N]` in `src/`, `tests/` and `fuzz/` later accessed via
+`load64`/`store64`, checked against its maximum written offset — with **zero
+findings**. Full write-up:
+[`docs/development/issues/2026-08-11-lsp-fold-smoke-handshake.md`](docs/development/issues/2026-08-11-lsp-fold-smoke-handshake.md).
+
+The structural half of BUG-002 is untouched and still stands: `cyrius smoke` is
+not a step in `.github/workflows/ci.yml`, which is why a dead feature sat
+unobserved. Fixing `argv` makes the harness pass; it does not make anyone watch
+it.
+
+### Binary
+
+- **`build/cyim`** (CYRIUS_DCE=1): **1,193,384 B** — **+17,528 B** vs 1.8.1's
+  1,175,856 B. Not attributed further: the pin moved 17 patches, vyakarana moved
+  two minors with real scanner additions, and the whole stdlib snapshot was
+  replaced. 526 unreachable fns NOPed (126,718 B).
+- **`build/cyim_agnos`**: **1,205,696 B** (+21,680 B) — static x86-64 ELF64,
+  still passes the file-type gate in agnos's `scripts/burn/stage-tools.sh`.
+- **`build/cyim_aarch64`**: **1,615,208 B** — ARM aarch64 ELF64. Cross-build
+  re-verified this cut specifically because of darshana 0.9.2's ioctl fix.
+
+### Tests
+
+- `cyrius tests` — **21 suites, 1136 assertions PASS, 0 failures** (was 1129;
+  +4 openqasm routing, +3 the routing↔loading drift guard).
+- `cyrius fuzz` — **4/4 PASS**. Re-run per CLAUDE.md's toolchain-bump rule, which
+  is the gate that matters here: 6.3.13's guard-paged stack turns a latent
+  undersized `var buf[N]` into a segfault, and this cut replaced every vendored
+  module under the harnesses.
+- `tests/cli_smoke.sh` — **118 PASS**.
+- `tests/integration_smoke.py` — all PASS (PTY-driven + headless-subprocess).
+- `cyrius smoke` — **4 passed / 9 failed**, unchanged. BUG-002, above.
+- `cyrius audit` — clean (fmt / lint / docs / tests / bench). It had been
+  failing on the dead `tests/cyim.bcyr` stub removed above; "100 undocumented
+  public fns" remains as an advisory, unchanged.
+- `cyrius lint` — 0 warnings across `src/` + `src/plugins/`.
+- `cyrfmt --check` — clean after the three reformats noted above.
+
+### Benchmarks
+
+`tests/perf.bcyr`, 9 benches, vs the 1.6.8 closeout baseline. **Read the
+absolute deltas loosely**: cyrius 6.5.19 fixed the bench framework to measure and
+subtract the timer floor (1.330 µs/clock-read here), so the 1.8.2 column is
+measuring something slightly different from the 1.6.8 one.
+
+| Bench | 1.6.8 | 1.8.2 | Δ |
+|---|---:|---:|---:|
+| `highlight_buf_1MB_cyrius` | 307 ms | **281 ms** | **−8%** |
+| `highlight_buf_cache_hit_x1000` | 17 µs | 17.4 µs | +2% |
+| `render_build_line_80c_x1000` | 265 µs | 252 µs | −5% |
+| `buf_fill_1MB` | 13.5 ms | 11.6 ms | −14% |
+| `buf_fill_10MB` | 140 ms | 122 ms | −13% |
+| `buf_move_10K_cycles_10MB` | 49 ms | 43.8 ms | −11% |
+| `search_forward_10MB_worst_case` | 106 ms | 102 ms | −4% |
+| `search_forward_10MB_worst_case_ic` | 167 ms | 161 ms | −4% |
+
+The one worth naming is **cold tokenize**: 1.6.1 took a documented +21%
+(253 → 307 ms) when vyakarana 2.0.0 replaced the single-call `tokenize_source`
+with the streaming primitive, on the reasoning that cyim pays the per-call alloc
+overhead without getting the streaming benefit. vyakarana 2.4.0 gives about half of it
+back unprompted. Still above the 1.5.3 figure (253 ms); the trade stands as
+documented.
+
+Not in the table because it is not a `perf.bcyr` bench: `highlight_init()` now
+loads 46 grammars rather than 11 — **1.95 ms vs 0.42 ms**, a one-time
+**+1.5 ms** at editor start-up, which is what the highlighting fix costs.
+
 ## [1.8.1] — 2026-08-11
 
 **The agnos build works again.** 1.8.0 shipped cyim onto agnos; this restores
@@ -92,7 +358,10 @@ on PATH, answers a hand-fed `initialize` with a well-formed frame, and writes
 its startup banner to stderr rather than polluting the stdout protocol stream.
 `cyrius smoke` is not a CI gate, which is how it drifted to failing unnoticed
 while `docs/development/state.md` still recorded "13 PASS". Left open for its
-own investigation rather than folded into a fix-only patch cut.
+own investigation rather than folded into a fix-only patch cut, and tracked as
+**BUG-002 (P2)** in [`docs/development/roadmap.md`](docs/development/roadmap.md)
+§ Open Bugs, with a full issue doc at
+[`docs/development/issues/2026-08-11-lsp-fold-smoke-handshake.md`](docs/development/issues/2026-08-11-lsp-fold-smoke-handshake.md).
 
 ### Binary
 

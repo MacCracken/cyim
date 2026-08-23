@@ -26,7 +26,7 @@
 #
 # Requires: stdlib (strlen, load8) only.
 
-var LANG_COUNT = 45;
+var LANG_COUNT = 46;
 
 # Indexed 0..LANG_COUNT-1. "plain" at index 0 is the no-grammar
 # fallback — its `lang_exts` is empty so the table-walk skips it.
@@ -34,7 +34,8 @@ var LANG_COUNT = 45;
 # Indices 1..10 preserved from the v1.6.0 shape so existing tests
 # and external callers that index by name (via `lang_index`) keep
 # matching the same numeric slot. New entries (1.6.2) appended
-# 11..44 to keep churn local.
+# 11..44 to keep churn local; index 45 (`openqasm`, 1.8.2) follows
+# the same append-only rule.
 #
 # Conflict resolution decisions (1.6.2):
 #   - `.cyml` moves from "toml" (legacy until 1.6.1) to the
@@ -42,13 +43,14 @@ var LANG_COUNT = 45;
 #   - `.s` / `.S` / `.asm` default to `asm_x86_64` (primary dev
 #     arch); aarch64 routing waits for content-sniff or a future
 #     `.cyimrc` filetype override.
-#   - `dockerfile` / `makefile` are present in `lang_name` but
-#     `lang_exts` is empty: vyakarana's grammars match by basename,
-#     not extension. cyim's `detect_language_from_path` is
-#     extension-only today, so these route to "plain". Filename
-#     detection is a future bite.
+#   - `dockerfile` / `makefile` are present in `lang_name` with an
+#     empty `lang_exts`: vyakarana's grammars match by basename, not
+#     extension. They are reached through `lang_basenames` instead,
+#     which v1.6.4 added and `detect_language_from_path` probes
+#     *before* the extension table. (This note previously said they
+#     routed to "plain" — true only up to v1.6.3.)
 #
-# 45 entries makes the if-chain noisy. If we add more in 1.7+ this
+# 46 entries makes the if-chain noisy. If we add more in 1.9+ this
 # will earn a refactor (parallel global string arrays or a vyakarana
 # metadata query); document the decision in an ADR before going.
 fn lang_name(i) {
@@ -97,6 +99,7 @@ fn lang_name(i) {
     if (i == 42) { return "llvm_ir"; }
     if (i == 43) { return "dockerfile"; }
     if (i == 44) { return "makefile"; }
+    if (i == 45) { return "openqasm"; }
     return "plain";
 }
 
@@ -152,6 +155,7 @@ fn lang_exts(i) {
     if (i == 42) { return ".ll"; }
     if (i == 43) { return ""; }
     if (i == 44) { return ""; }
+    if (i == 45) { return ".qasm"; }
     return "";
 }
 

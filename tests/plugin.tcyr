@@ -255,7 +255,7 @@ fn main() {
     var pre_pkn = vec_len(_plugin_normal_prefix_keys);
     plugin_register_normal_prefix_key(KEY_G, 100, &_t_cb_prefix_gd);   # 'd' = 100
     assert_eq(vec_len(_plugin_normal_prefix_keys), pre_pkn + 1,
-              "_plugin_normal_prefix_keys grew by 1");
+      "_plugin_normal_prefix_keys grew by 1");
 
     test_group("_plugin_lookup_normal_prefix_key finds registered combo");
     var hit = _plugin_lookup_normal_prefix_key(KEY_G, 100);

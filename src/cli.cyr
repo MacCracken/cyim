@@ -527,8 +527,8 @@ fn _cli_substitute_m(src, m, new, mode) {
         return _cli_substitute(src, _matcher_needle(m), new, mode);
     }
     return _cli_substitute_regex(src, _matcher_flavor(m), _matcher_nfa(m),
-    _matcher_plen(m), _matcher_max_edits(m),
-    new, mode);
+      _matcher_plen(m), _matcher_max_edits(m),
+      new, mode);
 }
 
 # Read all of stdin into `b`. Returns total bytes read.

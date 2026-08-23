@@ -34,20 +34,31 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.7.0** (see [`state.md`](state.md)). The 1.6.x
-catch-up cycle is closed; **1.7.0 opens the post-catch-up era**
-with the toolchain refresh + darshana TUI dep pickup that was
-FYI'd at 1.6.5. Binary byte-identical to 1.6.8 — the donor
-extraction was clean. VIM-style
-marks (`m<letter>` / `'<letter>`) shipped at 1.6.0 as the first
-feature minor of the post-1.5.x cycle; 1.6.1 and 1.6.2 are the
-opening bites of the **1.6.x catch-up channel** — toolchain pin
-5.9.16 → 5.10.10, vyakarana 1.0.2 → 2.2.1 (across the breaking
-2.0.0 streaming-API replacement), and grammar-routing wiring
-from 11 → 45 languages. The full LSP user-visible surface
-remains active via cyim-lsp 1.2.1 (diagnostics, `gd` goto-def
+cyim is at **1.8.2** (see [`state.md`](state.md)). The 1.6.x
+catch-up cycle closed at 1.6.8; 1.7.0 opened the post-catch-up
+era with the darshana TUI dep pickup, and **1.8.0 is the one
+feature cut since** — cyim runs on AGNOS, full-screen on the
+framebuffer console (`src/agnos_kbd.cyr` reverse-maps raw Set-1
+scancodes from `kbscan#42` into the byte stream `editor_feed`
+already expects) or as an ed/ex line editor via `cyim --line`
+(`src/agnos_line.cyr`). Everything else in the 1.7.x–1.8.x span
+is toolchain, dependency and vendored-stdlib maintenance:
+1.7.1–1.7.5, 1.8.1 (restoring the `--agnos` *build*) and 1.8.2
+(the current catch-up — cyrius 6.5.35, darshana 1.0.0's API
+freeze, vyakarana 2.4.0 with `grammars/` re-synced 45 → 46).
+1.8.2 also closed a highlighting regression that had been live
+since 1.6.2: 34 of the 45 routed languages had no grammar
+loaded, so they rendered uncolored. Syntax highlighting now
+covers everything `src/lang.cyr` routes, guarded both ways by
+`tests/lang.tcyr`.
+
+The full LSP user-visible surface — diagnostics, `gd` goto-def
 same-file + cross-file, `gr` references quickfix, `:lsp-*`
-ex-commands, URL-decoded `file://` paths).
+ex-commands, URL-decoded `file://` paths, open-in-split — is
+wired and compiles clean, but **is not currently functional on
+Linux**: see BUG-002 below, root-caused at 1.8.2 to a
+slot-vs-byte buffer in the cyim-lsp bundle and waiting on an
+upstream cut.
 
 The 1.x plugin ABI freeze (1.3.6 / [ADR 0004](../adr/0004-plugin-abi-freeze.md))
 holds across all 1.4.x and 1.5.x extensions. Three additive
@@ -94,6 +105,14 @@ this is a sequencing index.
 | **v1.6.7** — cyim-lsp 1.5.0 pickup (open-in-split for `:lsp-find-refs`) + arrow keys in list mode (CSI Up/Down → `_plugin_list_prev`/`_plugin_list_next` when picker active; Left/Right swallowed); both 1.5.x carry-over items in one pre-tag bundle | Shipped 2026-05-09 |
 | **v1.6.8** — Closeout cut for the 1.6.x cycle (all 11 CLAUDE.md audit steps PASS; 0 new findings; byte-identical to 1.6.7 modulo `_VERSION_STR_CYIM` regen); audit doc `docs/audit/2026-05-09-1.6x-closeout.md` | Shipped 2026-05-09 |
 | **v1.7.0** — Toolchain refresh (cyrius 5.10.10 → 5.10.20) + darshana 0.2.0 TUI dep pickup. cyim's `src/tty.cyr` strips down to `tty_probe()` only; donor surface (termios + ANSI + cursor) now resolves through darshana's `[lib]`. cyim-lsp pin moves in lockstep (no tag). Binary byte-identical to 1.6.8 — donor bodies were byte-equivalent | Shipped 2026-05-09 |
+| **v1.7.1** — darshana 0.4.0 + cyrius 6.0.1 dep refresh. Forward-compat only; no cyim callsite landed on darshana's expanded surface (`tty_winsize`, `tty_open_signalfd`, `tty_sgr`) | Shipped 2026-05-20 |
+| **v1.7.2** — cyrius 6.2.7 pin + darshana 0.7.0 (**first darshana cut to break symbols cyim calls**: `tty_itoa`→`tty_dec_buf`, `tty_cooked(0)`→`tty_cooked()`, `tty_apply_raw_flags`→`_tty_apply_raw_flags`; callsites ported in `src/{render,main,tty}.cyr` + `tests/tty.tcyr`) + vyakarana 2.2.3 + `lib/` re-synced to an exact 6.2.7 mirror (11 dropped stdlib modules pruned) | Shipped 2026-06-15 |
+| **v1.7.3** — cyrius 6.2.11 pin + `lib/` re-sync. Pure pin move; editor source byte-for-byte unchanged, DCE binary byte-identical to 1.7.2 | Shipped 2026-06-15 |
+| **v1.7.4** — darshana 0.8.0 (agnos `tty_winsize` branch via `winsize#60`). Additive; symbol vendored, not yet called | Shipped 2026-06-22 |
+| **v1.7.5** — cyrius 6.2.36 pin. No source change | Shipped 2026-06-22 |
+| **v1.8.0** — **cyim runs on AGNOS.** Full-screen on the framebuffer console via new `src/agnos_kbd.cyr` (polls `kbscan#42`, tracks shift/ctrl/caps from make/break codes, reverse-maps Set-1 scancodes to the raw-terminal byte stream `editor_feed` already consumes); `src/agnos_line.cyr` ships an ed/ex line editor behind `cyim --line`. Entry point switched to the bare-call `_agnos_entry()` pattern (the module-scope `var exit_code = main();` double-ran on agnos, and literal `syscall(60, …)` is `winsize` there, not exit). LSP gated Linux-only. darshana 0.8.0 → 0.8.2. Verified on the real kernel under QEMU and under mirshi ≥ 1.11.0; Linux/macOS builds byte-unchanged | Shipped 2026-07-08 |
+| **v1.8.1** — the agnos *build* restored. `cyrius build --agnos` was failing inside the vendored cyim-lsp bundle on a Linux-shaped 3-arg `sys_waitpid`; fixed upstream and picked up as cyim-lsp 1.5.0 → 1.5.2 (per-target `sys_waitpid`, spawn half compiled out behind matched `#ifdef`/`#ifndef` arms, `LSP_HAVE_SUBPROC` exposed). Toolchain pin 6.2.36 → 6.5.18 + `lib sync --full`; 10 test files repaired for missing includes. No cyim source change for the fix | Shipped 2026-08-11 |
+| **v1.8.2** — dependency + toolchain catch-up, **plus the highlighting regression it uncovered**. cyrius 6.5.18 → 6.5.35; darshana 0.8.2 → **1.0.0** (the API freeze; carries 0.9.2's aarch64 `SYS_IOCTL` fix and two pre-freeze breaks cyim does not trip); vyakarana 2.2.3 → 2.4.0 with all 45 `grammars/*.cyml` re-synced and `openqasm` added as the 46th (`LANG_COUNT` 45 → 46, `.qasm` routing); `lib/` full re-sync to the 6.5.35 snapshot and `lib/agnosys.cyr` pruned (stdlib-retired at cyrius 6.2.37; `lib sync` copies without pruning). **Fixed: 34 of 45 routed languages rendered uncolored** — `highlight_init()`'s grammar load list stayed at its original 11 through 1.6.2's 11 → 45 routing growth, and it suppresses vyakarana's cwd-relative fallback, so a missing entry means no grammar rather than a slower path. Load list is now the `hl_grammar_name(i)` table with a two-way, mutation-tested drift guard in `tests/lang.tcyr`. Three files reformatted for 6.5.28's parenthesis-tracking `cyrfmt`. **BUG-002 root-caused** — see Open Bugs | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -194,7 +213,7 @@ trigger.
 
 | Item | Forcing function |
 |---|---|
-| `lang.cyr` if-chain refactor | At 45 entries today. CLAUDE.md "wait for the third instance" applies. 1.6.2 (extension catch-up) was instance 1; 1.6.4 (basename probe added a parallel data table) is instance 2 — but it added a *new* table, not a third growth of the existing one. The refactor trigger is the next forcing function that grows `lang_name`/`lang_exts`/`lang_basenames` again. 1.6.8 closeout will reassess. |
+| `lang.cyr` if-chain refactor | **Trigger fired at 1.8.2, and the shape of the refactor is now clearer.** 46 entries, and as of 1.8.2 there is a *second* if-chain that must stay in lockstep with it — `hl_grammar_name(i)` in `src/highlight.cyr`. Their silent divergence is precisely what cost 34 languages their highlighting for six minor versions. 1.6.2 (extension catch-up) was instance 1; 1.6.4 added a new parallel table rather than growing the existing one; 1.8.2's `openqasm` append is the third growth, satisfying CLAUDE.md's "wait for the third instance". `tests/lang.tcyr`'s drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt — but the right end state is one table, not three chains plus a guard. Owed: an ADR choosing between parallel global string arrays and a vyakarana metadata query (`grammar_count()` / `grammar_name_at(i)` would let the load list be derived rather than restated), then the refactor. |
 | `_cyim_lsp_*` shape duplication (cyim-lsp example glue ↔ cyim's `src/plugins/lsp_glue.cyr`) | The mirror pattern is instance-counting per CLAUDE.md "wait for the third": (1) `_cyim_lsp_label_for_ref` (1.6.5 — preview format), (2) `_cyim_lsp_ex_find_refs_with_mode` + `_cyim_lsp_on_ref_select` mode-branch + `_cyim_lsp_ref_split_mode` global (1.6.7 — open-in-split). The mirror itself is by design (cyim-lsp's bundle is self-contained; consumer copies the glue), but if a third example-glue refactor lands and the glue divergence becomes a maintenance burden, generalize the mirror into a documented copy-from-upstream procedure or a more aggressive bundle inclusion. |
 | F-CO-2 (extract `_cyim_lsp_jump_to_uri_lc`) | Informational since 1.5.2. Still 2 instances; cyim-lsp `:lsp-implementation` or `:lsp-type-definition` would be the third. |
 
@@ -214,6 +233,58 @@ not slated.
 | **Folding** (`zM` / `zR` / `:foldenable`) | User asks while editing > 1 KLOC source | Range-marked spans + render skip; structural folds (function / block) require a vyakarana-style structural marker pass. |
 | **`:make` / `:cnext` quickfix flow** | User asks | Native compiler-driven flow is what `gr` already prototypes. `:make` runs an external compiler, captures stderr, parses error format, populates the same `plugin_list_display` machinery. Consumer-side patch (no cyim ABI change). |
 | **Plugin system beyond sandhi** | Probably never | Refusal §0 — the sandhi pattern (vendored bundle + cyim-side glue) is already "the plugin system". Nothing beyond it earns its keep. |
+
+---
+
+## Open Bugs
+
+### BUG-002 — LSP fold smoke: `lsp_client_start_default()` handshake never completes (**P2**, opened 2026-08-11, **root-caused 2026-08-23**)
+
+`cyrius smoke` (`tests/smcyr/lsp_fold.smcyr`) reports **4 passed, 9 failed**.
+`lsp_client_start_default()` answers -1 and `lsp_client_describe()` reports
+`"(not attached)"`. The 8 trailing failures are all downstream of that one.
+
+**Root cause (found at 1.8.2):** `cyim-lsp/src/subprocess.cyr:180` declares
+`var argv[4]` — four **bytes** — and `_lsp_proc_exec` then stores up to four
+64-bit pointers into it. `lsp_client_start_default()` passes
+`("/usr/bin/env", "cyrius-lsp", 0)`, so the write range is `[0, 24)`: a 6×
+overrun of a 4-byte stack slot. `execve` receives a clobbered `argv`, fails, and
+the child falls through to its own `sys_exit(127)`. `var fallback[1]` eleven
+lines down is the same defect. Proven by construction — the identical spawn with
+`argv[32]` / `fallback[8]`, linked against the same unmodified 1.5.2 bundle,
+completes the handshake and gets a 397-byte `initialize` response.
+
+Same bug class the 1.5.2 audit already fixed once *in this file*
+(`var status_buf[1]` in `lsp_proc_close`) and missed twice. Deterministic since
+cyrius **6.3.13** moved function-local `var X[N]` onto a guard-paged stack —
+which cyim's pin crossed at 1.8.1 (`6.2.36 → 6.5.18`), which is why the smoke
+started failing exactly then. The 1.5.0 control run reproduced the same 4/9
+because it varied the *bundle*, not the *toolchain*.
+
+**Owner: `cyim-lsp`.** The fix is `argv[4]` → `argv[32]` and `fallback[1]` →
+`fallback[8]` plus a `cyrius distlib` regen; cyim picks it up with a `tag` bump
+under `[deps.cyim-lsp]` and **no cyim source change**, exactly as at 1.8.1.
+Blocked on that cut, not on investigation. cyim's own tree was swept for the
+same class at 1.8.2 — every `var NAME[N]` later read or written via
+`load64`/`store64`, checked against its maximum written offset — with **0
+findings**.
+
+**P2 rationale (unchanged):** nothing ships broken (all 1.8.2 gates green,
+editor unaffected on every target) and LSP is opt-in, so it is below BUG-001's
+P1 bar of a silent wrong answer on a scriptable surface — this failure is loud
+and self-announcing. But it is the whole LSP feature being non-functional on its
+only supported platform, across seven cuts of consumer-side glue built against
+an end-to-end path that was unproven until now.
+
+**Structural half is still open, and is the durable fix:** put `cyrius smoke`
+behind a CI gate. It is absent from `.github/workflows/ci.yml`, which is exactly
+how this rotted while `state.md` still claimed "13 PASS" (corrected at 1.8.1).
+Fixing `argv` makes the harness pass; it does not make anyone watch it. The gate
+needs `cyrius-lsp` on the runner — a packaging problem, not a reason to leave
+the harness unwatched.
+
+Full issue doc:
+[`issues/2026-08-11-lsp-fold-smoke-handshake.md`](issues/2026-08-11-lsp-fold-smoke-handshake.md).
 
 ---
 
@@ -256,19 +327,36 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-05-09 (v1.7.0 — **Toolchain refresh +
-darshana TUI dep pickup shipped.** First minor of the
+*Last updated: 2026-08-23 (v1.8.2 — **dependency + toolchain
+catch-up.** Every pin in the tree pulled to current: cyrius
+6.5.18 → 6.5.35, darshana 0.8.2 → 1.0.0 (the API freeze;
+carries 0.9.2's aarch64 `SYS_IOCTL` fix and two pre-freeze
+breaks cyim does not trip), vyakarana 2.2.3 → 2.4.0 with all 45
+bundled `grammars/*.cyml` re-synced and `openqasm` added as the
+46th, `lib/` full re-sync to the 6.5.35 snapshot with the
+stdlib-retired `lib/agnosys.cyr` pruned. cyim-lsp holds at 1.5.2
+(latest tag). `LANG_COUNT` 45 → 46 with `.qasm` routing.
+**Behaviour fix**: `highlight_init()`'s grammar load list had
+been stuck at 11 since 1.6.2 while routing grew to 45, and it
+suppresses vyakarana's cwd-relative fallback, so 34 routed
+languages rendered uncolored — verified A/B against a 1.8.1
+binary under a pty. Load list is now a `hl_grammar_name(i)`
+table with a two-way mutation-tested guard in `tests/lang.tcyr`.
+**BUG-002 root-caused** to a slot-vs-byte `var argv[4]` in the
+cyim-lsp bundle — owner is upstream; cyim picks the fix up with
+a tag bump and no source change. `lang.cyr` refactor trigger has
+fired (third growth, and now a second chain to keep in step).
+Binary 1,175,856 → 1,193,384 B; 21 suites / 1136 assertions,
+fuzz 4/4, 118 CLI smoke, PTY integration smoke green, lint 0,
+fmt clean, all three cross-targets build.)*
+
+*Prior update: 2026-05-09 (v1.7.0 — Toolchain refresh +
+darshana TUI dep pickup shipped. First minor of the
 post-catch-up era. cyrius 5.10.10 → 5.10.20; new
-`[deps.darshana]` at tag 0.2.0; cyim-lsp pin moves in lockstep
-(no tag). `src/tty.cyr` strips to ~37 lines (`tty_probe()` only);
-donor surface now in darshana's `[lib]`. **Binary byte-identical
-to 1.6.8** — donor extraction was clean, DCE coalesces. Bench
-numbers within sampling noise. Plugin ABI freeze (1.3.6 / ADR
-0004) holds. Darshana joins vyakarana + cyim-lsp as cyim's third
-external sandhi-pattern dep. The 1.7.x cycle opens demand-gated;
-next work windows (macros, folding, system clipboard via
-aethersafha, terminal emulator embed) all require a real
-trigger.)*
+`[deps.darshana]` at tag 0.2.0. `src/tty.cyr` strips to ~37
+lines (`tty_probe()` only). Binary byte-identical to 1.6.8 —
+donor extraction was clean. Darshana joins vyakarana + cyim-lsp
+as cyim's third external sandhi-pattern dep.)*
 
 *Prior update: 2026-05-09 (v1.6.8 — **Closeout cut for the 1.6.x
 cycle shipped. Cycle is closed.** All 11 CLAUDE.md audit steps

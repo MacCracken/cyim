@@ -1,9 +1,72 @@
 # tests/lang.tcyr — language detection from file path
+#
+# Also holds the routing-to-grammar drift guard (1.8.2). `src/lang.cyr`
+# says which languages cyim *routes*; `src/highlight.cyr`'s
+# `highlight_init()` says which grammars it *loads*, and it suppresses
+# vyakarana's own cwd-relative bootstrap while doing so. Between 1.6.2
+# and 1.8.2 those two lists silently diverged by 34 entries. The guard
+# below closes that in both directions: every routed `lang_name(i)` must
+# appear in `hl_grammar_name`'s table, and every table entry must be a
+# grammar `grammars/` actually ships. Needs the vyakarana + buffer +
+# highlight include chain ahead of `src/lang.cyr` — the same order every
+# other consumer uses, because resolution is single-pass.
 
+include "lib/vyakarana.cyr"
+include "src/buffer.cyr"
+include "src/highlight.cyr"
 include "src/lang.cyr"
 
 fn main() {
     alloc_init();
+
+    # Routing (src/lang.cyr) must be a SUBSET of loading
+    # (src/highlight.cyr's hl_grammar_name table). Checked against the
+    # table rather than through tokenize_stream_new, because under
+    # `cyrius test` the harness binary lives in a temp dir with no
+    # grammars/ beside it — `_hl_resolve_dir()` answers 0, highlight_init
+    # returns before setting `_grammars_bootstrapped`, and vyakarana's
+    # cwd-relative bootstrap then loads all 46 and masks any gap. The
+    # table compare has no such escape hatch.
+    test_group("every routed language is in the grammar load table (drift guard)");
+    var gi = 1;
+    var gmissing = 0;
+    while (gi < LANG_COUNT) {
+        var gname = lang_name(gi);
+        var gfound = 0;
+        var gj = 0;
+        while (gj < HL_GRAMMAR_COUNT) {
+            if (streq(gname, hl_grammar_name(gj)) == 1) { gfound = 1; }
+            gj = gj + 1;
+        }
+        if (gfound == 0) { gmissing = gmissing + 1; }
+        gi = gi + 1;
+    }
+    assert_eq(gmissing, 0, "0 routed languages absent from highlight_init's load table");
+
+    # And every name in the load table must be a grammar cyim actually
+    # ships, or highlight_init silently no-ops on it. Test cwd is the
+    # project root, so grammars/ is directly reachable.
+    test_group("every grammar in the load table ships in grammars/");
+    var gk = 0;
+    var gabsent = 0;
+    var gpath[128];
+    while (gk < HL_GRAMMAR_COUNT) {
+        var gn = hl_grammar_name(gk);
+        var gp = 0;
+        var gpre = "grammars/";
+        var gq = 0;
+        while (gq < 9) { store8(&gpath + gp, load8(gpre + gq)); gp = gp + 1; gq = gq + 1; }
+        gq = 0;
+        while (gq < strlen(gn)) { store8(&gpath + gp, load8(gn + gq)); gp = gp + 1; gq = gq + 1; }
+        var gsuf = ".cyml";
+        gq = 0;
+        while (gq < 5) { store8(&gpath + gp, load8(gsuf + gq)); gp = gp + 1; gq = gq + 1; }
+        store8(&gpath + gp, 0);
+        if (file_exists(&gpath) == 0) { gabsent = gabsent + 1; }
+        gk = gk + 1;
+    }
+    assert_eq(gabsent, 0, "0 load-table entries missing from grammars/");
+    assert_eq(HL_GRAMMAR_COUNT, 46, "46 bundled grammars at vyakarana 2.4.0");
 
     test_group("lang_index / lang_is_valid");
     assert_eq(lang_index("plain"),       0,  "plain @ 0");
@@ -13,6 +76,7 @@ fn main() {
     assert_eq(lang_index("cyml"),       11,  "cyml @ 11 (added 1.6.2)");
     assert_eq(lang_index("markdown"),   12,  "markdown @ 12 (added 1.6.2)");
     assert_eq(lang_index("makefile"),   44,  "makefile @ 44 (added 1.6.2)");
+    assert_eq(lang_index("openqasm"),   45,  "openqasm @ 45 (added 1.8.2, vyakarana 2.3.5)");
     assert_eq(lang_index("esperanto"), 0 - 1, "unknown -> -1");
     assert_eq(lang_is_valid("rust"), 1, "rust valid");
     assert_eq(lang_is_valid("nope"), 0, "nope invalid");
@@ -77,6 +141,10 @@ fn main() {
     assert_streq(detect_language_from_path("boot.s"),        "asm_x86_64", ".s -> asm_x86_64 (default arch)");
     assert_streq(detect_language_from_path("boot.asm"),      "asm_x86_64", ".asm -> asm_x86_64 (default arch)");
     assert_streq(detect_language_from_path("module.ll"),     "llvm_ir",  ".ll");
+    # 1.8.2: vyakarana 2.3.5 added the openqasm grammar (45 -> 46 bundled).
+    assert_streq(detect_language_from_path("bell.qasm"),     "openqasm", ".qasm");
+    assert_streq(detect_language_from_path("BELL.QASM"),     "openqasm", ".QASM uppercase");
+    assert_streq(detect_language_from_path("a/b/teleport.qasm"), "openqasm", "deep path .qasm");
 
     test_group("detect_language_from_path: 1.6.4 basename detection — dockerfile / makefile / shell rc");
     # 1.6.4 added a basename probe that runs before the extension table.
