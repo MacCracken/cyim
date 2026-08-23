@@ -211,6 +211,14 @@ step in `.github/workflows/ci.yml`, which is *why* a dead feature could sit
 unobserved across seven cuts. Fixing `argv` makes the harness pass; it does not
 make anyone watch it.
 
+**Deliberately not added at 1.8.2**, even though that cut did repair CI and add
+three other gates (format, CLI smoke, `src/plugins/` linting): a gate that fails
+on day one is a gate that gets ignored or reverted. `cyrius smoke` also needs
+`cyrius-lsp` present on the runner, which is a real packaging question rather
+than a line of YAML. **Add the gate in the same cut that picks up the fixed
+`cyim-lsp` tag** — that is the moment it can go in green, and the moment its
+absence stops being free.
+
 ---
 
 ## Why P2 and not higher

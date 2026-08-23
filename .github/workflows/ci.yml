@@ -19,23 +19,77 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Cyrius toolchain
+        # Delegates to the UPSTREAM INSTALLER rather than unpacking the
+        # release tarball by hand (the shape patra's CI uses).
+        #
+        # ⛔ The hand-rolled version this replaces copied the tarball into a
+        # flat `~/.cyrius/{bin,lib}` — the pre-`versions/` layout the
+        # toolchain abandoned. `cyrius deps` resolves a dep's sidecar stdlib
+        # leaves out of the VERSION-PINNED SNAPSHOT, so every run died one
+        # step later with:
+        #
+        #   error: cyrius.cyml pins version 6.5.35 but it is not installed
+        #     at $HOME/.cyrius/versions/6.5.35/lib
+        #
+        # install.sh lays out `versions/<v>/{bin,lib,programs}`, writes
+        # `current`, and points `~/.cyrius/{bin,lib}` at the active version.
+        # It also verifies the tarball checksum and signature; the hand-rolled
+        # `curl -sLO` did neither.
+        #
+        # CLAUDE.md § CI/Release: `[package].cyrius` in cyrius.cyml is the ONLY
+        # source of truth for the toolchain version — nothing is hardcoded
+        # here. The installer is fetched from that same TAG rather than from
+        # `main`: an immutable ref, and install.sh carries the release signing
+        # pubkey for exactly the version it installs (its CVE-13 note).
         run: |
-          CYRIUS_VERSION="${CYRIUS_VERSION:-$(grep 'cyrius *= *"' cyrius.cyml 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          [ -n "$CYRIUS_VERSION" ] \
+            || { echo "::error::could not read [package].cyrius from cyrius.cyml"; exit 1; }
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          tar xzf "cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-x86_64-linux"
-          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
-          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
-          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
-          chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
-          echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
-          echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
+          curl -sSfL "https://raw.githubusercontent.com/MacCracken/cyrius/${CYRIUS_VERSION}/scripts/install.sh" \
+            | CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+          echo "CYRIUS_HOME=$HOME/.cyrius" >> "$GITHUB_ENV"
+
+      - name: Verify toolchain layout
+        # Assert the pinned snapshot exists BEFORE anything depends on it, so
+        # a packaging or installer regression fails here with a direct message
+        # instead of surfacing as a confusing `cyrius deps` error two steps on
+        # — which is exactly how the flat-layout break presented.
+        run: |
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          cyrius version
+          test -d "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" || {
+            echo "::error::stdlib snapshot missing at ~/.cyrius/versions/$CYRIUS_VERSION/lib"
+            exit 1
+          }
+          echo "snapshot OK: $(ls "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" | wc -l) modules"
 
       - name: Resolve dependencies
-        # Fetches vyakarana from the tag pinned in cyrius.cyml
-        # ([deps.vyakarana] git + tag + modules) into lib/.
+        # Fetches vyakarana / cyim-lsp / darshana from the tags pinned in
+        # cyrius.cyml ([deps.NAME] git + tag + modules) into lib/, and
+        # resolves each bundle's stdlib leaves against the pinned snapshot.
         run: cyrius deps
+
+      - name: Format check
+        # Per-file loop, deliberately NOT `cyrfmt --check src/*.cyr`: cyrfmt
+        # reads only argv[1] and silently ignores the rest, so the glob form
+        # checks the first entry and exits 0 (patra's CI carries the same
+        # warning; libro sat green over five unformatted files that way).
+        #
+        # cyim had NO format gate until 1.8.2, which is how three files
+        # drifted unnoticed when cyrius 6.5.28 gave cyrfmt the parenthesis
+        # tracking it never had. `src/plugins/` is included — it is where one
+        # of the three lived.
+        run: |
+          fail=0
+          for f in src/*.cyr src/plugins/*.cyr tests/*.tcyr tests/*.bcyr fuzz/*.fcyr; do
+            [ -e "$f" ] || continue
+            cyrfmt --check "$f" >/dev/null 2>&1 || { echo "unformatted: $f"; fail=1; }
+          done
+          [ $fail -eq 0 ] || { echo "format: run 'cyrius fmt <file>' on the files above"; exit 1; }
+          echo "format: all source, test and fuzz files formatted"
 
       - name: Build
         run: |
@@ -54,9 +108,13 @@ jobs:
         # (even "0 warnings"), so both the tool invocation and the
         # inner grep (which exits 1 on no match) need `|| true` to
         # avoid colliding with the implicit `set -e` on `run:`.
+        #
+        # 1.8.2: `src/plugins/*.cyr` added. It had never been linted, and it
+        # is a third of the LSP consumer surface.
         run: |
           fail=0
-          for f in src/*.cyr; do
+          for f in src/*.cyr src/plugins/*.cyr; do
+            [ -e "$f" ] || continue
             out=$(cyrius lint "$f" 2>&1 || true)
             echo "$out"
             bad=$(echo "$out" | grep -E '^\s*warn ' | grep -v 'exceeds 120 characters' || true)
@@ -83,6 +141,15 @@ jobs:
         # BENCHMARKS.md, not CI — this step exists so a syntax
         # break in the bench harness doesn't go unnoticed.
         run: cyrius bench tests/perf.bcyr
+
+      - name: CLI smoke
+        # tests/cli_smoke.sh drives the six one-shot agent verbs
+        # (--write / --replace[-all] / --grep / --batch / --headless) and
+        # every modifier, asserting exit codes and on-disk results. 118
+        # assertions covering the `daimon` consumer surface — the contract
+        # CLAUDE.md § Consumers commits to. It had never been a CI step, so
+        # the agent-facing half of cyim was ungated until 1.8.2.
+        run: bash tests/cli_smoke.sh
 
       - name: PTY integration smoke
         # tests/integration_smoke.py spawns the cyim binary under a

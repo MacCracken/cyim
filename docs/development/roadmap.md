@@ -112,7 +112,7 @@ this is a sequencing index.
 | **v1.7.5** — cyrius 6.2.36 pin. No source change | Shipped 2026-06-22 |
 | **v1.8.0** — **cyim runs on AGNOS.** Full-screen on the framebuffer console via new `src/agnos_kbd.cyr` (polls `kbscan#42`, tracks shift/ctrl/caps from make/break codes, reverse-maps Set-1 scancodes to the raw-terminal byte stream `editor_feed` already consumes); `src/agnos_line.cyr` ships an ed/ex line editor behind `cyim --line`. Entry point switched to the bare-call `_agnos_entry()` pattern (the module-scope `var exit_code = main();` double-ran on agnos, and literal `syscall(60, …)` is `winsize` there, not exit). LSP gated Linux-only. darshana 0.8.0 → 0.8.2. Verified on the real kernel under QEMU and under mirshi ≥ 1.11.0; Linux/macOS builds byte-unchanged | Shipped 2026-07-08 |
 | **v1.8.1** — the agnos *build* restored. `cyrius build --agnos` was failing inside the vendored cyim-lsp bundle on a Linux-shaped 3-arg `sys_waitpid`; fixed upstream and picked up as cyim-lsp 1.5.0 → 1.5.2 (per-target `sys_waitpid`, spawn half compiled out behind matched `#ifdef`/`#ifndef` arms, `LSP_HAVE_SUBPROC` exposed). Toolchain pin 6.2.36 → 6.5.18 + `lib sync --full`; 10 test files repaired for missing includes. No cyim source change for the fix | Shipped 2026-08-11 |
-| **v1.8.2** — dependency + toolchain catch-up, **plus the highlighting regression it uncovered**. cyrius 6.5.18 → 6.5.35; darshana 0.8.2 → **1.0.0** (the API freeze; carries 0.9.2's aarch64 `SYS_IOCTL` fix and two pre-freeze breaks cyim does not trip); vyakarana 2.2.3 → 2.4.0 with all 45 `grammars/*.cyml` re-synced and `openqasm` added as the 46th (`LANG_COUNT` 45 → 46, `.qasm` routing); `lib/` full re-sync to the 6.5.35 snapshot and `lib/agnosys.cyr` pruned (stdlib-retired at cyrius 6.2.37; `lib sync` copies without pruning). **Fixed: 34 of 45 routed languages rendered uncolored** — `highlight_init()`'s grammar load list stayed at its original 11 through 1.6.2's 11 → 45 routing growth, and it suppresses vyakarana's cwd-relative fallback, so a missing entry means no grammar rather than a slower path. Load list is now the `hl_grammar_name(i)` table with a two-way, mutation-tested drift guard in `tests/lang.tcyr`. Three files reformatted for 6.5.28's parenthesis-tracking `cyrfmt`. **BUG-002 root-caused** — see Open Bugs | Shipped 2026-08-23 |
+| **v1.8.2** — dependency + toolchain catch-up, **plus the highlighting regression it uncovered**. cyrius 6.5.18 → 6.5.35; darshana 0.8.2 → **1.0.0** (the API freeze; carries 0.9.2's aarch64 `SYS_IOCTL` fix and two pre-freeze breaks cyim does not trip); vyakarana 2.2.3 → 2.4.0 with all 45 `grammars/*.cyml` re-synced and `openqasm` added as the 46th (`LANG_COUNT` 45 → 46, `.qasm` routing); `lib/` full re-sync to the 6.5.35 snapshot and `lib/agnosys.cyr` pruned (stdlib-retired at cyrius 6.2.37; `lib sync` copies without pruning). **Fixed: 34 of 45 routed languages rendered uncolored** — `highlight_init()`'s grammar load list stayed at its original 11 through 1.6.2's 11 → 45 routing growth, and it suppresses vyakarana's cwd-relative fallback, so a missing entry means no grammar rather than a slower path. Load list is now the `hl_grammar_name(i)` table with a two-way, mutation-tested drift guard in `tests/lang.tcyr`. Three files reformatted for 6.5.28's parenthesis-tracking `cyrfmt`. **CI repaired**: both workflows hand-unpacked the release tarball into the flat, pre-`versions/` `~/.cyrius/{bin,lib}`, so every run died at `cyrius deps` — they now delegate to the upstream `install.sh` (patra's shape), pinned to the tag, with a layout-assertion step; a format gate, a CLI-smoke gate and `src/plugins/` linting were added alongside. **BUG-002 root-caused** — see Open Bugs | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -283,6 +283,11 @@ Fixing `argv` makes the harness pass; it does not make anyone watch it. The gate
 needs `cyrius-lsp` on the runner — a packaging problem, not a reason to leave
 the harness unwatched.
 
+1.8.2 repaired CI and added three gates (format, CLI smoke, `src/plugins/`
+linting) but **deliberately left this one out**: a gate that fails on day one
+gets ignored or reverted. **Add it in the same cut that picks up the fixed
+`cyim-lsp` tag** — that is when it can land green.
+
 Full issue doc:
 [`issues/2026-08-11-lsp-fold-smoke-handshake.md`](issues/2026-08-11-lsp-fold-smoke-handshake.md).
 
@@ -346,9 +351,15 @@ table with a two-way mutation-tested guard in `tests/lang.tcyr`.
 cyim-lsp bundle — owner is upstream; cyim picks the fix up with
 a tag bump and no source change. `lang.cyr` refactor trigger has
 fired (third growth, and now a second chain to keep in step).
-Binary 1,175,856 → 1,193,384 B; 21 suites / 1136 assertions,
-fuzz 4/4, 118 CLI smoke, PTY integration smoke green, lint 0,
-fmt clean, all three cross-targets build.)*
+**CI repaired** — both workflows built the flat,
+pre-`versions/` toolchain layout by hand, so every run failed at
+`cyrius deps`; they now use the upstream `install.sh` pinned to
+the tag, and gained a layout assertion, a format gate, a
+CLI-smoke gate and `src/plugins/` linting. Binary 1,175,856 →
+1,193,384 B; 21 suites / 1136 assertions, fuzz 4/4, 118 CLI
+smoke, PTY integration smoke green, lint 0, fmt clean, all three
+cross-targets build, full pipeline replayed green in a sandboxed
+HOME.)*
 
 *Prior update: 2026-05-09 (v1.7.0 — Toolchain refresh +
 darshana TUI dep pickup shipped. First minor of the

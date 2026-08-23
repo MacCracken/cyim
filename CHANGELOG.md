@@ -143,6 +143,73 @@ highlighting fix is the one user-visible behaviour change in this cut.
   on the file ("filename detection is a future bite" — it shipped two years of
   cuts ago). Corrected; lint is clean.
 
+- **CI could not install the toolchain, so every run died at `cyrius deps`.**
+  Both `.github/workflows/ci.yml` and `release.yml` unpacked the release tarball
+  by hand into a flat `~/.cyrius/{bin,lib}` — the layout the toolchain used
+  before it grew `versions/`. `cyrius deps` resolves a dep bundle's sidecar
+  stdlib leaves out of the **version-pinned snapshot**, so the next step always
+  failed with:
+
+  ```
+  error: cyrius.cyml pins version 6.5.35 but it is not installed
+    at $HOME/.cyrius/versions/6.5.35/lib
+    run: cyrius install 6.5.35
+  ```
+
+  Reproduced locally by rebuilding the workflow's exact layout in a sandboxed
+  `HOME` — the flat layout gives that error verbatim; recreating
+  `versions/<pin>/{bin,lib}` resolves all three deps.
+
+  Both workflows now delegate to the **upstream installer**, the shape patra's
+  CI uses:
+
+  ```sh
+  CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+  curl -sSfL "https://raw.githubusercontent.com/MacCracken/cyrius/${CYRIUS_VERSION}/scripts/install.sh" \
+    | CYRIUS_VERSION="$CYRIUS_VERSION" sh
+  ```
+
+  `install.sh` lays out `versions/<v>/{bin,lib,programs}`, writes `current`, and
+  points `~/.cyrius/{bin,lib}` at the active version. Two things fall out of the
+  change beyond the fix:
+
+  - **The download is verified now.** `install.sh` fetches the `.sha256`,
+    fails closed when no SHA-256 tool exists, and checks the release signature.
+    The hand-rolled `curl -sLO` did none of that, and swallowed every copy
+    error behind `2>/dev/null || true` — which is why a layout that produced no
+    working toolchain still reported success.
+  - **The installer is pinned to the tag, not `main`.** An immutable ref, and
+    `install.sh` carries the release signing pubkey for exactly the version it
+    installs (its CVE-13 note). The version itself is still read from
+    `[package].cyrius`, so CLAUDE.md's "no hardcoded toolchain version in YAML"
+    rule holds.
+
+  A **`Verify toolchain layout`** step now asserts
+  `~/.cyrius/versions/<pin>/lib` exists immediately after install, so the next
+  packaging regression fails where it happens instead of surfacing two steps
+  later as a confusing dep error.
+
+  The repaired pipeline was run end-to-end in a clean sandbox against a real
+  `install.sh` fetch and a from-scratch `cyrius deps` — layout, deps, fmt,
+  build, ELF, lint, test (21/21), fuzz (4/4), bench, CLI smoke (118), PTY
+  integration smoke, and DCE parity all green, plus the `security` and `docs`
+  jobs.
+
+- **Two CI gates that never existed, both of which this cut needed.**
+  - **No format gate at all.** cyim has never checked formatting in CI, which is
+    how three files sat unformatted until this release noticed. Added as a
+    per-file loop over `src/`, `src/plugins/`, `tests/` and `fuzz/` —
+    deliberately *not* `cyrfmt --check src/*.cyr`, because cyrfmt reads only
+    `argv[1]` and silently ignores the rest, so the glob form checks one file
+    and exits 0 (patra's CI carries the same warning after libro sat green over
+    five unformatted files that way).
+  - **`tests/cli_smoke.sh` was never run.** 118 assertions over the six
+    one-shot agent verbs and every modifier — the `daimon` consumer contract
+    CLAUDE.md commits to — and CI never executed them. Added.
+
+  The `Lint` step also now covers `src/plugins/*.cyr`, which had never been
+  linted despite being a third of the LSP consumer surface.
+
 ### Added
 
 - **`openqasm` language routing** (`src/lang.cyr`). vyakarana 2.3.5 added an
@@ -238,6 +305,9 @@ it.
 - `cyrius audit` — clean (fmt / lint / docs / tests / bench). It had been
   failing on the dead `tests/cyim.bcyr` stub removed above; "100 undocumented
   public fns" remains as an advisory, unchanged.
+- **CI pipeline** — replayed end-to-end in a sandboxed `HOME` against a real
+  `install.sh` fetch and a from-scratch `cyrius deps`, plus the `security` and
+  `docs` jobs run against the tree. All green. See **Fixed**.
 - `cyrius lint` — 0 warnings across `src/` + `src/plugins/`.
 - `cyrfmt --check` — clean after the three reformats noted above.
 

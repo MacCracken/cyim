@@ -181,6 +181,8 @@ Run a closeout pass before tagging `X.Y.0` or `X.0.0`. Ship as the last patch of
 ## CI / Release
 
 - **Toolchain pin**: `cyrius = "X.Y.Z"` in `cyrius.cyml [package]`. **No separate `.cyrius-toolchain` file.** CI and release both read this; no hardcoded version strings in YAML.
+- **Toolchain install in CI goes through the upstream installer** — `scripts/install.sh` fetched from the *pinned tag*, never a hand-rolled tarball unpack. A manual unpack produces the flat `~/.cyrius/{bin,lib}` layout, and `cyrius deps` resolves dep sidecar stdlib leaves out of `~/.cyrius/versions/<pin>/lib` — so a hand-rolled install fails every run at the deps step. The installer is also what verifies the release checksum and signature. Both workflows assert `~/.cyrius/versions/<pin>/lib` exists right after install.
+- **Format checks are a per-file loop, never a glob.** `cyrfmt` reads only `argv[1]` and silently ignores the rest, so `cyrfmt --check src/*.cyr` checks one file and exits 0. Same trap applies to `cyrius lint`.
 - **Dead code elimination**: every `cyrius build` in CI and release runs with `CYRIUS_DCE=1`. Binary size is a release metric — track it.
 - **Tag filter**: release workflow triggers on `tags: ['[0-9]*']` — semver-only.
 - **Version-verify gate**: release asserts `VERSION == cyrius.cyml version == git tag` before building.

@@ -85,17 +85,34 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Cyrius toolchain
+        # Same repair as ci.yml's install step, and for the same reason — see
+        # the long note there. In short: the hand-rolled tarball unpack this
+        # replaces built the flat, pre-`versions/` `~/.cyrius/{bin,lib}`, and
+        # `cyrius deps` resolves stdlib leaves out of
+        # `~/.cyrius/versions/<pin>/lib`, so the next step always failed.
+        #
+        # The installer detects the target from `uname -m` on the runner, so
+        # `matrix.target` no longer names a tarball here; it only selects the
+        # runner and labels the artifact.
         run: |
-          CYRIUS_VERSION=$(grep 'cyrius *= *"' cyrius.cyml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          [ -n "$CYRIUS_VERSION" ] \
+            || { echo "::error::could not read [package].cyrius from cyrius.cyml"; exit 1; }
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-${{ matrix.target }}.tar.gz"
-          tar xzf "cyrius-$CYRIUS_VERSION-${{ matrix.target }}.tar.gz"
-          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-${{ matrix.target }}"
-          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
-          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
-          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
-          chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
-          echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
+          curl -sSfL "https://raw.githubusercontent.com/MacCracken/cyrius/${CYRIUS_VERSION}/scripts/install.sh" \
+            | CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+          echo "CYRIUS_HOME=$HOME/.cyrius" >> "$GITHUB_ENV"
+
+      - name: Verify toolchain layout
+        run: |
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          cyrius version
+          test -d "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" || {
+            echo "::error::stdlib snapshot missing at ~/.cyrius/versions/$CYRIUS_VERSION/lib"
+            exit 1
+          }
 
       - name: Resolve dependencies
         run: cyrius deps
