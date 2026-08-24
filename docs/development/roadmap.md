@@ -34,7 +34,7 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.9.2** (see [`state.md`](state.md)). The 1.6.x
+cyim is at **1.9.3** (see [`state.md`](state.md)). The 1.6.x
 catch-up cycle closed at 1.6.8; 1.7.0 opened the post-catch-up
 era with the darshana TUI dep pickup, and **1.8.0 is the one
 feature cut since** — cyim runs on AGNOS, full-screen on the
@@ -152,6 +152,7 @@ this is a sequencing index.
 | **v1.9.0** — **`o` / `O`: open a line below / above and enter INSERT.** New action ids `ACT_OPEN_BELOW` (16) / `ACT_OPEN_ABOVE` (17), additive under ADR 0004. Undoable as one unit and dot-repeatable with no special-casing — `_dot_begin` and `undo_record_pre_op` already key off "enters INSERT", so adding the two actions to those lists is the whole integration. **Fixed alongside: `A` appended BEFORE the character on a one-character line** — `buf_line_end(pos) == line_start` cannot distinguish an empty line from a one-char line, and `A` had shipped that way since it landed. Surfaced only when `o` copied the idiom and an end-to-end pty run disagreed with the unit suite; both call sites now share `_insert_eol_pos`. `tests/insert.tcyr` 37 → 62 assertions, mutation-tested in three directions | Shipped 2026-08-23 |
 | **v1.9.1** — **BUG-002 closed; LSP works.** `[deps.cyim-lsp]` `1.5.2 → 1.5.3` with **no cyim source change** — the defect was upstream (`var argv[4]`, four bytes for four 64-bit pointers, so every spawn with an argument overran and `execve` failed silently). `cyrius smoke` 4 passed / 9 failed → **13 / 0**. Everything the LSP surface shipped since 1.4.0 was correct code that never got to run. **`cyrius smoke` is now a CI gate** — the structural half, held back at 1.8.2 because a gate that fails on day one gets ignored, landed here green | Shipped 2026-08-23 |
 | **v1.9.2** — **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md) decided and implemented.** Config lives in `$XDG_CONFIG_HOME/cyim/cyimrc` (else `$HOME/.config/cyim/cyimrc`); `./.cyimrc` overrides it **key by key**. Before this, cyim read config from only the cwd, so nothing followed a user between projects. Local override accepted with no gate — the trade is sized by what `.cyimrc` can express, and the worst a hostile directory achieves is a wrong colour. Held honest by a rule rather than machinery: every new key gets classified local-overridable or home-only. Backward compatible; `tests/cyimrc.tcyr` 50 → 59 assertions including a reversed-order control | Shipped 2026-08-23 |
+| **v1.9.3** — **Closeout cut for the 1.9.x cycle**, all 11 CLAUDE.md steps at P(-1) depth ([audit](../audit/2026-08-23-1.9x-closeout.md)). 2 findings, both fixed: the config read cap **fabricated a value** — a line cut mid-value applied a truncated number that landed back inside the valid range (`palette.keyword = 199999` → `19`, painted silently), now dropped rather than misread, with `cyimrc_truncated()` reporting it; and 1.9.2's two precedence accessors had **no caller anywhere**, which [architecture note 004](../architecture/004-reading-the-dce-report.md) classifies as a coverage hole rather than dead code — closed with an invariant test, the second time that note's check has earned its keep. Four itoa implementations counted and **deliberately not merged** (their bound policies are exactly what differs). **First closeout with no known-red gate** and no open bugs | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -254,6 +255,7 @@ trigger.
 |---|---|
 | `lang.cyr` if-chain refactor | **Trigger fired at 1.8.2, and the shape of the refactor is now clearer.** 46 entries, and as of 1.8.2 there is a *second* if-chain that must stay in lockstep with it — `hl_grammar_name(i)` in `src/highlight.cyr`. Their silent divergence is precisely what cost 34 languages their highlighting for six minor versions. 1.6.2 (extension catch-up) was instance 1; 1.6.4 added a new parallel table rather than growing the existing one; 1.8.2's `openqasm` append is the third growth, satisfying CLAUDE.md's "wait for the third instance". `tests/lang.tcyr`'s drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt — but the right end state is one table, not three chains plus a guard. Owed: an ADR choosing between parallel global string arrays and a vyakarana metadata query (`grammar_count()` / `grammar_name_at(i)` would let the load list be derived rather than restated), then the refactor. |
 | `_cyim_lsp_*` shape duplication (cyim-lsp example glue ↔ cyim's `src/plugins/lsp_glue.cyr`) | The mirror pattern is instance-counting per CLAUDE.md "wait for the third": (1) `_cyim_lsp_label_for_ref` (1.6.5 — preview format), (2) `_cyim_lsp_ex_find_refs_with_mode` + `_cyim_lsp_on_ref_select` mode-branch + `_cyim_lsp_ref_split_mode` global (1.6.7 — open-in-split). The mirror itself is by design (cyim-lsp's bundle is self-contained; consumer copies the glue), but if a third example-glue refactor lands and the glue divergence becomes a maintenance burden, generalize the mirror into a documented copy-from-upstream procedure or a more aggressive bundle inclusion. |
+| Decimal-to-ASCII sprawl (4 implementations) | **Counted at the 1.9.3 closeout and deliberately not merged.** `_buf_append_dec`, `_cmd_ls_put_int`, `_render_u16_ascii` and agnos's `_al_put_uint` all reverse-fill digits into a scratch and emit them forward — a 5-line loop, four times. Past the "third instance" bar on count alone. **But their sinks differ in exactly the way that matters**: one writes raw, one goes through a bounds-checked putter, one carries a domain clamp that is load-bearing (audit F-2), and one is `#ifdef`-gated and writes via `syscall`. A shared core would be used four different ways, and the failure mode — someone improving it and dropping the render clamp — is worse than the duplication it removes. Trigger for revisiting: a fifth instance, or a bound bug in any of the four |
 | F-CO-2 (extract `_cyim_lsp_jump_to_uri_lc`) | Informational since 1.5.2. Still 2 instances; cyim-lsp `:lsp-implementation` or `:lsp-type-definition` would be the third. |
 
 ---
@@ -410,6 +412,22 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-08-23 (v1.9.3 — **closeout for the 1.9.x
+cycle at P(-1) depth**. 2 findings, both fixed and both
+mutation-tested: the config read cap **fabricated a value** — a
+line cut mid-value applied a truncated number that landed back
+INSIDE the valid range, so every validation layer passed it —
+and 1.9.2's two precedence accessors had no caller anywhere,
+which architecture note 004 calls a coverage hole rather than
+dead code. Four itoa implementations counted and declined for
+merge: their bound policies are precisely what differs, and a
+shared core's failure mode is worse than the duplication.
+**First closeout in cyim's history with no known-red gate** —
+`cyrius smoke` is 13/13 and gated — and **no open bugs**.
+1.9.x is closed; 1.10.0 opens clean. ⚠ ADR 0005 left a live
+obligation, not a deferral: every new `.cyimrc` key gets
+classified local-overridable or home-only when it is added.)*
 
 *Last updated: 2026-08-23 (v1.9.2 — **ADR 0005 decided and
 implemented**. Config lives in `$XDG_CONFIG_HOME/cyim/cyimrc`;

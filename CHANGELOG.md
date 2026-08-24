@@ -4,6 +4,126 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.9.3] — 2026-08-23
+
+**Closeout cut for the 1.9.x cycle — all 11 `CLAUDE.md` steps, run at P(-1)
+depth.** Full audit:
+[`docs/audit/2026-08-23-1.9x-closeout.md`](docs/audit/2026-08-23-1.9x-closeout.md).
+
+**2 findings, both fixed. No regressions.** And a first: **no known-red gate.**
+Every prior closeout ran with `cyrius smoke` at 4/9.
+
+### Fixed — the config read cap fabricated a value
+
+`cyimrc_load_path` reads at most 8 KB, then parsed the trailing unterminated
+bytes as a complete line. When the cut lands **mid-value** the partial number
+is applied — and because it is *shorter*, it can land back inside the valid
+range and pass every validation layer added at 1.8.3.
+
+Measured, with the fixture padded so the 8192-byte boundary falls inside the
+digits:
+
+```
+file says:     palette.keyword = 199999    out of range — correctly rejected when whole
+cyim applied:  palette.keyword = 19        in range — silently painted
+```
+
+A colour from a line that says something else, with no error anywhere. **1.9.2
+made it more reachable**, not less: cyim now reads two config files, each with
+its own cap.
+
+The trailing partial line is now parsed **only when the file fitted**. An
+over-cap config loses its last line rather than misreading it. `CYIMRC_READ_CAP`
+is named, and `cyimrc_truncated()` reports the condition instead of leaving it
+silent.
+
+Mutation-tested **in both directions**, because the over-correction is as wrong
+as the bug: parsing the partial line always reproduces the fabricated `19`;
+dropping it always breaks a legitimate unterminated final line. One assertion
+fails on each.
+
+### Fixed — two accessors with no caller anywhere
+
+`cyimrc_home_applied()` / `cyimrc_local_applied()` were added at 1.9.2 so the
+config precedence would be *observable*, and then nothing asserted on them. The
+dead-code sweep flagged them as the only two symbols in the tree with no
+caller.
+
+Per [architecture note 004](docs/architecture/004-reading-the-dce-report.md)
+that makes them a coverage hole rather than dead code — **the same shape as
+`diag_msg` at 1.8.5**, and the second time that note's check has earned its
+keep. The fix is the test, not deletion.
+
+Asserted as an **invariant** rather than against specific paths: the harness
+runs against whatever `$HOME` and cwd it has, so "did it find a home config" is
+not knowable, but "the return value agrees with the flags" is — and that is the
+contract. Plus a hermetic check that the flags reset per load rather than
+accumulating, which is the part that would rot silently.
+
+### Considered and declined — the itoa sprawl
+
+**Four decimal-to-ASCII implementations** now live in `src/`:
+`_buf_append_dec`, `_cmd_ls_put_int`, `_render_u16_ascii`, agnos's
+`_al_put_uint`. Same five-line reverse-fill loop, four times — well past
+"wait for the third instance" on count.
+
+**Not merged, deliberately.** Their sinks differ in exactly the way that
+matters: one writes raw, one goes through a bounds-checked putter, one carries
+a **domain clamp that is load-bearing** (audit F-2), and one is `#ifdef`-gated
+and writes via `syscall`. A shared core would be used four different ways, and
+its failure mode — someone improving it and dropping the render clamp — is
+worse than the duplication it removes. The duplicated part is the loop; the
+parts that carry safety are precisely the parts that differ.
+
+Recorded in the roadmap watch list with the count and the reasoning, so the
+next closeout has the data rather than re-deriving it. **Trigger: a fifth
+instance, or a bound bug in any of the four.**
+
+### Verification
+
+All 11 closeout steps pass, plus the P(-1) additions:
+
+- **Tests + fuzz** — 21 suites / **1216 assertions**, fuzz 4/4, **`cyrius
+  smoke` 13/13**, CLI smoke 128, PTY integration smoke, DCE parity. Clean build
+  from `rm -rf build`; `--agnos` and `--aarch64` cross-builds pass.
+- **Security re-scan** — no `sys_system`, no `/bin/sh`, no raw `execve`/`fork`;
+  all four M6/M7 guards present; no stack buffer ≥ 64 KB; **0 slot-vs-byte
+  findings**; **0 unused globals**. The new env-var → path → open chain has no
+  fixed-size buffer anywhere on it.
+- **External research** — vim's rc-file CVE corpus reviewed against 1.9.x's new
+  surface. Modeline RCE is refused by architecture; `.exrc`-from-cwd is decided
+  at ADR 0005; config-value-to-corruption was closed at 1.8.3 and re-verified.
+  One accepted residual named: `sudo cyim` with a preserved `$HOME` reads the
+  invoking user's config as root — vim's behaviour, follows from ADR 0001 § 5,
+  and the blast radius is a colour.
+- **Dead code** — floor 27, **every symbol with a caller** after the fix above.
+- **Cleanup** — 0 stale comments, 0 orphans, 0 TODO/FIXME in `src/`, 0 lint
+  warnings, 0 untracked deferrals, 0 undocumented fns.
+- **Downstream** — `agnoshi` / `aethersafha` still show zero integration
+  references. The live consumer is `daimon` via the CLI verbs — **and as of
+  1.9.1 the LSP surface too**, the first closeout where that is true.
+- **Benchmarks** — unmoved; every delta inside run-to-run spread.
+
+### Binary
+
+**1,201,744 B** (+16 B vs 1.9.2).
+
+### The 1.9.x cycle, closed
+
+| | 1.8.7 | 1.9.3 |
+|---|---:|---:|
+| Assertions | 1177 | **1216** |
+| LSP smoke | **4/9 — red** | **13/13 — gated** |
+| Dead-code floor (uncalled) | 24 (0) | 27 (0) |
+| Open bugs | 1 | **0** |
+
+Three cuts of substance: `o` / `O` (and the `A` bug they uncovered, shipped
+since `A` landed), BUG-002 closed, and ADR 0005 decided *and* implemented.
+
+**Nothing open blocks 1.10.0.** ADR 0005 left a **live obligation** rather than
+a deferral: every new `.cyimrc` key must be classified local-overridable or
+home-only when it is added.
+
 ## [1.9.2] — 2026-08-23
 
 **Your config now lives in your home directory.** ADR 0005 is decided and

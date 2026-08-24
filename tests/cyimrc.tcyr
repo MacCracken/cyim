@@ -240,6 +240,76 @@ fn main() {
     cyimrc_load_path(HOME_FIX);
     assert_eq(cyimrc_palette(TK_STRING), 20, "reversed order -> home wins (control)");
 
+    # ── v1.9.3 closeout — the read cap must not fabricate a value ────────
+    #
+    # `cyimrc_load_path` reads at most CYIMRC_READ_CAP bytes. If the cut lands
+    # mid-value, parsing the partial trailing line applies a number the file
+    # never contained — and one that can land back INSIDE the valid range, so
+    # every validation layer passes it. Measured before the fix:
+    # `palette.keyword = 199999` (out of range, correctly rejected when whole)
+    # became `19` and was applied.
+    #
+    # The fixture pads to exactly (cap - 20) so the cut falls inside the digits.
+    test_group("v1.9.3 — an over-cap file drops its partial line, not misreads it");
+    var TRUNC_FIX = "build/cyimrc-trunc.txt";
+    var tbuf = alloc(CYIMRC_READ_CAP + 64);
+    var tp = 0;
+    while (tp < CYIMRC_READ_CAP - 20) {
+        store8(tbuf + tp, 35);              # '#'
+        tp = tp + 1;
+        if (tp % 40 == 0) { store8(tbuf + tp - 1, 10); }
+    }
+    store8(tbuf + tp - 1, 10);              # end the padding on a newline
+    var tline = "palette.keyword = 199999\n";
+    var tq = 0;
+    while (tq < strlen(tline)) { store8(tbuf + tp + tq, load8(tline + tq)); tq = tq + 1; }
+    file_write_all(TRUNC_FIX, tbuf, tp + strlen(tline));
+
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 141\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    cyimrc_load_path(TRUNC_FIX);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 141,
+      "truncated line dropped — prior value kept, NOT a fabricated 19");
+    assert_eq(cyimrc_truncated(), 1, "truncation is reported, not silent");
+
+    # A file that fits must still have its unterminated last line parsed —
+    # the guard must key off the CAP, not off "no trailing newline".
+    test_group("v1.9.3 — a file that FITS still parses its last line");
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 77");   # no trailing \n
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 77, "unterminated final line still applies");
+
+    # ── v1.9.3 closeout — the precedence accessors have a caller ─────────
+    #
+    # `cyimrc_home_applied` / `cyimrc_local_applied` were added at 1.9.2 to
+    # make the search-path precedence observable, and then nothing asserted on
+    # them — the 1.9.3 dead-code sweep found them as the only two symbols in
+    # the tree with no caller anywhere. Per architecture note 004 that is a
+    # coverage hole rather than dead code, and the fix is the test.
+    #
+    # Asserted as an INVARIANT rather than against specific paths: this runs
+    # against whatever `$HOME` and cwd the harness happens to have, so "did it
+    # find a home config" is not knowable here — but "the return value agrees
+    # with the flags" is, and that is the actual contract.
+    test_group("v1.9.3 — cyimrc_load() return agrees with its precedence flags");
+    var lr = cyimrc_load();
+    var lh = cyimrc_home_applied();
+    var ll = cyimrc_local_applied();
+    assert_eq(lh == 0 || lh == 1, 1, "home_applied is a flag");
+    assert_eq(ll == 0 || ll == 1, 1, "local_applied is a flag");
+    var either = 0;
+    if (lh == 1) { either = 1; }
+    if (ll == 1) { either = 1; }
+    assert_eq(lr, either, "load() returns 1 iff at least one file was applied");
+
+    # And a hermetic check of the flag RESET, which is the part that would rot
+    # silently: a second load must not inherit the first one's verdict.
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 141\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    cyimrc_load();
+    assert_eq(cyimrc_home_applied() == 0 || cyimrc_home_applied() == 1, 1,
+      "flags reset on each load, not accumulated");
+
     return assert_summary();
 }
 

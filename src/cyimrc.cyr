@@ -243,16 +243,18 @@ fn cyimrc_load_path(path) {
     _cyimrc_init();
     var fd = file_open(path, O_RDONLY, 0);
     if (fd < 0) { return 0; }
-    var cap = 8192;
+    var cap = CYIMRC_READ_CAP;
     var buf = alloc(cap);
+    if (buf == 0) { file_close(fd); return 0; }
     var total = 0;
+    var truncated = 0;
     var go = 1;
     while (go == 1) {
         var got = file_read(fd, buf + total, cap - total);
         if (got <= 0) { go = 0; }
         if (got > 0) {
             total = total + got;
-            if (total >= cap) { go = 0; }
+            if (total >= cap) { go = 0; truncated = 1; }
         }
     }
     file_close(fd);
@@ -267,7 +269,22 @@ fn cyimrc_load_path(path) {
         }
         i = i + 1;
     }
-    if (ls < total) { _cyimrc_parse_line(buf, ls, total); }
+    # The trailing bytes with no terminator.
+    #
+    # ⭐ Parsed ONLY when the file fitted. If the read hit the cap we cannot
+    # know whether those bytes are a whole line or half of one, and parsing
+    # half of one is worse than dropping it: a value cut mid-digits can land
+    # back INSIDE the valid range and be applied silently. Measured before
+    # this guard — `palette.keyword = 199999` (out of range, correctly
+    # rejected when whole) truncated to `19`, which passes every validation
+    # layer and paints a colour the user never wrote.
+    #
+    # Dropping it means an over-cap config loses its last line rather than
+    # misreading it. `cyimrc_truncated()` makes that visible.
+    if (ls < total) {
+        if (truncated == 0) { _cyimrc_parse_line(buf, ls, total); }
+    }
+    if (truncated == 1) { _cyimrc_truncated = 1; }
     return 1;
 }
 
@@ -305,6 +322,20 @@ fn _cyimrc_home_path() {
     }
     return 0;
 }
+
+# Bytes read from a single config file. Ample for the documented surface —
+# ten palette keys and three display integers — with room for a commented
+# header many times over. A file larger than this is read up to the cap and
+# its remaining lines are ignored; `cyimrc_truncated()` reports it.
+var CYIMRC_READ_CAP = 8192;
+
+# Did any file in the most recent load hit `CYIMRC_READ_CAP`?
+var _cyimrc_truncated = 0;
+
+# Did a config file exceed `CYIMRC_READ_CAP` during the most recent
+# `cyimrc_load()`? 1 / 0. Keys past the cap are ignored, and the partial
+# trailing line is dropped rather than parsed — see `cyimrc_load_path`.
+fn cyimrc_truncated() { return _cyimrc_truncated; }
 
 # Did the most recent `cyimrc_load()` apply a project-local `./.cyimrc` on top
 # of the user-level file? Exists so the precedence is observable — "why is my
@@ -348,6 +379,7 @@ fn cyimrc_local_applied() { return _cyimrc_local_applied; }
 fn cyimrc_load() {
     _cyimrc_home_applied = 0;
     _cyimrc_local_applied = 0;
+    _cyimrc_truncated = 0;
     var any = 0;
     var hp = _cyimrc_home_path();
     if (hp != 0) {
