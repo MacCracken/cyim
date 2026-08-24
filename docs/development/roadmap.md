@@ -52,6 +52,17 @@ loaded, so they rendered uncolored. Syntax highlighting now
 covers everything `src/lang.cyr` routes, guarded both ways by
 `tests/lang.tcyr`.
 
+**1.8.3 is the P(-1) hardening cut** — see
+[`docs/audit/2026-08-23-1.8x-hardening.md`](../audit/2026-08-23-1.8x-hardening.md).
+Its HIGH finding is worth knowing even if you read nothing else:
+every write path in cyim treated a short `write(2)` as a
+completed one, so `:w` and all six agent verbs could destroy
+most of a file and report success. Fixed, with the residual
+that the save is still not *atomic* — recorded as R-1 rather
+than changed, because temp-file-plus-rename contradicts
+[ADR 0001](../adr/0001-trust-model.md) § 3 and is an ADR-level
+call.
+
 The full LSP user-visible surface — diagnostics, `gd` goto-def
 same-file + cross-file, `gr` references quickfix, `:lsp-*`
 ex-commands, URL-decoded `file://` paths, open-in-split — is
@@ -113,6 +124,7 @@ this is a sequencing index.
 | **v1.8.0** — **cyim runs on AGNOS.** Full-screen on the framebuffer console via new `src/agnos_kbd.cyr` (polls `kbscan#42`, tracks shift/ctrl/caps from make/break codes, reverse-maps Set-1 scancodes to the raw-terminal byte stream `editor_feed` already consumes); `src/agnos_line.cyr` ships an ed/ex line editor behind `cyim --line`. Entry point switched to the bare-call `_agnos_entry()` pattern (the module-scope `var exit_code = main();` double-ran on agnos, and literal `syscall(60, …)` is `winsize` there, not exit). LSP gated Linux-only. darshana 0.8.0 → 0.8.2. Verified on the real kernel under QEMU and under mirshi ≥ 1.11.0; Linux/macOS builds byte-unchanged | Shipped 2026-07-08 |
 | **v1.8.1** — the agnos *build* restored. `cyrius build --agnos` was failing inside the vendored cyim-lsp bundle on a Linux-shaped 3-arg `sys_waitpid`; fixed upstream and picked up as cyim-lsp 1.5.0 → 1.5.2 (per-target `sys_waitpid`, spawn half compiled out behind matched `#ifdef`/`#ifndef` arms, `LSP_HAVE_SUBPROC` exposed). Toolchain pin 6.2.36 → 6.5.18 + `lib sync --full`; 10 test files repaired for missing includes. No cyim source change for the fix | Shipped 2026-08-11 |
 | **v1.8.2** — dependency + toolchain catch-up, **plus the highlighting regression it uncovered**. cyrius 6.5.18 → 6.5.35; darshana 0.8.2 → **1.0.0** (the API freeze; carries 0.9.2's aarch64 `SYS_IOCTL` fix and two pre-freeze breaks cyim does not trip); vyakarana 2.2.3 → 2.4.0 with all 45 `grammars/*.cyml` re-synced and `openqasm` added as the 46th (`LANG_COUNT` 45 → 46, `.qasm` routing); `lib/` full re-sync to the 6.5.35 snapshot and `lib/agnosys.cyr` pruned (stdlib-retired at cyrius 6.2.37; `lib sync` copies without pruning). **Fixed: 34 of 45 routed languages rendered uncolored** — `highlight_init()`'s grammar load list stayed at its original 11 through 1.6.2's 11 → 45 routing growth, and it suppresses vyakarana's cwd-relative fallback, so a missing entry means no grammar rather than a slower path. Load list is now the `hl_grammar_name(i)` table with a two-way, mutation-tested drift guard in `tests/lang.tcyr`. Three files reformatted for 6.5.28's parenthesis-tracking `cyrfmt`. **CI repaired**: both workflows hand-unpacked the release tarball into the flat, pre-`versions/` `~/.cyrius/{bin,lib}`, so every run died at `cyrius deps` — they now delegate to the upstream `install.sh` (patra's shape), pinned to the tag, with a layout-assertion step; a format gate, a CLI-smoke gate and `src/plugins/` linting were added alongside. **BUG-002 root-caused** — see Open Bugs | Shipped 2026-08-23 |
+| **v1.8.3** — **P(-1) audit / refactor / hardening / security pass.** 1 HIGH, 1 MEDIUM, 3 LOW, 3 informational; all five code findings fixed with mutation-tested regressions. HIGH: `buf_save_file` treated a short `write(2)` as success, so `:w` cleared the modified flag and all six agent verbs exited 0 on a truncated file (measured 475 of 575 bytes lost) — and made `--batch`'s documented atomicity false. MEDIUM: an unvalidated `.cyimrc` palette value reached a backward-filled buffer index and overran `render_build_line`'s 12-byte escape reservation. LOW ×3: render scratch buffers bounded by terminal geometry rather than their own size (latent until resize support lands), an i64-undersized itoa scratch, and an integer parser that wrapped instead of rejecting. Docs: ADR 0005 filed (Proposed), the missing `docs/adr/{README,template}.md` and `docs/architecture/README.md` written, architecture notes 002 and 003 added, and two doc claims that contradicted the code corrected. Suite 1136 → 1161; CLI smoke 118 → 122; benchmarks unmoved | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -236,6 +248,21 @@ not slated.
 
 ---
 
+## Open from the 1.8.3 hardening audit
+
+Findings were fixed in-cut; these are the items deliberately left open,
+each with the reason. Full context in
+[`docs/audit/2026-08-23-1.8x-hardening.md`](../audit/2026-08-23-1.8x-hardening.md).
+
+| ID | Item | Why it is open |
+|---|---|---|
+| **R-1** | The save path is not atomic — `O_TRUNC` in place, so a failed write leaves a truncated file | The fix exists in the stdlib (`file_write_atomic`), but temp-file-plus-rename changes the inode on every save: breaks hardlinks, discards the target's permissions, and fails where the user can write the file but not create a sibling. It also contradicts [ADR 0001](../adr/0001-trust-model.md) § 3, which *accepts* write-in-place semantics because vim's default does. ADR-level, not a patch-cut change. The shape worth costing is vim's: a `backupcopy`-style choice rather than one fixed behaviour |
+| **R-2** | Dead-code floor of 20 cyim-side functions | Mostly not dead: frozen plugin ABI ([ADR 0004](../adr/0004-plugin-abi-freeze.md) forbids removal), test/fuzz introspection reachable from harnesses but not `main`, and two documented-deferred config getters. A DCE report is not a dead-code list for a project with a frozen ABI and an out-of-line harness |
+| **ADR 0005** | Should `.cyimrc` be loaded from the current directory at all? | [Filed as Proposed](../adr/0005-cyimrc-cwd-trust-boundary.md) with four costed options. Not urgent — the whole surface is ten colour indexes, and the worst a hostile config achieves is the wrong colour. Not to be left open either: `cyimrc.md` names keymaps as an M4 candidate, and a keymap accepted from a directory you just cloned is a different proposition from a colour. Decide while the answer is cheap |
+| **F-7** | The renderer is byte-oriented; C1 bytes pass through, no double-width or combining-character handling | Accepted and documented as [architecture note 003](../architecture/003-render-is-byte-oriented.md), not filed as a defect — these are one decision, and the obvious "fix" (substituting `0x80`–`0x9F`) breaks every non-ASCII file, because that range overlaps UTF-8 continuation bytes. The trigger that would change the calculus is a consumer editing CJK or RTL text in earnest — `aethersafha` is the likeliest |
+
+---
+
 ## Open Bugs
 
 ### BUG-002 — LSP fold smoke: `lsp_client_start_default()` handshake never completes (**P2**, opened 2026-08-11, **root-caused 2026-08-23**)
@@ -331,6 +358,23 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-08-23 (v1.8.3 — **P(-1) audit / refactor /
+hardening / security pass.** 1 HIGH, 1 MEDIUM, 3 LOW, 3
+informational; all five code findings fixed, every regression
+mutation-tested against the pre-fix source. The HIGH is the one
+to remember: `buf_save_file` treated a short `write(2)` as a
+completed one, so `:w` cleared the modified flag and all six
+agent verbs exited 0 on a truncated file — measured at 475 of
+575 bytes lost — and `--batch`'s documented atomicity was false.
+Left open on purpose: R-1 (the save is still not atomic —
+ADR-level), R-2 (dead-code floor is mostly frozen ABI), ADR 0005
+(cwd-relative `.cyimrc` policy), F-7 (byte-oriented renderer).
+Docs: ADR 0005 filed, the missing adr/architecture READMEs and
+ADR template written, notes 002 and 003 added, two doc claims
+that contradicted the code corrected. Suite 1136 → 1161, CLI
+smoke 118 → 122, binary 1,193,384 → 1,197,504 B, benchmarks
+unmoved.)*
 
 *Last updated: 2026-08-23 (v1.8.2 — **dependency + toolchain
 catch-up.** Every pin in the tree pulled to current: cyrius

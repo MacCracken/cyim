@@ -41,7 +41,7 @@ fn main() {
 
     test_group("basic palette overrides apply");
     write_fixture(FIXTURE_BASIC,
-        "palette.keyword = 200\npalette.string = 50\npalette.number = 99\n");
+      "palette.keyword = 200\npalette.string = 50\npalette.number = 99\n");
     var rc_basic = cyimrc_load_path(FIXTURE_BASIC);
     assert_eq(rc_basic, 1, "load returns 1 on existing file");
     assert_eq(cyimrc_palette(TK_KEYWORD), 200, "keyword override -> 200");
@@ -65,7 +65,7 @@ fn main() {
 
     test_group("comments, blank lines, and whitespace tolerated");
     write_fixture(FIXTURE_COMMENT,
-        "# Purple keyword theme\n\n   palette.keyword   =   88\n# trailing comment\npalette.error=42\n");
+      "# Purple keyword theme\n\n   palette.keyword   =   88\n# trailing comment\npalette.error=42\n");
     var rc_c = cyimrc_load_path(FIXTURE_COMMENT);
     assert_eq(rc_c, 1, "load returns 1");
     assert_eq(cyimrc_palette(TK_KEYWORD), 88, "keyword respects whitespace around =");
@@ -74,7 +74,7 @@ fn main() {
     test_group("malformed lines silently ignored");
     # Tests forward-compat shape: bad lines don't poison good ones.
     write_fixture(FIXTURE_BAD,
-        "palette.keyword = abc\nnotakey = 5\n=valuewithoutkey\npalette.string = 77\n");
+      "palette.keyword = abc\nnotakey = 5\n=valuewithoutkey\npalette.string = 77\n");
     cyimrc_load_path(FIXTURE_BAD);
     # palette.keyword had a non-numeric value — should remain whatever the
     # previous load left it (88 from the comment fixture above).
@@ -84,7 +84,7 @@ fn main() {
 
     test_group("palette.ident and palette.punctuation also accepted");
     write_fixture(FIXTURE_BASIC,
-        "palette.ident = 150\npalette.punctuation = 160\n");
+      "palette.ident = 150\npalette.punctuation = 160\n");
     cyimrc_load_path(FIXTURE_BASIC);
     assert_eq(cyimrc_palette(TK_IDENT),       150, "ident override");
     assert_eq(cyimrc_palette(TK_PUNCTUATION), 160, "punctuation override");
@@ -93,11 +93,110 @@ fn main() {
 
     test_group("editor config keys: ignorecase / line_numbers / tabstop");
     write_fixture(FIXTURE_BASIC,
-        "ignorecase = 1\nline_numbers = 1\ntabstop = 8\n");
+      "ignorecase = 1\nline_numbers = 1\ntabstop = 8\n");
     cyimrc_load_path(FIXTURE_BASIC);
     assert_eq(cyimrc_cfg_ignorecase(),   1, "ignorecase = 1");
     assert_eq(cyimrc_cfg_line_numbers(), 1, "line_numbers = 1");
     assert_eq(cyimrc_cfg_tabstop(),      8, "tabstop = 8");
+
+    # ── 1.8.3 audit F-2 / F-5 ────────────────────────────────────────────
+    # A palette value outside 0..255 must be dropped like any other
+    # malformed value, not stored. Through 1.8.2 it was stored and reached
+    # `_render_u16_ascii`, whose 8-byte scratch is indexed DOWNWARD from 7:
+    # a 15-digit code drove the index negative AND made the colour escape
+    # overrun the 12 bytes `render_build_line` reserves for it.
+    test_group("F-2 — palette values outside 0..255 are rejected");
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 141\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 141, "in-range value is stored");
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 141\npalette.keyword = 256\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 141, "256 rejected, prior value kept");
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 141\npalette.keyword = 999999999\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 141, "999999999 rejected");
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 141\npalette.keyword = -2\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 141, "-2 rejected (only -1 is legal)");
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 141\npalette.keyword = -1\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 0 - 1, "-1 accepted (no-colour sentinel)");
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 0\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 0, "0 accepted (range floor)");
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 255\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 255, "255 accepted (range ceiling)");
+
+    # F-5: a digit run long enough to wrap i64 must be REJECTED, not wrapped
+    # into a value that happens to pass the range check above.
+    test_group("F-5 — over-long digit runs are rejected, not wrapped");
+    write_fixture(FIXTURE_BASIC, "palette.keyword = 141\npalette.keyword = 12345678901234567890123\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 141, "23-digit value rejected");
+    write_fixture(FIXTURE_BASIC, "tabstop = 4\ntabstop = 12345678901234567890123\n");
+    cyimrc_load_path(FIXTURE_BASIC);
+    assert_eq(cyimrc_cfg_tabstop(), 4, "23-digit tabstop rejected");
+
+    # ── 1.8.3 audit F-2, sink side ───────────────────────────────────────
+    # Asserted at `_render_u16_ascii` rather than through render_build_line:
+    # this is the function whose contract was violated, and whose 12-byte
+    # reservation in the caller depends on the return being <= 3. Driving it
+    # through the full render pipeline instead makes the assertion depend on
+    # where token boundaries happen to fall relative to `byte_cap`, which is
+    # incidental — a fixture that merely *usually* overflows is a test that
+    # merely usually catches the regression.
+    test_group("F-2 — _render_u16_ascii never writes more than 3 digits");
+    var CANARY = 170;                       # 0xAA
+    var ubuf = alloc(64);
+    var ui = 0;
+    while (ui < 64) { store8(ubuf + ui, CANARY); ui = ui + 1; }
+
+    assert_eq(_render_u16_ascii(ubuf, 0, 0),   1, "0   -> 1 digit");
+    assert_eq(_render_u16_ascii(ubuf, 0, 7),   1, "7   -> 1 digit");
+    assert_eq(_render_u16_ascii(ubuf, 0, 42),  2, "42  -> 2 digits");
+    assert_eq(_render_u16_ascii(ubuf, 0, 255), 3, "255 -> 3 digits (palette ceiling)");
+    assert_eq(_render_u16_ascii(ubuf, 0, 999), 3, "999 -> 3 digits (domain ceiling)");
+
+    # Out-of-domain input must still write at most 3 bytes. Against the
+    # 1.8.2 source these return 15 and 19 and scribble past index 3.
+    assert_eq(_render_u16_ascii(ubuf, 0, 1000),            3, "1000 clamped to 3 digits");
+    assert_eq(_render_u16_ascii(ubuf, 0, 999999999999999), 3, "15-digit clamped to 3 digits");
+    assert_eq(_render_u16_ascii(ubuf, 0, 0 - 5),           1, "negative clamped to 0 -> 1 digit");
+    assert_eq(load8(ubuf + 3), CANARY, "byte 3 untouched — nothing wrote past 3 digits");
+    assert_eq(load8(ubuf + 4), CANARY, "byte 4 untouched");
+
+    # And the whole-escape composer stays inside the 12 bytes
+    # render_build_line reserves for it (\e[38;5; = 8, digits <= 3, m = 1).
+    test_group("F-2 — _render_emit_fg fits the 12-byte reservation");
+    var ei = 0;
+    while (ei < 64) { store8(ubuf + ei, CANARY); ei = ei + 1; }
+    assert_eq(_render_emit_fg(ubuf, 0, 141) <= 12, 1, "in-range code fits in 12");
+    assert_eq(_render_emit_fg(ubuf, 0, 999999999999999) <= 12, 1, "out-of-range code still fits in 12");
+    assert_eq(load8(ubuf + 12), CANARY, "byte 12 untouched by the escape writer");
+
+    # Pipeline-level invariant, kept as a coarse backstop: whatever the
+    # palette says, render must not report a position past the caller's cap.
+    test_group("F-2 — render_build_line reports no position past out_max");
+    var rb = buf_new();
+    var rsrc = "var a = 1 ; var b = 2 ; var c = 3 ; var d = 4 ; var e = 5 ; var f = 6 ;\n";
+    buf_insert(rb, rsrc, strlen(rsrc));
+    buf_move(rb, 0);
+    var rtb = highlight_buf(rb, "cyrius");
+    assert_neq(rtb, 0, "fixture tokenizes");
+    var rcap = 120;
+    var rout = alloc(rcap + 64);
+    store64(&_cyimrc_palette + 1 * 8, 999999999999999);
+    store64(&_cyimrc_palette + 5 * 8, 888888888888888);
+    store64(&_cyimrc_palette + 3 * 8, 777777777777777);
+    assert_eq(render_build_line(rb, 0, 400, rtb, rout, rcap) <= rcap, 1,
+      "render_build_line <= out_max");
+    assert_eq(render_build_line_naked(rb, 0, 400, rtb, rout, rcap) <= rcap, 1,
+      "render_build_line_naked <= out_max");
+    # Restore the slots so nothing after this group inherits them.
+    store64(&_cyimrc_palette + 1 * 8, 0 - 1);
+    store64(&_cyimrc_palette + 5 * 8, 0 - 1);
+    store64(&_cyimrc_palette + 3 * 8, 0 - 1);
 
     return assert_summary();
 }

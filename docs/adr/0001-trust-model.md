@@ -1,8 +1,20 @@
 # ADR 0001 — Trust model: interactive local user
 
-**Status:** Accepted
+**Status:** Accepted (scope clarified 2026-08-23 — see the note below)
 **Date:** 2026-04-25
 **Tags:** security, trust-model, v1.0
+
+> **2026-08-23 (v1.8.3) — this ADR does not cover cwd-relative config.**
+> Decision § 1 below groups `.cyimrc` with stdin and typed paths as things
+> "the user" supplies. `cyimrc_load()` reads **`./.cyimrc`**, so the file
+> arrives with whatever directory the user happens to be in — it is the
+> *directory's* input, not theirs. The 1.8.x hardening audit surfaced this
+> while fixing an out-of-bounds write driven by an unvalidated value in
+> that file. The memory-safety half is fixed and was never a trust
+> question; the policy half — whether a cwd-relative config should be
+> loaded at all, and with what restrictions — is
+> [ADR 0005](0005-cyimrc-cwd-trust-boundary.md), status Proposed.
+> Read clause 1 as scoped to input the user actually supplies.
 
 ---
 

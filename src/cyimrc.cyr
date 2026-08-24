@@ -17,8 +17,11 @@
 #   palette.error
 #
 # `<ansi_code>` is a 0..255 256-color index, or -1 to mean "no color"
-# (terminal default). Unknown keys and malformed values are silently
-# ignored (forward-compat). Comments start with `#`; blank lines OK.
+# (terminal default). Unknown keys are silently ignored (forward-compat), and
+# so are malformed values — which since 1.8.3 includes values OUTSIDE that
+# range, not merely non-numeric ones. Through 1.8.2 the range was documented
+# but unenforced, and the unchecked value reached the render escape writer;
+# see `_cyimrc_palette_valid`. Comments start with `#`; blank lines OK.
 #
 # Lookup order in render.cyr:
 #   1. cyimrc_palette(kind) — returns user override if loaded, else -1.
@@ -62,12 +65,22 @@ fn _cyimrc_is_ws(c) {
 }
 
 # Parse a signed integer from buf[s..e). Sentinel return -99999 on bad input.
+#
+# Digits are capped at 9 (audit F-5). Without the cap, `v = v * 10 + d` over a
+# 25-digit run silently wraps i64 and lands on an arbitrary value — including
+# one inside the range the caller then range-checks and accepts. A config value
+# nobody could type on purpose should be REJECTED, not wrapped into a plausible
+# one. 9 digits covers every value any cyimrc key can legitimately take by
+# several orders of magnitude.
+var _CYIMRC_MAX_DIGITS = 9;
+
 fn _cyimrc_parse_int(buf, s, e) {
     if (s >= e) { return 0 - 99999; }
     var sign = 1;
     var p = s;
     if (load8(buf + p) == 45) { sign = 0 - 1; p = p + 1; }
     if (p >= e) { return 0 - 99999; }
+    if (e - p > _CYIMRC_MAX_DIGITS) { return 0 - 99999; }
     var v = 0;
     while (p < e) {
         var c = load8(buf + p);
@@ -77,6 +90,27 @@ fn _cyimrc_parse_int(buf, s, e) {
         p = p + 1;
     }
     return v * sign;
+}
+
+# Is `v` a legal 256-color palette code? `-1` means "no override / terminal
+# default"; `0..255` is the xterm-256 index space. Anything else is rejected.
+#
+# ⭐ Audit F-2. This range check did not exist through v1.8.2, and the value
+# flows to `_render_u16_ascii`, whose documented domain is 0..999 and whose
+# 8-byte scratch is indexed DOWNWARD from 7 — so a 15-digit code drove the
+# index to -8 (a stack write below the buffer) and made
+# `_render_emit_fg` write 23 bytes where `render_build_line` had reserved 12,
+# putting the render past the caller's `out_max`. Measured before the fix:
+# `render_build_line(..., out_max=120)` returned pos=122.
+#
+# The value is attacker-influenced in a way ADR 0001 does not cover: `.cyimrc`
+# is loaded from the CURRENT DIRECTORY, so it is the directory's input, not the
+# invoking user's. See the 1.8.3 audit § ADR gap.
+fn _cyimrc_palette_valid(v) {
+    if (v == 0 - 1) { return 1; }
+    if (v < 0)      { return 0; }
+    if (v > 255)    { return 0; }
+    return 1;
 }
 
 # Compare buf[ks..ke) byte-for-byte against a NUL-terminated literal.
@@ -92,12 +126,34 @@ fn _cyimrc_keyeq(buf, ks, ke, lit) {
     return 1;
 }
 
+# Does buf[ks..ke) name one of the ten `palette.*` keys? Used to decide
+# whether the 256-color range check applies before the key dispatch below.
+fn _cyimrc_key_is_palette(buf, ks, ke) {
+    var n = ke - ks;
+    var pre = "palette.";
+    if (n <= 8) { return 0; }
+    var i = 0;
+    while (i < 8) {
+        if (load8(buf + ks + i) != load8(pre + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
 # Apply one parsed key=value pair into the palette slots. Unknown
 # keys are silently ignored; bad values too (we already returned
 # from _cyimrc_parse_int with the sentinel).
 fn _cyimrc_apply(buf, ks, ke, vs, ve) {
     var v = _cyimrc_parse_int(buf, vs, ve);
     if (v == 0 - 99999) { return 0; }
+
+    # Palette keys carry a 256-color index; out-of-range is dropped like any
+    # other malformed value (audit F-2). Checked before the key dispatch so a
+    # single guard covers all ten keys and cannot be forgotten when an
+    # eleventh is added.
+    if (_cyimrc_key_is_palette(buf, ks, ke) == 1) {
+        if (_cyimrc_palette_valid(v) == 0) { return 0; }
+    }
 
     if (_cyimrc_keyeq(buf, ks, ke, "palette.ident")        == 1) { store64(&_cyimrc_palette + 0 * 8, v); return 0; }
     if (_cyimrc_keyeq(buf, ks, ke, "palette.keyword")      == 1) { store64(&_cyimrc_palette + 1 * 8, v); return 0; }

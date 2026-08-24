@@ -332,10 +332,48 @@ fn buf_col_of(b, pos) {
     return pos - buf_line_start(b, pos);
 }
 
+# Write exactly `len` bytes from `ptr` to `fd`, looping until done.
+# Returns `len` on success, or a negative errno.
+#
+# ⭐ A bare `file_write` is NOT enough, and assuming otherwise cost cyim a
+# silent-data-loss bug through v1.8.2 (audit F-1). write(2) is permitted to
+# transfer FEWER bytes than asked and report that count as SUCCESS — under
+# `ENOSPC`, under `RLIMIT_FSIZE`, or when a signal lands after a partial
+# transfer. The pre-1.8.3 `buf_save_file` recorded the short count as
+# `total` and returned it POSITIVE, so `:w` cleared the modified flag and
+# `cyim --write` exited 0 while the file on disk had been truncated.
+# Measured: a 575-byte `--batch` under `RLIMIT_FSIZE=100` exited 0 having
+# destroyed 475 bytes.
+#
+# `w == 0` is treated as an error rather than retried: for a regular file
+# with `len > 0` it means no forward progress, and looping on it hangs.
+fn _buf_write_all(fd, ptr, len) {
+    var off = 0;
+    while (off < len) {
+        var w = file_write(fd, ptr + off, len - off);
+        if (w < 0)  { return w; }
+        if (w == 0) { return 0 - 5; }   # -EIO: no forward progress
+        off = off + w;
+    }
+    return off;
+}
+
 # Write the buffer's logical content to `path` (O_WRONLY|O_CREAT|O_TRUNC, 0644).
-# Returns bytes written on success, -1 on open failure, or a propagated negative
-# write error. Pre-gap and post-gap segments are written separately so the
-# cursor position is not disturbed.
+# Returns bytes written on success, or a NEGATIVE value on any failure — open,
+# short/failed write, fsync, or close. Pre-gap and post-gap segments are written
+# separately so the cursor position is not disturbed.
+#
+# Every caller (`:w`, `:wq`, `cyim --write` / `--replace[-all]` / `--batch`,
+# and the agnos line editor) tests `< 0`, so a failure here is what makes the
+# editor keep the modified flag set and the CLI exit non-zero.
+#
+# ⚠ NOT atomic, deliberately. The file is opened `O_TRUNC`, so a failure part
+# way through leaves a truncated file on disk — the caller is told, but the
+# damage is done. This matches vim's in-place default and ADR 0001 §3, which
+# accepts write-in-place TOCTOU semantics; moving to write-temp-then-rename
+# would change the inode on every save (breaking hardlinks and the
+# preserve-permissions expectation) and is an ADR-level decision, not a
+# hardening tweak. Tracked in the 1.8.3 audit as residual R-1.
 fn buf_save_file(b, path) {
     var fd = file_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
     if (fd < 0) { return 0 - 1; }
@@ -345,16 +383,21 @@ fn buf_save_file(b, path) {
     var cap = load64(b + 24);
     var total = 0;
     if (gs > 0) {
-        var n1 = file_write(fd, data, gs);
+        var n1 = _buf_write_all(fd, data, gs);
         if (n1 < 0) { file_close(fd); return n1; }
         total = total + n1;
     }
     var post_len = cap - ge;
     if (post_len > 0) {
-        var n2 = file_write(fd, data + ge, post_len);
+        var n2 = _buf_write_all(fd, data + ge, post_len);
         if (n2 < 0) { file_close(fd); return n2; }
         total = total + n2;
     }
-    file_close(fd);
+    # Durability + late errors. Some filesystems (NFS most visibly) only
+    # surface a write error at fsync or close time, so reporting success
+    # before both have returned cleanly is reporting a guess.
+    if (xfsync(fd) < 0) { file_close(fd); return 0 - 5; }
+    var cr = file_close(fd);
+    if (cr < 0) { return cr; }
     return total;
 }

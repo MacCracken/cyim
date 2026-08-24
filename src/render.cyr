@@ -24,6 +24,12 @@
 # unaffected, only the display is.
 var RENDER_LINE_BUF = 8192;
 
+# Sizes of the two fixed render scratch buffers whose write bound used to be
+# terminal geometry rather than the buffer itself (audit F-3). Declared as
+# constants so the guard and the declaration cannot drift apart.
+var RENDER_CMDLINE_BUF = 2048;
+var RENDER_STATUS_BUF  = 1024;
+
 # ── Token palette
 # Maps a vyakarana TK_* kind to a 256-color ANSI index. Returns -1
 # for "no color" — caller skips the foreground escape and (if a color
@@ -50,8 +56,27 @@ fn theme_token_color(kind) {
     return 0 - 1;
 }
 
-# Write decimal `n` (0..999) into `buf` at `off`. Returns digits written.
+# Write decimal `n` into `buf` at `off`. Returns digits written — **never
+# more than 3**, so a caller reserving 3 bytes for the number is always right.
+#
+# ⭐ The clamp is the point (audit F-2, second layer). `nbuf` is filled
+# BACKWARD from index 7, so the loop's real precondition is "n has at most 8
+# digits" — and the caller's precondition is stricter still, because
+# `render_build_line` reserves exactly 12 bytes for the whole escape
+# (`\e[38;5;` + digits + `m` = 8 + digits). Through v1.8.2 the "0..999" in
+# this docstring was a comment, not a check: a `.cyimrc` palette override of
+# 999999999999999 drove `pi` to -8 (writing below `nbuf`) and returned 15,
+# making `_render_emit_fg` write 23 bytes into a 12-byte reservation and
+# `render_build_line` return a `pos` past the caller's `out_max`.
+#
+# `_cyimrc_palette_valid` now rejects such a value at the config boundary, so
+# this is defense in depth — but it is the layer that makes the 12-byte
+# reservation TRUE for every caller, rather than true-if-someone-else-checked.
+# Out-of-domain input is clamped rather than refused: this is a display path,
+# and drawing the wrong colour beats refusing to draw the line.
 fn _render_u16_ascii(buf, off, n) {
+    if (n < 0)   { n = 0; }
+    if (n > 999) { n = 999; }
     var nbuf[8];
     var pi = 7;
     if (n == 0) { store8(&nbuf + pi, 48); pi = pi - 1; }
@@ -307,10 +332,22 @@ fn _render_cmdline(s, prefix_byte, cols) {
     var cb = editor_cmdbuf(s);
     var clen = buf_len(cb);
     var line[2048];
+    # ⭐ Audit F-3. The write bound is min(terminal width, OUR buffer), not
+    # the terminal width alone. `cols` is external data — on agnos it is
+    # whatever `winsize#60` reports, and on Linux it becomes external the day
+    # `tty_winsize` is wired for resize support (a roadmap item). `ws_col` is
+    # a u16, so a terminal is free to claim 65535 columns; bounding a
+    # 2048-byte stack buffer by that value alone is a ~63 KB stack overflow
+    # waiting for the feature that supplies it. Latent, not live, at 1.8.3 —
+    # `scr_cols` is a hardcoded 80 on Linux/macOS — and fixed here so it
+    # cannot become live by accident.
+    var cap = cols - 1;
+    if (cap > RENDER_CMDLINE_BUF) { cap = RENDER_CMDLINE_BUF; }
+    if (cap < 0) { cap = 0; }
     var pos = 0;
     var i = 0;
     while (i < clen) {
-        if (pos < cols - 1) {
+        if (pos < cap) {
             store8(&line + pos, buf_get(cb, i));
             pos = pos + 1;
         }
@@ -405,6 +442,12 @@ fn _render_leaf_status(s, leaf) {
     tty_move(status_row + 1, rc + 1);
 
     var sbuf[1024];
+    # Same bound as the cmdline buffer above: the visible width `rw` comes
+    # from the window layout, which is seeded from terminal geometry, so it
+    # cannot be the only thing standing between this loop and the end of a
+    # 1024-byte stack buffer. Reserve 8 bytes for the trailing SGR reset and
+    # the NUL-free tail; every store below is guarded against `scap`.
+    var scap = RENDER_STATUS_BUF - 8;
     var pos = 0;
     var visible = 0;
 
@@ -434,6 +477,7 @@ fn _render_leaf_status(s, leaf) {
     if (path != 0) { name = path; }
     var nlen = strlen(name);
     if (visible + nlen > rw) { nlen = rw - visible; }
+    if (pos + nlen > scap)   { nlen = scap - pos; }
     if (nlen < 0) { nlen = 0; }
     var k = 0;
     while (k < nlen) {
@@ -444,17 +488,22 @@ fn _render_leaf_status(s, leaf) {
 
     if (modified == 1) {
         if (visible + 4 <= rw) {
-            store8(&sbuf + pos + 0, 32);
-            store8(&sbuf + pos + 1, 91);
-            store8(&sbuf + pos + 2, 43);
-            store8(&sbuf + pos + 3, 93);
-            pos = pos + 4; visible = visible + 4;
+            if (pos + 4 <= scap) {
+                store8(&sbuf + pos + 0, 32);
+                store8(&sbuf + pos + 1, 91);
+                store8(&sbuf + pos + 2, 43);
+                store8(&sbuf + pos + 3, 93);
+                pos = pos + 4; visible = visible + 4;
+            }
         }
     }
 
     while (visible < rw) {
-        store8(&sbuf + pos, 32);
-        pos = pos + 1; visible = visible + 1;
+        if (pos >= scap) { visible = rw; }
+        if (pos < scap) {
+            store8(&sbuf + pos, 32);
+            pos = pos + 1; visible = visible + 1;
+        }
     }
 
     if (is_active == 1) {

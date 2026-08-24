@@ -529,9 +529,12 @@ selection in view.
 
 ## Troubleshooting
 
-**Tab inserts a tab character.** `:set tabstop=N` controls display
-width; literal Tab insertion stays. (Auto-indent / spaces-as-Tab is
-post-v1.0 if asked.)
+**Tab inserts a tab character.** `:set tabstop=N` **stores** the display
+width on the editor state but does not yet change rendering — a TAB still
+draws as one column. Render integration is deferred, as
+[`cyimrc.md`](cyimrc.md) records; this page claimed `tabstop` "controls
+display" through 1.8.2, which it never has. Literal Tab insertion stays.
+(Auto-indent / spaces-as-Tab is post-v1.0 if asked.)
 
 **Arrow keys put me in NORMAL.** Terminals send arrow keys as `\x1b[A`
 etc.; the leading `\x1b` is Esc, which exits INSERT. Use `h j k l`

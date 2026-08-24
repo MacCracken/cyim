@@ -254,10 +254,16 @@ fn _cmd_ls_put_byte(pos, c) {
     return pos + 1;
 }
 
-# Append decimal `val` (0..999, plenty for buffer indexes).
+# Append decimal `val`. Callers pass buffer indexes, so the value is small —
+# but the scratch is sized for the whole i64 domain anyway (audit F-4): the
+# reverse-fill loop is bounded by `val`, not by the buffer, and 16 bytes holds
+# only 16 of the 19 digits an i64 can produce. Not reachable today; sized
+# correctly so it never becomes reachable by a caller change. This is the same
+# slot-vs-domain mistake that made cyim-lsp's `var argv[4]` a live bug (see
+# BUG-002), caught here by looking for the shape rather than the symptom.
 fn _cmd_ls_put_int(pos, val) {
     if (val <= 0) { return _cmd_ls_put_byte(pos, 48); }
-    var tmp[16];
+    var tmp[24];
     var d = 0;
     while (val > 0) {
         store8(&tmp + d, 48 + val % 10);

@@ -831,5 +831,63 @@ rm -f "$REGEX_FIX" "$REGEX_FIX2" "$REGEX_REPLACE" "$REGEX_OLD" "$REGEX_NEW"
 
 rm -f "$FIX" "$WRITE_FIX" "$BATCH_FIX"
 
-echo "$PASS passed, $FAIL failed (118 total)"
+# ── 1.8.3 audit F-1 — a short write must never be reported as success ──
+#
+# write(2) may transfer FEWER bytes than asked and return that count as a
+# SUCCESS. Through 1.8.2 `buf_save_file` recorded the short count and
+# returned it positive, so all three write verbs exited 0 with a truncated
+# file on disk. Measured then: a 575-byte payload under a 100-byte
+# RLIMIT_FSIZE exited 0 having destroyed 475 bytes.
+#
+# `ulimit -f` is in 512-byte blocks, so `ulimit -f 1` caps the file at 512.
+# `trap '' XFSZ` matters: exceeding RLIMIT_FSIZE also raises SIGXFSZ, whose
+# default action kills the process — an ignored disposition IS inherited
+# across exec, so this lets cyim reach its own error path and be judged on
+# its exit code rather than on a signal.
+SHORTW=/tmp/cyim-cli-smoke-shortwrite.txt
+PAYLOAD=/tmp/cyim-cli-smoke-payload.txt
+: > "$PAYLOAD"
+i=0
+while [ $i -lt 60 ]; do printf '0123456789ABCDEF0123456789ABCDEF\n' >> "$PAYLOAD"; i=$((i + 1)); done   # ~2 KB
+
+rm -f "$SHORTW"
+( ulimit -f 1; trap '' XFSZ; "$BIN" --write "$SHORTW" < "$PAYLOAD" >/dev/null 2>&1 )
+RC=$?
+if [ "$RC" != "0" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --write under RLIMIT_FSIZE reported success (rc=0) on a truncated write"
+fi
+
+# The replacement GROWS each line, so the result is comfortably over the
+# 512-byte cap. Shrinking it instead (e.g. -> "X") lands the whole output
+# under the limit, the write succeeds, and the case proves nothing.
+cp "$PAYLOAD" "$SHORTW"
+( ulimit -f 1; trap '' XFSZ; "$BIN" --replace-all '0123456789ABCDEF0123456789ABCDEF' \
+    '0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF' "$SHORTW" >/dev/null 2>&1 )
+RC=$?
+if [ "$RC" != "0" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --replace-all under RLIMIT_FSIZE reported success (rc=0) on a truncated write"
+fi
+
+# Control: with no limit the same write succeeds and is byte-exact. Without
+# this, the two cases above would also pass against a build that simply
+# failed every save.
+rm -f "$SHORTW"
+"$BIN" --write "$SHORTW" < "$PAYLOAD" >/dev/null 2>&1
+assert_rc '--write with no rlimit succeeds' 0 $?
+if cmp -s "$PAYLOAD" "$SHORTW"; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: --write with no rlimit did not reproduce the payload byte-for-byte"
+fi
+
+rm -f "$SHORTW" "$PAYLOAD"
+
+echo "$PASS passed, $FAIL failed (122 total)"
 [ "$FAIL" = "0" ] || exit 1

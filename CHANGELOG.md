@@ -4,6 +4,219 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.3] — 2026-08-23
+
+**P(-1) hardening pass: 1 HIGH, 1 MEDIUM, 3 LOW, 3 informational — all five
+code findings fixed.** Full write-up in
+[`docs/audit/2026-08-23-1.8x-hardening.md`](docs/audit/2026-08-23-1.8x-hardening.md).
+
+The headline is that **every write path in cyim could destroy most of a file
+and report success.** `:w`, `:wq`, and all six agent CLI verbs funnel through
+one function that treated a short `write(2)` as a completed one.
+
+No feature change. Benchmarks unmoved; the new bounds checks are not
+measurable.
+
+### Fixed
+
+- **`buf_save_file` reported a short write as success (audit F-1, HIGH).**
+  `write(2)` is permitted to transfer fewer bytes than requested and return
+  that count as **success** — under `ENOSPC`, under `RLIMIT_FSIZE`, or when a
+  signal lands mid-transfer. The old code called `file_write` once per gap
+  segment, tested only `< 0`, and returned the short count **positive**. Every
+  caller tests `< 0`, so the editor cleared its modified flag and the CLI
+  exited 0.
+
+  Measured before the fix — 575-byte payload, `RLIMIT_FSIZE` = 100 bytes:
+
+  | verb | exit code | on disk | lost |
+  |---|---:|---:|---:|
+  | `cyim --write` | **0** | 100 B | 475 B |
+  | `cyim --replace` | **0** | 100 B | 475 B |
+  | `cyim --batch` | **0** | 100 B | 475 B |
+
+  This also made a **documented guarantee false**: `CLAUDE.md` says of
+  `--batch` *"Atomic — failure mid-batch leaves FILE untouched on disk."* True
+  of a logical mid-batch failure, false of a write failure — the file is
+  opened `O_TRUNC`, so by the time the write fails the original is gone. The
+  wording is corrected in this cut.
+
+  New `_buf_write_all` loops until every byte lands and treats `w == 0` as
+  `-EIO` (no forward progress — retrying hangs). `buf_save_file` now also
+  `fsync`s and checks `close`, because NFS and friends surface write errors at
+  one of those two points rather than at `write`. **All three verbs now exit 1
+  with `save failed`**, and an unconstrained write is still byte-exact.
+
+  ⚠ **The save is still not atomic** — the caller is now told, but a failure
+  part way through still leaves a truncated file. The stdlib's
+  `file_write_atomic` would fix that, and was deliberately not adopted:
+  temp-file-plus-rename changes the inode on every save, breaking hardlinks,
+  discarding the target's permissions, and failing where the user can write
+  the file but not create a sibling. It also contradicts
+  [ADR 0001](docs/adr/0001-trust-model.md) § 3, which *accepts* write-in-place
+  semantics on the grounds that they match vim's default. That is an
+  ADR-level call, recorded as residual R-1 rather than made in a patch cut.
+
+- **`.cyimrc` palette values were not range-checked, and reached a buffer
+  index (audit F-2, MEDIUM).** Both the guide and the parser's own header say
+  a palette value is "0..255, or -1". Nothing enforced it, and the value flows
+  to `_render_u16_ascii`, which fills an 8-byte scratch **backward from index
+  7**. `palette.keyword = 999999999999999` drove that index to **-8** — a
+  stack write below the buffer — and returned 15, so the colour escape wrote
+  24 bytes into the **12 bytes `render_build_line` reserves** for it.
+  Measured: `render_build_line(..., out_max=120)` returned `pos = 122`.
+
+  Fixed in two layers: `_cyimrc_palette_valid` rejects out-of-range values at
+  the config boundary (checked once, before the ten-key dispatch, so an
+  eleventh key cannot forget it), and `_render_u16_ascii` clamps its own input
+  to 0..999 — the layer that makes the caller's 12-byte reservation *true*
+  rather than *true-if-someone-else-checked*.
+
+- **Two render scratch buffers were bounded by terminal geometry rather than
+  by their own size (audit F-3, LOW — latent).** `_render_cmdline`'s
+  `line[2048]` was bounded by `cols - 1` and `_render_leaf_status`'s
+  `sbuf[1024]` by the window width. `ws_col` is a `u16`, so a terminal may
+  claim 65535 columns. Not reachable today — `scr_cols` is a hardcoded 80 on
+  Linux/macOS, and `tty_winsize` is consulted only under agnos — but
+  "resize-aware rendering" has been a named roadmap item since 1.7.4 and
+  consists precisely of wiring `tty_winsize` into `scr_cols`. Fixed before the
+  feature that would make it live.
+
+- **`_cmd_ls_put_int`'s scratch held 16 of the 19 digits an i64 can produce
+  (audit F-4, LOW — unreachable).** Sized to 24. Callers pass buffer indexes
+  so it could not be reached; filed and fixed because it is **the same
+  slot-vs-domain mistake that made `cyim-lsp`'s `var argv[4]` a live bug**
+  (BUG-002), found here by looking for the shape rather than the symptom.
+
+- **`_cyimrc_parse_int` wrapped i64 instead of rejecting absurd input (audit
+  F-5, LOW).** `12345678901234567890123` parsed to `4807115922877859019`.
+  Compounding with F-2, a wrapped value can land *inside* a range check and be
+  accepted as legitimate. Digits capped at 9.
+
+### Changed — documentation that disagreed with the code
+
+- **`CLAUDE.md` asserted a path-validation control that ADR 0001 explicitly
+  declines (audit F-6).** Security-hardening item 6 read *"`:e <path>`
+  validates; no `../` escape from project root in restricted mode."* None of
+  that exists, and per ADR 0001 none of it is supposed to — cyim is an
+  interactive editor for one local user, not a privilege boundary, and there
+  is no restricted mode. A checklist item describing a control nobody built is
+  worse than no item: it makes every future audit tick an empty box. Rewritten
+  to name ADR 0001 as the authority and to state what the audit should
+  actually check there.
+
+- **`CLAUDE.md`'s `--batch` "Atomic" claim** is now stated precisely: atomic
+  with respect to *logical* mid-batch failure, not to write failure.
+
+- **`docs/guides/usage.md` claimed `:set tabstop=N` "controls display"
+  (audit F-8).** It never has — the value is stored and not read.
+  `cyimrc.md` has said "storage only today; render integration deferred" all
+  along and the two pages disagreed. Corrected, pointing at the guide that was
+  already right.
+
+### Added — documentation
+
+- **[ADR 0005 — `.cyimrc` is loaded from the cwd, and that is a trust boundary
+  ADR 0001 does not cover](docs/adr/0005-cyimrc-cwd-trust-boundary.md)**
+  (status: **Proposed**). ADR 0001 groups `.cyimrc` with stdin and typed paths
+  as things "the user" supplies. `cyimrc_load()` reads `./.cyimrc` — so the
+  file arrives with whatever directory the user is in. Clone a repo, open a
+  file, and you have applied that repo's configuration. This is vim's `.exrc`
+  problem, which vim answers with `exrc` + `secure`, off by default.
+
+  The memory-safety half is fixed above and was never a trust question — a
+  trust model may say "any colour the config names is allowed"; it cannot say
+  "an out-of-range integer may corrupt the render buffer." The *policy* half
+  is left Proposed with four costed options, because it is not urgent (the
+  whole surface is ten colour indexes; the worst a hostile config achieves is
+  the wrong colour) and should not be left open either (`cyimrc.md` names
+  keymaps as an M4 candidate, and **a keymap accepted from a directory you
+  just cloned is a different proposition from a colour**). ADR 0001 carries an
+  amendment note pointing here.
+
+- **[`docs/adr/README.md`](docs/adr/README.md) and
+  [`docs/adr/template.md`](docs/adr/template.md)** — both required by
+  CLAUDE.md's documentation structure and both missing since the tree was
+  scaffolded. Five ADRs existed with no index.
+
+- **[`docs/architecture/README.md`](docs/architecture/README.md)**, plus two
+  notes written out of audit findings that turned out to be architectural
+  rather than local:
+  - **[002 — Routing and loading are two tables that must agree](docs/architecture/002-routing-and-loading-are-two-tables.md).**
+    Why a language missing from `hl_grammar_name` gets *no* grammar rather
+    than a slow path (`highlight_init` sets vyakarana's
+    `_grammars_bootstrapped`, turning the library's own fallback off), and why
+    the 1.8.2 guard has to compare tables instead of calling the loader —
+    under `cyrius test` the harness binary has no `grammars/` beside it, so
+    `highlight_init` bails early, the cwd fallback loads everything, and a
+    runtime check passes no matter what the table says. The masking mechanism
+    is the same one that hid the original bug.
+  - **[003 — The renderer is byte-oriented, not codepoint-oriented](docs/architecture/003-render-is-byte-oriented.md).**
+    C1 pass-through, no double-width handling, and no combining-character
+    handling are one decision, not four gaps. Includes the "do not do this"
+    warning that the audit's own first instinct earned: adding `0x80`–`0x9F`
+    to `render_ctrl_substitute` looks like a two-line hardening patch and
+    breaks every non-ASCII file cyim can open, because that range overlaps
+    UTF-8 continuation bytes.
+
+### Tests
+
+Every new assertion was **mutation-tested** — run against the pre-fix source
+and confirmed to fail.
+
+- `tests/cyimrc.tcyr` **23 → 50 assertions**. Range accept/reject at `-1`,
+  `0`, `255`, `256`, `-2`, `999999999`; 23-digit runs rejected rather than
+  wrapped; `_render_u16_ascii` never exceeding 3 digits, `_render_emit_fg`
+  fitting its 12-byte reservation, with **canary bytes** past the write
+  window; and a pipeline backstop that `render_build_line[_naked]` never
+  reports past `out_max`. 7 failures against 1.8.2's source.
+- `tests/cli_smoke.sh` **118 → 122**. `--write` and `--replace-all` under
+  `ulimit -f 1` must exit non-zero, plus a control case asserting an
+  unconstrained write is still byte-exact — without it, both cases would also
+  pass against a build that simply failed every save. 2 failures against
+  1.8.2's source.
+
+**One test was rewritten mid-audit for being vacuous.** The sink-side F-2
+check was first written against `render_build_line` with a fixture line and
+*passed* against the unfixed source: whether the overflow appears depends on
+where token boundaries happen to fall relative to `byte_cap`, which is
+incidental. It now asserts at `_render_u16_ascii`, the function whose contract
+was violated. A fixture that *usually* overflows is a test that *usually*
+catches the regression.
+
+### Verification
+
+- `cyrius tests` — 21 suites, **1161 assertions** PASS (was 1136), 0 failures.
+- `cyrius fuzz` 4/4 · `tests/cli_smoke.sh` 122 · PTY integration smoke all
+  PASS · `cyrius lint` 0 warnings · `cyrfmt --check` clean · `cyrius audit`
+  clean.
+- `cyrius smoke` — 4 passed / 9 failed, unchanged: BUG-002, owned upstream in
+  `cyim-lsp`.
+
+### Binary
+
+- **`build/cyim`** (CYRIUS_DCE=1): **1,197,504 B** — +4,120 B vs 1.8.2's
+  1,193,384 B, for the bounds checks and the reworked save path.
+- **`build/cyim_agnos`**: 1,205,728 B · **`build/cyim_aarch64`**: 1,615,240 B.
+
+### Benchmarks
+
+The audit added bounds checks to the two hottest paths in the editor
+(`render_build_line` runs per line per frame), so "did the guards cost
+anything" is a real question. **No:** every delta is inside this suite's
+run-to-run spread.
+
+| Bench | 1.8.2 | 1.8.3 | Δ |
+|---|---:|---:|---:|
+| `render_build_line_80c_x1000` | 252.2 µs | 251.8 µs | −0.2 % |
+| `highlight_buf_1MB_cyrius` | 281.4 ms | 281.1 ms | −0.1 % |
+| `buf_fill_10MB` | 122.0 ms | 122.5 ms | +0.4 % |
+| `search_forward_10MB_worst_case` | 101.6 ms | 102.0 ms | +0.4 % |
+
+Not covered by any bench: `buf_save_file` now `fsync`s before reporting
+success. That is a real per-save cost and a deliberate trade — reporting
+success before the data is durable is reporting a guess.
+
 ## [1.8.2] — 2026-08-23
 
 **Catch-up cut: toolchain, deps and vendored stdlib all pulled to current — and
