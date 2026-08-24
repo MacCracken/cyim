@@ -13,6 +13,8 @@
 
 include "lib/syscalls.cyr"
 
+# No-op entry point. See the header: this file exists to satisfy
+# `[build].test` and asserts nothing.
 fn main() {
     return 0;
 }

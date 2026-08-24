@@ -136,6 +136,9 @@ fn visual_selection_lo_at(s) {
     return lo;
 }
 
+# Upper bound (inclusive byte offset) of the selection that WOULD exist at the
+# current anchor + cursor, ignoring MODE_VISUAL_LINE's line-snapping. Used by
+# the operators that want the raw span rather than the rendered one.
 fn visual_selection_hi_at(s) {
     var b = editor_buf(s);
     if (b == 0) { return 0 - 1; }

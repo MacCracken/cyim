@@ -185,7 +185,11 @@ fn _cyimrc_apply(buf, ks, ke, vs, ve) {
 # the editor state right after `cyimrc_load()` returns; -1 means
 # "not configured — leave the editor default in place".
 fn cyimrc_cfg_ignorecase()   { return _cyimrc_cfg_ignorecase; }
+# `.cyimrc`'s `line_numbers` value, or -1 when the file did not set it.
+# ⚠ STORED, not rendered — see docs/guides/cyimrc.md.
 fn cyimrc_cfg_line_numbers() { return _cyimrc_cfg_line_numbers; }
+# `.cyimrc`'s `tabstop` value, or -1 when the file did not set it.
+# ⚠ STORED, not rendered — a TAB still draws as one column.
 fn cyimrc_cfg_tabstop()      { return _cyimrc_cfg_tabstop; }
 
 # Trim leading + trailing whitespace from buf[s..e), then split on the first

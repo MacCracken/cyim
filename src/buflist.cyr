@@ -76,17 +76,23 @@ fn bl_init(s, buf) {
     return 0;
 }
 
+# Number of buffers in the registry. 0 before `bl_init`.
 fn bl_count(s) {
     var v = _bl_list(s);
     if (v == 0) { return 0; }
     return vec_len(v);
 }
 
+# Registry index of the active buffer, or 0 when the list is uninitialized.
+# Pairs with `bl_set_active`; `:ls` marks this slot with `*`.
 fn bl_active_index(s) {
     if (_bl_list(s) == 0) { return 0; }
     return _bl_active_offset(s);
 }
 
+# The record at registry index `i`, or 0 if the list is uninitialized or `i`
+# is out of range. Callers get the record, not the buffer — use `_bl_rec_*`
+# or the `bl_path` / `bl_modified` wrappers to read fields.
 fn bl_get(s, i) {
     var v = _bl_list(s);
     if (v == 0)            { return 0; }
@@ -95,6 +101,7 @@ fn bl_get(s, i) {
     return vec_get(v, i);
 }
 
+# The active buffer's record, or 0 if the list is uninitialized.
 fn bl_active(s) {
     return bl_get(s, bl_active_index(s));
 }
@@ -102,7 +109,16 @@ fn bl_active(s) {
 # Buffer/path/modified pass-throughs for the active slot. Useful for
 # UI code that wants to peek at any slot, not just the active one.
 fn bl_buf(s, i)       { var r = bl_get(s, i); if (r == 0) { return 0; } return _bl_rec_buf(r); }
+# File path of the buffer at index `i` (NUL-terminated cstr), or 0 for a
+# scratch buffer or an out-of-range index. ⚠ The two are indistinguishable
+# here: callers that need to tell "no such slot" from "slot with no file"
+# must check `bl_get` first.
 fn bl_path(s, i)      { var r = bl_get(s, i); if (r == 0) { return 0; } return _bl_rec_path(r); }
+
+# Modified flag of the buffer at index `i`; 0 for an out-of-range index.
+# ⚠ For the ACTIVE slot this record can lag: the editor mirrors the live flag
+# on its own state, so `:ls` and the window status read `editor_modified(s)`
+# for that one slot rather than trusting the record.
 fn bl_modified(s, i)  { var r = bl_get(s, i); if (r == 0) { return 0; } return _bl_rec_modified(r); }
 
 # v1.6.0 — reverse lookup: find the buflist index whose record's
@@ -174,6 +190,8 @@ fn bl_next(s) {
     return bl_set_active(s, i);
 }
 
+# Switch to the previous buffer in the registry, wrapping at index 0.
+# No-op returning 0 when fewer than two buffers are open.
 fn bl_prev(s) {
     var n = bl_count(s);
     if (n <= 1) { return 0; }

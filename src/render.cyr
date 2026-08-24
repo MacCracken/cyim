@@ -670,6 +670,18 @@ fn _render_list_overlay(s, rows, cols) {
     return 0;
 }
 
+# Draw one complete frame: every window's text region, each leaf's status
+# row, the bottom status/command row, and finally the cursor. `tb` is the
+# tokenbuf for the ACTIVE buffer, or 0 to render it uncoloured.
+#
+# Called once per iteration of the main loop, so everything it touches is on
+# the per-keystroke path. It assumes `tb` is already current — retokenizing is
+# the caller's job (`highlight_buf` handles the cache), and this function does
+# not check the buffer version.
+#
+# Also the fire-point for the diagnostic_provider hook: providers run here,
+# once per frame, and their results are readable afterwards via
+# `plugin_last_diags()`.
 fn render_frame(s, rows, cols, tb) {
     # v1.3.5: collect diagnostics once per frame from every registered
     # provider. Stashes the result for tests + future render-side

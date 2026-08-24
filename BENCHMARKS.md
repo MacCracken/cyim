@@ -13,6 +13,51 @@ the source of truth for what's measured.
 
 ---
 
+## v1.8.6 — 2026-08-23 (current)
+
+First re-bench since v1.6.0. The 1.8.x line added bounds checks to the
+per-frame render path (1.8.3) and reworked the save path twice (1.8.3
+short-write handling + `fsync`; 1.8.4 atomic temp + `rename`), so the
+question these numbers answer is whether any of that cost anything on the
+interactive path. It did not.
+
+| Bench | 1.6.8 | 1.8.6 | Δ |
+|---|---:|---:|---:|
+| `buf_fill_1MB` | 13.5 ms | 11.9 ms | −12 % |
+| `buf_fill_10MB` | 140 ms | 122 ms | −13 % |
+| `buf_fill_100MB` | — | 1.166 s | new |
+| `buf_move_10K_cycles_10MB` | 49 ms | 43.6 ms | −11 % |
+| `search_forward_10MB_best_case` | 2 µs | 0.4 µs | −79 % |
+| `search_forward_10MB_worst_case` | 106 ms | 101 ms | −5 % |
+| `search_forward_10MB_worst_case_ic` | 167 ms | 161 ms | −4 % |
+| `render_build_line_80c_x1000` | 265 µs | 251 µs | −5 % |
+| `highlight_buf_1MB_cyrius` | 307 ms | **279 ms** | **−9 %** |
+| `highlight_buf_cache_hit_x1000` | 17 µs | 17.4 µs | +2 % |
+
+**Two caveats on reading this table.**
+
+1. **The measurement changed.** cyrius 6.5.19 made the bench framework
+   measure and subtract a timer floor (1.32 µs per clock read here), so the
+   1.8.6 column is not measuring quite the same thing as the 1.6.8 one.
+   Treat the small deltas as "unchanged" rather than as wins.
+2. **Most of the improvement is not cyim's.** The toolchain moved from
+   cyrius 5.10.10 to 6.5.35 across this span. The one attributable line is
+   **cold tokenize**: vyakarana 2.4.0 gives back about half of the +21 %
+   the 2.0.0 streaming-API migration cost at 1.6.1 (253 → 307 → 279 ms).
+
+**Not covered by any bench:** the save path. `buf_save_file` now does one
+`stat`, one `readlink`, an `fchmod`, a full-file `fsync`, a `rename` and a
+directory `fsync` where 1.8.2 did a bare `write` + `close`. That is a real
+per-save cost and a deliberate trade — reporting success before the data is
+durable is reporting a guess. An editor save is user-initiated and already
+dominated by the `fsync`, so it is not on the interactive path; a save bench
+would need fresh files per round and is not worth the harness today.
+
+**Binary:** 1,201,632 B (CYRIUS_DCE=1), from 965,432 B at v1.6.0 — the growth
+is vyakarana's 46 grammars, the LSP bundle, agnos support, and darshana.
+
+---
+
 ## v1.6.0 — 2026-05-07 (marks)
 
 Marks (`m<letter>` / `'<letter>`) added at v1.6.0 are not in any

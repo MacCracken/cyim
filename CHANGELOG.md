@@ -4,6 +4,108 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.6] — 2026-08-23
+
+**Documentation sweep. `cyrius audit`'s "101 undocumented public fns"
+advisory is now 0**, and the doc tree — which had drifted up to four minors
+behind in three places — is current. No code behaviour change.
+
+### Added — every public function is documented
+
+The advisory had been standing since before the 1.8.x line. The trap in
+closing it is that 60 of the 103 are one-line accessors over a record whose
+layout is *already* documented, and 103 mechanical `# Get the mode.` lines
+would have satisfied the counter while making the files worse.
+
+Each docstring says what the field **means to a caller** — the part you cannot
+read off `load64(s + 152)`:
+
+- **`src/mode.cyr` (40)** — the editor-state accessor block. It now reads as a
+  self-describing table instead of requiring a scroll up to the layout
+  comment, and several lines carry a warning that was previously nowhere:
+  `editor_set_mode` is a raw field write that does **not** run the entry/exit
+  work a real mode transition implies; `editor_buf` *mirrors* the active
+  leaf's buffer in a multi-window session; `editor_last_error` is sticky;
+  `editor_yank_register`'s pointer and length must move together or the
+  register reads past its own contents.
+- **`src/window.cyr` (20)** — the window-record accessors. `window_buf_idx` is
+  meaningless on a split; `editor_set_active_leaf` must be given a leaf,
+  because render and dispatch both read `window_buf_idx` off it.
+- **`src/plugin.cyr` (13)** — the frozen ABI surface, which is the set most
+  likely to be read by someone outside this repo. Each registration function
+  now states its callback signature, and the ones with a trap say so:
+  `post_change` fires per keystroke in INSERT, `status_segment` runs once per
+  frame and must not allocate, and a plugin prefix-key registered on
+  `(KEY_G, 'g')` silently never fires because built-ins win on conflict
+  (ADR 0003 §3).
+- **`src/buffer.cyr` (7), `src/buflist.cyr` (7), `src/driver.cyr` (2),
+  `src/main.cyr` (4)**, plus eight singles. `main()`'s docstring now carries
+  the agent-facing exit-code contract; `bl_path` documents that "no such slot"
+  and "slot with no file" are indistinguishable in its return.
+
+### Changed — three documents that had drifted
+
+- **`README.md` was four minors stale.** It said "**1.7.5 — released**",
+  listed `cyrius 6.2.36` / `darshana 0.8.0` as the current pins, and told
+  readers `cyrius test` runs "~1023 assertions" and `cyrius fuzz` "3
+  harnesses". Missing entirely: **1.8.0, the one feature cut of the era** —
+  cyim running on AGNOS. Status section rewritten through 1.8.6, pins and
+  counts corrected, `sh tests/cli_smoke.sh` added to the build block.
+- **`SECURITY.md`'s most recent state was "v1.6.0: 0 CRITICAL / 0 HIGH / 0
+  MEDIUM"** — written before the 1.8.3 audit found cyim's **first HIGH**. A
+  security policy that reports a clean history when the latest audit found
+  silent data loss is worse than one that reports nothing. Now carries the
+  1.8.6 state (1 HIGH / 1 MEDIUM / 3 LOW, all fixed), what the HIGH actually
+  was, and the two items still open from it — R-1a and ADR 0005, including
+  why a cwd-relative `.cyimrc` is a trust question ADR 0001 does not reach.
+- **`BENCHMARKS.md` had not been re-run since v1.6.0**, across a span that
+  added per-frame bounds checks and reworked the save path twice. Re-run with
+  a 1.6.8 → 1.8.6 table, and with two caveats stated rather than implied:
+  cyrius 6.5.19 changed the *measurement* (a timer floor is now subtracted),
+  and most of the improvement is the toolchain moving 5.10.10 → 6.5.35, not
+  cyim. The one attributable line is cold tokenize, where vyakarana 2.4.0
+  gives back about half of the +21 % the 2.0.0 streaming migration cost.
+
+### Changed — one table for everything still deferred
+
+The 1.8.x line left open items in **four separate places**: the hardening
+audit's residuals, an ADR filed Proposed, an architecture note recording an
+accepted limitation, and a refactor whose trigger had fired. No page listed
+them together.
+
+[`roadmap.md` § Everything Still Deferred](docs/development/roadmap.md) is now
+that page — 8 items, ordered by what they would cost a user rather than by
+when they were filed, each with **why it is still open** and **what would move
+it**:
+
+| | |
+|---|---|
+| **BUG-002** | LSP non-functional on Linux; fix is a `cyim-lsp` cut, not cyim's |
+| **ADR 0005** | Should `.cyimrc` load from the cwd at all — decide before keymaps widen the surface |
+| **R-1a** | xattrs/ACLs not carried across the atomic save |
+| **`lang.cyr` refactor** | Two if-chains in lockstep; the end state is a vyakarana metadata query, not a third table |
+| **F-7** | Byte-oriented renderer — accepted, not a defect queue |
+| **Resize-aware rendering** | darshana has shipped the primitives since 0.4.0; cyim does not call them |
+| **F-CO-2** | Waiting for the third instance |
+| **`cyrius smoke` in CI** | Lands green with the BUG-002 fix, not before |
+
+Anything deferred from here belongs in that table or it does not exist.
+
+### Verification
+
+- `cyrius audit` — **docs step now silent**; fmt / lint / tests / bench clean.
+- `cyrius doc --check` — **0 undocumented across `src/` and `src/plugins/`**
+  (was 103 by the per-file count, 101 by audit's).
+- `cyrius tests` 21 suites / **1177 assertions** · `cyrius fuzz` 4/4 ·
+  `tests/cli_smoke.sh` 128 · PTY integration smoke all PASS · `cyrius lint`
+  0 warnings, 0 untracked deferrals · `cyrfmt --check` clean.
+- `cyrius smoke` — 4 passed / 9 failed, unchanged: BUG-002, owned upstream.
+
+### Binary
+
+**1,201,632 B** — unchanged from 1.8.5. Comments do not survive compilation;
+this cut adds no code.
+
 ## [1.8.5] — 2026-08-23
 
 **Dead-code and cleanliness cut, closing audit residual R-2 — and the honest

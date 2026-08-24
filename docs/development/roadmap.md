@@ -34,7 +34,7 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.8.2** (see [`state.md`](state.md)). The 1.6.x
+cyim is at **1.8.6** (see [`state.md`](state.md)). The 1.6.x
 catch-up cycle closed at 1.6.8; 1.7.0 opened the post-catch-up
 era with the darshana TUI dep pickup, and **1.8.0 is the one
 feature cut since** — cyim runs on AGNOS, full-screen on the
@@ -52,7 +52,8 @@ loaded, so they rendered uncolored. Syntax highlighting now
 covers everything `src/lang.cyr` routes, guarded both ways by
 `tests/lang.tcyr`.
 
-**1.8.3 is the P(-1) hardening cut** — see
+**1.8.3–1.8.6 are the hardening line and its follow-through.**
+1.8.3 is the P(-1) cut — see
 [`docs/audit/2026-08-23-1.8x-hardening.md`](../audit/2026-08-23-1.8x-hardening.md).
 Its HIGH finding is worth knowing even if you read nothing else:
 every write path in cyim treated a short `write(2)` as a
@@ -62,6 +63,11 @@ and **closed at 1.8.4** (the failure is harmless): saving is now
 atomic by default per [ADR 0006](../adr/0006-atomic-save.md),
 with an enumerated in-place fallback for the file shapes where
 renaming would break something the user relies on more.
+**1.8.5** swept dead code and cleanliness — the finding was that
+there was nothing to delete, and the whole tree came out
+lint-clean. **1.8.6** closed the last documentation gap: every
+public function is documented, and every remaining deferral is
+in one table below.
 
 The full LSP user-visible surface — diagnostics, `gd` goto-def
 same-file + cross-file, `gr` references quickfix, `:lsp-*`
@@ -127,6 +133,7 @@ this is a sequencing index.
 | **v1.8.3** — **P(-1) audit / refactor / hardening / security pass.** 1 HIGH, 1 MEDIUM, 3 LOW, 3 informational; all five code findings fixed with mutation-tested regressions. HIGH: `buf_save_file` treated a short `write(2)` as success, so `:w` cleared the modified flag and all six agent verbs exited 0 on a truncated file (measured 475 of 575 bytes lost) — and made `--batch`'s documented atomicity false. MEDIUM: an unvalidated `.cyimrc` palette value reached a backward-filled buffer index and overran `render_build_line`'s 12-byte escape reservation. LOW ×3: render scratch buffers bounded by terminal geometry rather than their own size (latent until resize support lands), an i64-undersized itoa scratch, and an integer parser that wrapped instead of rejecting. Docs: ADR 0005 filed (Proposed), the missing `docs/adr/{README,template}.md` and `docs/architecture/README.md` written, architecture notes 002 and 003 added, and two doc claims that contradicted the code corrected. Suite 1136 → 1161; CLI smoke 118 → 122; benchmarks unmoved | Shipped 2026-08-23 |
 | **v1.8.4** — **Atomic save** ([ADR 0006](../adr/0006-atomic-save.md)), closing audit residual R-1. A save writes a sibling temp, `fchmod`s it to the target's mode, writes, `fsync`s, `rename`s over the target, then `fsync`s the parent directory — so a write that dies part way leaves the original bit-for-bit intact. Atomic by DEFAULT, not unconditionally: six enumerated conditions (symlink, `nlink > 1`, non-regular file, foreign uid, non-writable directory, agnos) take the in-place path, because rename changes the inode and for those shapes that breaks something the user relies on more. Return contract unchanged; no call site touched. `buf_save_was_atomic()` added so a silent fallback cannot rot unobserved. Suite 1161 → 1174; CLI smoke 122 → 128; both the conditions and the fall-through logic mutation-tested | Shipped 2026-08-23 |
 | **v1.8.5** — **Dead-code + cleanliness cut**, closing audit residual R-2 — with the honest answer that there was nothing to delete: all 24 cyim-side unreachable functions are frozen ABI, test-only introspection, or documented-deferred config, and the one symbol with no caller anywhere (`diag_msg`) was a coverage hole closed with a test. Real dead code sat one level down: **five named constants the code was not using** (`BUFFER_REC_SIZE`, `RENDER_LINE_BUF`, `KEY_CTRL_R`, the `REPLACE_*` pair, `_CYIMRC_PALETTE_SLOTS`) — the same size-expressed-twice shape the last two audits kept finding. Four wired up, one deleted as unusable by construction. **Five stale comments** corrected, describing states that had stopped being true up to five minors earlier. **20 untracked lint deferrals → 0**: 8 cross-referenced to a new roadmap § Deferred in-source notes, 5 stale ones corrected, 7 false positives given `#skip-lint` with a reason. Ten over-length test lines wrapped. Suite 1174 → 1177; whole tree now lint-clean | Shipped 2026-08-23 |
+| **v1.8.6** — **Documentation sweep.** `cyrius audit`'s "101 undocumented public fns" advisory → **0**: every public function in `src/` and `src/plugins/` now carries a docstring saying what it *means* rather than what it loads — the 40-accessor editor-state block in `mode.cyr` and the 20-accessor window record are the bulk, and both now read as self-describing tables instead of requiring a scroll to the layout comment. Doc-tree sweep alongside: README's status was four minors stale (still "1.7.5 — released", old pins, "3 fuzz harnesses"), SECURITY.md's most recent state was "v1.6.0: 0 CRITICAL / 0 HIGH" when the 1.8.3 audit had since found a HIGH, and BENCHMARKS.md had not been re-run since v1.6.0. All three current. Roadmap gains a single **Everything Still Deferred** table — the 1.8.x line had left open items in four separate places | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -250,19 +257,32 @@ not slated.
 
 ---
 
-## Open from the 1.8.3 hardening audit
+## Everything Still Deferred
 
-Findings were fixed in-cut; these are the items deliberately left open,
-each with the reason. Full context in
-[`docs/audit/2026-08-23-1.8x-hardening.md`](../audit/2026-08-23-1.8x-hardening.md).
+**One table, every open item.** Consolidated at 1.8.6 because the 1.8.x line
+left deferrals in four places — the hardening audit's residuals, an ADR filed
+Proposed, an architecture note recording an accepted limitation, and a
+refactor whose trigger had fired — and no single page listed them. Anything
+deferred from here on belongs in this table or it does not exist.
 
-| ID | Item | Why it is open |
-|---|---|---|
-| ~~**R-1**~~ | ~~The save path is not atomic~~ | ✅ **Closed at v1.8.4** by [ADR 0006](../adr/0006-atomic-save.md). The concern that kept it open — that unconditional rename breaks hardlinks, symlinks, modes and non-writable directories — is answered by making the atomic path the default with six enumerated in-place conditions, the `backupcopy=auto` shape this row anticipated |
-| **R-1a** | Extended attributes and ACLs are not carried across the atomic path | `fchmod` preserves the permission bits; xattrs, POSIX ACLs and SELinux labels are not copied, and cyim cannot *detect* a non-trivial ACL without an `xattr` surface the stdlib does not expose. Narrow: needs a file with an ACL, owned by the invoking user, not a symlink, not hardlinked. New at 1.8.4 |
-| ~~**R-2**~~ | ~~Dead-code floor of 20 cyim-side functions~~ | ✅ **Closed at v1.8.5.** Re-derived as 24, of which **none should be deleted** — 9 frozen plugin ABI, 13 test/fuzz introspection, 2 documented-deferred config. The one symbol with no caller anywhere (`diag_msg`) was a coverage hole, not dead code, and was closed with a test. Real dead code was one level down: five named constants the code was not using. How to read the report without re-deriving all this: [architecture note 004](../architecture/004-reading-the-dce-report.md) |
-| **ADR 0005** | Should `.cyimrc` be loaded from the current directory at all? | [Filed as Proposed](../adr/0005-cyimrc-cwd-trust-boundary.md) with four costed options. Not urgent — the whole surface is ten colour indexes, and the worst a hostile config achieves is the wrong colour. Not to be left open either: `cyimrc.md` names keymaps as an M4 candidate, and a keymap accepted from a directory you just cloned is a different proposition from a colour. Decide while the answer is cheap |
-| **F-7** | The renderer is byte-oriented; C1 bytes pass through, no double-width or combining-character handling | Accepted and documented as [architecture note 003](../architecture/003-render-is-byte-oriented.md), not filed as a defect — these are one decision, and the obvious "fix" (substituting `0x80`–`0x9F`) breaks every non-ASCII file, because that range overlaps UTF-8 continuation bytes. The trigger that would change the calculus is a consumer editing CJK or RTL text in earnest — `aethersafha` is the likeliest |
+Ordered by what it would cost a user, not by when it was filed.
+
+| ID | Item | Why it is still open | What would move it |
+|---|---|---|---|
+| **BUG-002** | LSP is non-functional on Linux — `lsp_client_start_default()` never completes the handshake | Root-caused at 1.8.2 to `cyim-lsp`'s `var argv[4]`, sized in pointer slots rather than bytes. **Not cyim's to fix**; the bundle is upstream | A `cyim-lsp` release carrying `argv[32]` / `fallback[8]`. cyim picks it up with a `tag` bump and no source change. Land the `cyrius smoke` CI gate in the same cut — it can go in green then, and not before |
+| **ADR 0005** | Should `.cyimrc` be loaded from the current directory at all? | [Filed Proposed](../adr/0005-cyimrc-cwd-trust-boundary.md) with four costed options. The memory-safety half is fixed; this is the policy half. Today's blast radius is a wrong colour | A decision, before the config surface widens. `cyimrc.md` names keymaps as an M4 candidate, and **a keymap accepted from a directory you just cloned is a different proposition from a colour** |
+| **R-1a** | Extended attributes and ACLs are not carried across the atomic save path | `fchmod` preserves permission bits; xattrs, POSIX ACLs and SELinux labels are not copied, and cyim cannot *detect* a non-trivial ACL without an `xattr` surface the stdlib does not expose. Narrow: needs an ACL'd file, owned by the invoking user, not a symlink, not hardlinked | A stdlib `listxattr`/`getxattr` surface — then the detection becomes a sixth in-place condition in [ADR 0006](../adr/0006-atomic-save.md) |
+| **`lang.cyr` refactor** | Two if-chains (`lang_name` / `hl_grammar_name`) that must stay in lockstep | Trigger fired at 1.8.2 (third growth). Their silent divergence is what cost 34 languages their highlighting for six minor versions. The drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt | An ADR choosing between parallel global string arrays and a **vyakarana metadata query** — `grammar_count()` / `grammar_name_at(i)` would let the load list be *derived* rather than restated, which is the real end state |
+| **F-7 / arch 003** | The renderer is byte-oriented: C1 pass-through, no double-width or combining-character handling | [Accepted and documented](../architecture/003-render-is-byte-oriented.md), not a defect queue. The obvious "fix" breaks every non-ASCII file, because `0x80`–`0x9F` overlaps UTF-8 continuation bytes | A consumer editing CJK or RTL text in earnest — `aethersafha` hosting cyim is the likeliest. It needs a codepoint coordinate system threaded through cursor / undo / marks / search, not a render patch |
+| **Resize-aware rendering** | `scr_cols` is a hardcoded 80 on Linux/macOS; `tty_winsize` is consulted only under agnos | Named since 1.7.4. darshana has shipped the primitives (`tty_winsize`, `tty_open_signalfd`, `TTY_SIGMASK_WINCH`) since 0.4.0 — cyim simply does not call them | Whoever wants a resizable editor. ⚠ The render scratch buffers were bounded by terminal geometry until 1.8.3 fixed them precisely *because* this feature would have made that live — the guards are already in place |
+| **F-CO-2** | Extract `_cyim_lsp_jump_to_uri_lc` | Informational since 1.5.2. Still 2 instances; CLAUDE.md's "wait for the third" applies | `:lsp-implementation` or `:lsp-type-definition` would be the third |
+| **`cyrius smoke` in CI** | The smoke suite is not a CI step | Structural half of BUG-002 — it is *why* a dead feature sat unobserved across seven cuts. Deliberately not added at 1.8.2 when CI was repaired: a gate that fails on day one gets ignored or reverted | Bundled with the BUG-002 fix. Needs `cyrius-lsp` on the runner — a packaging problem, not a reason to leave the harness unwatched |
+
+Closed from this list recently: **R-1** (non-atomic save) at 1.8.4 via
+[ADR 0006](../adr/0006-atomic-save.md); **R-2** (dead-code floor) at 1.8.5 —
+there was nothing to delete, see
+[architecture note 004](../architecture/004-reading-the-dce-report.md); the
+**101 undocumented public fns** advisory at 1.8.6, now zero.
 
 ---
 
@@ -397,6 +417,20 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-08-23 (v1.8.6 — **documentation sweep**.
+`cyrius audit`'s "101 undocumented public fns" advisory is now
+**0**; the two big accessor blocks (`mode.cyr`'s 40 editor-state
+fields, `window.cyr`'s 20 window-record fields) were documented
+as what each field MEANS to a caller rather than what it loads,
+which is the part you cannot read off `load64(s + 152)`.
+Doc-tree sweep alongside: README four minors stale, SECURITY.md
+still reporting "v1.6.0: 0 CRITICAL / 0 HIGH" after the 1.8.3
+audit found a HIGH, BENCHMARKS.md not re-run since v1.6.0 — all
+current. **All remaining deferred work is now in one table**
+(§ Everything Still Deferred): BUG-002 and its CI gate, ADR 0005,
+R-1a, the lang.cyr two-table refactor, F-7, resize-aware
+rendering, F-CO-2. Nothing new deferred in this cut.)*
 
 *Last updated: 2026-08-23 (v1.8.5 — **dead-code + cleanliness
 cut**, closing audit residual R-2. The finding is that there was

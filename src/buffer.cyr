@@ -52,11 +52,31 @@ fn buf_new() {
 # Public; called from highlight.cyr and from anywhere that needs to
 # notice mutation without parsing the buffer.
 
+# Monotonic mutation counter. Every op that changes buffer CONTENT bumps it;
+# cursor movement does not. This is what lets a consumer notice a change
+# without diffing bytes.
 fn buf_version(b)            { return load64(b + 32); }
+
+# Bump the mutation counter. Called by the mutating buffer ops, not by
+# consumers — calling it by hand invalidates the highlight cache for nothing.
 fn buf_bump_version(b)       { store64(b + 32, load64(b + 32) + 1); return 0; }
+
+# The cached vyakarana tokenbuf for this buffer, or 0 if never tokenized.
+# Only valid when `buf_cached_version` still equals `buf_version`.
 fn buf_cached_tb(b)          { return load64(b + 40); }
+
+# The `buf_version` the cached tokenbuf was built at. A mismatch against the
+# live version is the cache-miss signal `highlight_buf` tests.
 fn buf_cached_version(b)     { return load64(b + 48); }
+
+# The language name pointer the cached tokenbuf was built for. Compared by
+# POINTER, not by content — `lang_name()` returns stable literals, so pointer
+# equality is both correct and cheaper than a strcmp per frame.
 fn buf_cached_lang(b)        { return load64(b + 56); }
+# Install a tokenbuf into the buffer's highlight cache, stamped with the
+# version it was built at and the language pointer it was built for. All three
+# fields move together — writing the tokenbuf without its stamp is how a stale
+# cache survives an edit.
 fn buf_set_cache(b, tb, ver, lang) {
     store64(b + 40, tb);
     store64(b + 48, ver);
@@ -382,6 +402,8 @@ fn _buf_write_all(fd, ptr, len) {
 # thing that rots unobserved. Not plugin ABI.
 var _buf_save_atomic_last = 0;
 
+# Did the most recent `buf_save_file` take the atomic (temp + rename) path?
+# 1 = atomic, 0 = written in place. See ADR 0006 and the note above.
 fn buf_save_was_atomic() { return _buf_save_atomic_last; }
 
 # Sibling temp path: "<path>.cyimtmp.<pid>.<counter>".

@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.7.5 — released.** The 1.x series shipped:
+**1.8.6 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -52,9 +52,28 @@ for humanity. Consumers:
   a-z + global A-Z). First feature minor of the post-1.5.x cycle.
 - **v1.7.x** — toolchain + dep-currency cycle: darshana TUI dep pickup
   (cyim is the donor and first consumer) at 1.7.0, then forward-compat
-  darshana / cyrius pin refreshes (1.7.1–1.7.5). cyrius toolchain pin now
-  `6.2.36`, darshana `0.8.0`. No editor-surface behavior change across the
-  cycle.
+  darshana / cyrius pin refreshes (1.7.1–1.7.5). No editor-surface
+  behavior change across the cycle.
+- **v1.8.0** — **cyim runs on AGNOS.** Full-screen on the framebuffer
+  console (`src/agnos_kbd.cyr` reverse-maps raw Set-1 scancodes from
+  `kbscan#42` into the byte stream `editor_feed` already consumes), or an
+  ed/ex line editor via `cyim --line`. Verified on the real kernel under
+  QEMU and under mirshi. 1.8.1 restored the `--agnos` *build*.
+- **v1.8.2** — dependency + toolchain catch-up (cyrius `6.5.35`,
+  darshana `1.0.0`, vyakarana `2.4.0`, 46 bundled grammars), and the
+  highlighting regression it uncovered: **34 of 45 routed languages had
+  no grammar loaded** since 1.6.2 and rendered uncoloured. Fixed, with a
+  two-way drift guard.
+- **v1.8.3–v1.8.5** — P(-1) hardening and its follow-through. The HIGH
+  finding: every write path treated a short `write(2)` as a completed
+  one, so `:w` and all six agent verbs could destroy most of a file and
+  exit 0. Fixed at 1.8.3 (reported), closed at 1.8.4 (**atomic save** —
+  sibling temp + `rename`, per
+  [ADR 0006](docs/adr/0006-atomic-save.md)). 1.8.5 swept dead code and
+  cleanliness; 1.8.6 closed the last documentation gap.
+
+Current pins: cyrius `6.5.35`, vyakarana `2.4.0`, cyim-lsp `1.5.2`,
+darshana `1.0.0`.
 
 Live state in [`docs/development/state.md`](docs/development/state.md);
 sequencing + deferred LSP polish in
@@ -68,11 +87,12 @@ A name in the tradition, written in the language of the library.
 ## Build
 
 ```sh
-cyrius deps                              # resolve deps (vyakarana + cyim-lsp)
+cyrius deps                              # resolve deps (vyakarana, cyim-lsp, darshana)
 cyrius build src/main.cyr build/cyim     # compile
 CYRIUS_DCE=1 cyrius build ...            # dead-code-eliminated release build
-cyrius test                              # 21 .tcyr suites (~1023 assertions)
-cyrius fuzz                              # 3 .fcyr harnesses
+cyrius tests                             # 21 .tcyr suites (1177 assertions)
+cyrius fuzz                              # 4 .fcyr harnesses
+sh tests/cli_smoke.sh                    # 128 agent-CLI assertions
 cyrius smoke                             # tests/smcyr/lsp_fold.smcyr (real cyrius-lsp)
 cyrius bench tests/perf.bcyr             # gap-buffer / search / render / highlight perf
 cyrius lint src/*.cyr                    # static checks

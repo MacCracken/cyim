@@ -76,6 +76,13 @@ fn _dot_replay(s) {
     return 0;
 }
 
+# Consume ONE input byte: dispatch it to an action, then apply that action's
+# semantics (motion / edit / insert / command-line / mode transition) and
+# maintain dot-repeat recording. Returns the action id.
+#
+# This is the canonical single-byte entry point — the interactive loop, the
+# `--headless` driver and the test harnesses all funnel through it, which is
+# what keeps agent-driven editing and human editing on the same code path.
 fn editor_step(s, key) {
     # Clear the previous status line at the top of every step so a
     # message set by the previous command stays visible for exactly
@@ -143,6 +150,10 @@ fn editor_step(s, key) {
     return action;
 }
 
+# Feed `n` bytes from `keys` through `editor_step`, in order. Returns 0.
+# The convenience wrapper the test suites use to script a whole session;
+# `editor_feed` is the one the binary uses, because it also parses CSI
+# escape sequences as units.
 fn editor_run(s, keys, n) {
     var i = 0;
     while (i < n) {

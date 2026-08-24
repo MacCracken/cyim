@@ -36,6 +36,10 @@ var _marks_per_buf = 0;
 # Layout per slot: +0 buf_ptr (or 0 = unset), +8 offset (or -1 = unset).
 var _marks_global[416];
 
+# Allocate the per-buffer marks vec and zero the 26 global slots. Called once
+# from `main()`. Idempotent-ish: the global slots' zero state is already valid
+# as "all unset", so a caller that skips this (a fuzz harness, say) still sees
+# a coherent table — see the note inside.
 fn marks_init() {
     if (_marks_per_buf == 0) { _marks_per_buf = vec_new(); }
     # Global slots: the sentinel for "unset" is `buf_ptr == 0` (not

@@ -89,11 +89,16 @@ include "src/agnos_line.cyr"
 var DEFAULT_ROWS = 24;
 var DEFAULT_COLS = 80;
 
+# Print `cyim X.Y.Z` to stdout. The literal comes from the auto-generated
+# `src/version_str.cyr` — never hardcode it here; see CLAUDE.md § Work Loop.
 fn print_version() {
     syscall(1, 1, _VERSION_STR_CYIM, _VERSION_LEN_CYIM);
     return 0;
 }
 
+# Print the usage block: the three interactive shapes, the six agent CLI
+# verbs, every modifier, and the regex flavors. Kept in sync by hand with
+# docs/guides/usage.md and CLAUDE.md § Consumers.
 fn print_help() {
     syscall(1, 1, "usage: cyim [<file>]                         (interactive)\n", 59);
     syscall(1, 1, "       cyim --version\n", 22);
@@ -206,6 +211,13 @@ fn run_headless(file_path) {
     return 0;
 }
 
+# The interactive editor: set up TTY state, load `file_path` (or open a
+# scratch buffer when 0), then loop render → read → dispatch until quit or
+# EOF. Returns 0 normally, 1 when stdin is not a TTY.
+#
+# All TTY state changes wrap the loop — alt-screen + raw on entry, cooked +
+# alt-screen-off on exit — and quit and EOF fall through to the same teardown,
+# which is what stops a crash-free exit leaving the terminal in raw mode.
 fn run_editor(file_path) {
     var b = buf_new();
     var lang = "plain";
@@ -295,6 +307,13 @@ fn run_editor(file_path) {
     return 0;
 }
 
+# Entry point. Parses argv, routes to the matching verb — interactive editor,
+# `--headless`, one of the six agent CLI verbs, `--probe`, `--version`,
+# `--help` — and returns its exit code.
+#
+# Exit codes are the agent-facing contract (CLAUDE.md § Consumers): 0 success,
+# 1 I/O failure, 2 usage error, 3 file not found, 4 pattern not found,
+# 5 uniqueness violation, 6 assertion (`--expect*`) mismatch.
 fn main() {
     alloc_init();
     args_init();

@@ -150,6 +150,9 @@ fn _hl_load_one(dir, dir_len, name, path_buf) {
 # The invariant is one-way: routed ⊆ loaded.
 var HL_GRAMMAR_COUNT = 46;
 
+# The bare grammar name at index `i` (0..HL_GRAMMAR_COUNT-1), or "" when out
+# of range. `tests/lang.tcyr` walks this table against `lang_name()` — see the
+# warning on HL_GRAMMAR_COUNT above for why the two must agree.
 fn hl_grammar_name(i) {
     if (i ==  0) { return "asm_aarch64"; }
     if (i ==  1) { return "asm_x86_64"; }

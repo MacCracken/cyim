@@ -87,6 +87,9 @@ requests instead)
 - [2026-04-25 — 0day / CVE corpus survey](docs/security/2026-04-25-0day-corpus.md)
 - [2026-05-07 — 1.5.x closeout audit](docs/audit/2026-05-07-1.5x-closeout.md)
   (post-LSP-fold-in; security re-scan included)
+- [2026-05-09 — 1.6.x closeout audit](docs/audit/2026-05-09-1.6x-closeout.md)
+- [2026-08-23 — 1.8.x P(-1) hardening audit](docs/audit/2026-08-23-1.8x-hardening.md)
+  (**most recent**)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
 all triaged with rationale.
@@ -105,3 +108,38 @@ F-CO-2 stays informational. v1.6.0's marks feature added no new
 attack surface — module-internal storage; no untrusted-input parser
 paths; no syscall surfaces; key dispatch reuses the existing
 prefix-keymap mechanism. Trust model unchanged.
+
+State at v1.8.6: **1 HIGH / 1 MEDIUM / 3 LOW, all fixed** — the first
+non-LOW findings in cyim's history, from the
+[1.8.x P(-1) hardening audit](docs/audit/2026-08-23-1.8x-hardening.md).
+
+- **HIGH — silent data loss on every write path.** `buf_save_file`
+  treated a short `write(2)` as a completed one, so `:w` cleared the
+  modified flag and all six agent CLI verbs exited 0 on a truncated
+  file. Measured: 475 of 575 bytes destroyed, exit code 0. Reported
+  from v1.8.3; the failure was made *harmless* at v1.8.4, where saving
+  became atomic (sibling temp + `rename`) per
+  [ADR 0006](docs/adr/0006-atomic-save.md) — a failed write now leaves
+  the original bit-for-bit intact.
+- **MEDIUM — out-of-bounds write from a `.cyimrc` value.** An
+  unvalidated palette code reached a backward-filled buffer index and
+  overran the render buffer's escape reservation. Fixed at both the
+  config boundary and the sink.
+- **LOW ×3** — render scratch buffers bounded by terminal geometry
+  rather than their own size (latent until resize support lands); an
+  i64-undersized itoa scratch; an integer parser that wrapped instead
+  of rejecting.
+
+Open from that audit: **R-1a** (extended attributes and ACLs are not
+carried across the atomic save path) and
+[**ADR 0005**](docs/adr/0005-cyimrc-cwd-trust-boundary.md) — the policy
+question of whether `.cyimrc` should be loaded from the *current
+directory* at all. `.cyimrc` is cwd-relative, so it is the directory's
+input rather than the invoking user's, which
+[ADR 0001](docs/adr/0001-trust-model.md)'s "the user is trusted" clause
+does not reach. The memory-safety half is fixed regardless; the policy
+half is Proposed with four costed options. Today's blast radius is a
+wrong colour — the reason to settle it is that the config surface is
+scheduled to widen to keymaps.
+
+F-CO-2 stays informational.

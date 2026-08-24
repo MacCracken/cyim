@@ -152,6 +152,10 @@ fn _tws_status(s) {
 # plugin_init(). Idempotent — calling twice double-registers, so
 # main is the one source of truth. ===
 
+# Register the trailing-whitespace plugin's three hooks (post_change,
+# diagnostic_provider, status_segment). Called once from `main()`. This plugin
+# is inline rather than an external repo because its line-set bookkeeping does
+# not justify the overhead — it exists to prove the ABI end to end.
 fn trailing_ws_init() {
     _tws_init_storage();
     plugin_register_post_change_hook(&_tws_on_change);

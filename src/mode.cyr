@@ -172,6 +172,9 @@ var ERR_FILE_TOO_LARGE  = 6;  # M7 audit F-2 — :e refused because file > maxfi
 #   off 200  cfg_max_filesize i64  M7 F-2 fix — `:e` refuses files
 #                                   larger than this. Default 100 MB.
 
+# Allocate a fresh editor state over buffer `buf`, with every field at its
+# documented default (NORMAL mode, tabstop 4, maxfilesize 100 MB, everything
+# else zero). The command buffer is allocated here; the dot buffer is not.
 fn editor_new(buf) {
     var s = alloc(208);
     store64(s, MODE_NORMAL);
@@ -205,49 +208,153 @@ fn editor_new(buf) {
     return s;
 }
 
+# ── Editor-state field accessors ──────────────────
+# One getter (and, where the field is writable, one setter) per slot of the
+# record documented above. Every setter returns 0. The layout block is the
+# authority on offsets; these lines say what each field MEANS to a caller,
+# which is the part you cannot read off `load64(s + 152)`.
+
+# Current mode: MODE_NORMAL / MODE_INSERT / MODE_COMMAND / MODE_SEARCH /
+# MODE_SEARCH_BACK / MODE_VISUAL / MODE_VISUAL_LINE.
 fn editor_mode(s)       { return load64(s); }
+
+# The active gap-buffer. ⚠ In a multi-window session this MIRRORS the active
+# leaf's buffer; the buflist record is the registry, this is the live handle.
 fn editor_buf(s)        { return load64(s + 8); }
+
+# The command-line buffer backing COMMAND / SEARCH / SEARCH_BACK input.
+# Separate from the text buffer so `:` typing never touches the document.
 fn editor_cmdbuf(s)     { return load64(s + 24); }
+
+# Unsaved-changes flag for the active buffer. 1 = dirty. Cleared by a
+# successful save; `:q` refuses while set.
 fn editor_modified(s)   { return load64(s + 32); }
+
+# Quit-requested flag. The main loop exits when this reaches 1.
 fn editor_quit(s)       { return load64(s + 40); }
+
+# Most recent ERR_* code, or ERR_NONE. Sticky: set by the failing operation
+# and only overwritten by the next one, so callers must read it immediately.
 fn editor_last_error(s) { return load64(s + 48); }
+
+# Path of the active buffer's file (NUL-terminated cstr), or 0 for a scratch
+# buffer. This pointer must outlive the buflist entry that references it.
 fn editor_file_path(s)  { return load64(s + 56); }
 
+# Set the current mode. ⚠ Raw field write — it does NOT run the entry/exit
+# work a mode transition implies (cmdbuf clearing, visual anchor, dot
+# recording). Route real transitions through `editor_dispatch`.
 fn editor_set_mode(s, m)        { store64(s, m);       return 0; }
+
+# Set the unsaved-changes flag.
 fn editor_set_modified(s, v)    { store64(s + 32, v);  return 0; }
+
+# Request (1) or cancel (0) quit.
 fn editor_set_quit(s, v)        { store64(s + 40, v);  return 0; }
+
+# Record an ERR_* code for the caller to surface.
 fn editor_set_last_error(s, v)  { store64(s + 48, v);  return 0; }
+
+# Set the active buffer's file path. Stores the POINTER — no copy is made, so
+# the caller owns the lifetime.
 fn editor_set_file_path(s, p)   { store64(s + 56, p);  return 0; }
+
+# Pinned status-row message (cstr), or 0 for the default mode/file display.
 fn editor_status(s)             { return load64(s + 80); }
+
+# Pin a status-row message. Stores the pointer; pass 0 to clear.
 fn editor_set_status(s, msg)    { store64(s + 80, msg); return 0; }
+
+# The latched prefix byte of a pending multi-byte sequence (KEY_G, KEY_M,
+# KEY_QUOTE, KEY_CTRL_W, or a plugin-registered one), or 0 when none.
 fn editor_prefix(s)             { return load64(s + 104); }
+
+# Latch a prefix byte, or clear it with 0. Cleared on every resolved
+# sequence, and defensively on entering the list picker.
 fn editor_set_prefix(s, p)      { store64(s + 104, p); return 0; }
+
+# Last search pattern (cstr), or 0 if nothing has been searched. What `n` and
+# `N` repeat.
 fn editor_search_pattern(s)     { return load64(s + 112); }
+
+# Set the last search pattern. Stores the pointer.
 fn editor_set_search_pattern(s, p)   { store64(s + 112, p); return 0; }
+
+# Direction of the last search: 1 forward (`/`), -1 backward (`?`). Decides
+# which way `n` goes and which way `N` reverses.
 fn editor_search_direction(s)   { return load64(s + 120); }
+
+# Set the last search direction.
 fn editor_set_search_direction(s, d) { store64(s + 120, d); return 0; }
+
+# Byte offset where the visual selection was anchored (where `v` / `V` was
+# pressed). The other end is the live cursor; either may be the lower bound.
 fn editor_visual_anchor(s)      { return load64(s + 128); }
+
+# Set the visual-selection anchor.
 fn editor_set_visual_anchor(s, a) { store64(s + 128, a); return 0; }
+
+# Yank-register contents (raw byte pointer, NOT NUL-terminated). Pair with
+# `editor_yank_register_len` — the length is the only terminator.
 fn editor_yank_register(s)      { return load64(s + 136); }
+
+# Byte length of the yank register. 0 means empty.
 fn editor_yank_register_len(s)  { return load64(s + 144); }
+# Set the yank register. Pointer and length move together — writing one
+# without the other yields a register that reads past its own contents.
 fn editor_set_yank_register(s, p, n) {
     store64(s + 136, p);
     store64(s + 144, n);
     return 0;
 }
+
+# The key that opened the dot-repeat recording in progress ('i' / 'a' / 'A'),
+# or 0. `.` replays the recording by re-entering INSERT through this key.
 fn editor_dot_entry_key(s)         { return load64(s + 152); }
+
+# Set the dot-repeat entry key.
 fn editor_set_dot_entry_key(s, k)  { store64(s + 152, k); return 0; }
+
+# Buffer holding the bytes typed during the recorded insert session, or 0
+# before the first one. Lazily allocated.
 fn editor_dot_buf(s)               { return load64(s + 160); }
+
+# Set the dot-repeat capture buffer.
 fn editor_set_dot_buf(s, b)        { store64(s + 160, b); return 0; }
+
+# Is an insert session currently being captured for `.`? 1 / 0. Guards
+# against a replay recording itself.
 fn editor_dot_recording(s)         { return load64(s + 168); }
+
+# Set the dot-recording flag.
 fn editor_set_dot_recording(s, v)  { store64(s + 168, v); return 0; }
+
+# `ignorecase`: 0 = case-sensitive (default), 1 = fold case in `/` and `?`.
 fn editor_cfg_ignorecase(s)        { return load64(s + 176); }
+
+# Set `ignorecase`. Written by `:set ic` / `:set noic` and by `.cyimrc`.
 fn editor_set_cfg_ignorecase(s, v) { store64(s + 176, v); return 0; }
+
+# `line_numbers` (0/1). ⚠ STORED, NOT RENDERED — see docs/guides/cyimrc.md
+# and roadmap.md § Deferred in-source notes.
 fn editor_cfg_line_numbers(s)      { return load64(s + 184); }
+
+# Set `line_numbers`. The slot exists so `:set number` and `.cyimrc` agree
+# even though nothing reads it yet.
 fn editor_set_cfg_line_numbers(s, v) { store64(s + 184, v); return 0; }
+
+# `tabstop` — intended display width of a TAB, default 4. ⚠ STORED, NOT
+# RENDERED: a TAB still draws as one column.
 fn editor_cfg_tabstop(s)           { return load64(s + 192); }
+
+# Set `tabstop`. Written by `:set tabstop=N` and by `.cyimrc`.
 fn editor_set_cfg_tabstop(s, v)    { store64(s + 192, v); return 0; }
+
+# `maxfilesize` — the byte cap `:e` refuses above. Default 100 MB (M7 audit
+# F-2). This one IS live, unlike the two above.
 fn editor_cfg_max_filesize(s)      { return load64(s + 200); }
+
+# Set the `:e` size cap. Written by `:set maxfilesize=N`.
 fn editor_set_cfg_max_filesize(s, v) { store64(s + 200, v); return 0; }
 
 # Seed NORMAL-mode keymap with the canonical single-byte vi mappings.

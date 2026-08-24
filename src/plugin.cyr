@@ -117,24 +117,37 @@ fn plugin_init() {
 # consumers since v1.4.0: trailing_ws (inline), cyim-lsp (sandhi-
 # pattern external bundle). ===
 
+# Register `fp` to fire after every successful `:w` / `:wq`. Signature:
+# `(s, path) -> i64`. Returns -1 if the registry is uninitialized. Frozen ABI
+# per ADR 0004 — additions allowed, shape changes are not.
 fn plugin_register_post_save_hook(fp) {
     if (_plugin_post_save_hooks == 0) { return 0 - 1; }
     vec_push(_plugin_post_save_hooks, fp);
     return 0;
 }
 
+# Register `fp` to fire after every buffer-content change. Signature:
+# `(s, b) -> i64`. ⚠ Fires on the EDIT path, so it runs per keystroke in
+# INSERT — a hook that walks the whole buffer here is a per-keystroke cost.
 fn plugin_register_post_change_hook(fp) {
     if (_plugin_post_change_hooks == 0) { return 0 - 1; }
     vec_push(_plugin_post_change_hooks, fp);
     return 0;
 }
 
+# Register `fp` to contribute a segment to the status row. Signature:
+# `(s) -> cstring`; return 0 to contribute nothing this frame. Called once per
+# render frame, so the callback must be cheap and must not allocate per call.
 fn plugin_register_status_segment(fp) {
     if (_plugin_status_segments == 0) { return 0 - 1; }
     vec_push(_plugin_status_segments, fp);
     return 0;
 }
 
+# Register `fp` to supply diagnostics. Signature: `(s, b, out_vec) -> i64`;
+# the callback pushes `diag_new(...)` records onto `out_vec`. Called once per
+# render frame via `_plugin_collect_diags`; results are readable afterwards
+# through `plugin_last_diags()`.
 fn plugin_register_diagnostic_provider(fp) {
     if (_plugin_diagnostic_provs == 0) { return 0 - 1; }
     vec_push(_plugin_diagnostic_provs, fp);
@@ -204,6 +217,14 @@ fn _plugin_prefix_record_new(prefix, key, fp) {
     return rec;
 }
 
+# Register `fp` for the two-byte NORMAL-mode sequence `prefix` then `key`
+# (e.g. KEY_G + 'd'). Signature: `(s) -> action_id`. Returns -1 if the
+# registry is uninitialized.
+#
+# ⚠ Built-ins win on conflict (ADR 0003 §3): plugin lookup runs only after the
+# built-in branch declines the second byte, so registering (KEY_G, 'g')
+# silently never fires. Plugin prefix-keys also may NOT drive mode
+# transitions — the prefix path returns before the mode-transition handling.
 fn plugin_register_normal_prefix_key(prefix, key, fp) {
     if (_plugin_normal_prefix_keys == 0) { return 0 - 1; }
     var rec = _plugin_prefix_record_new(prefix, key, fp);
@@ -270,6 +291,11 @@ fn plugin_buf_load_file(s, path) {
 var SPLIT_HORIZONTAL = 0;
 var SPLIT_VERTICAL   = 1;
 
+# Load `path` into a NEW window split from the active one. `direction` is
+# SPLIT_HORIZONTAL or SPLIT_VERTICAL. Returns the buf ptr on success, 0 on
+# failure (missing file, over the size cap, read error), with
+# `editor_last_error` set. Dedups like `plugin_buf_load_file`: an already-open
+# path is reused rather than re-read. Additive ABI, v1.6.6.
 fn plugin_buf_load_file_split(s, path, direction) {
     if (path == 0) {
         editor_set_last_error(s, ERR_NO_FILE_NAME);
@@ -496,8 +522,15 @@ fn diag_new(line, severity, msg) {
     return rec;
 }
 
+# 1-indexed line the diagnostic applies to. Frozen ABI (ADR 0004).
 fn diag_line(d)     { return load64(d); }
+
+# DIAG_HINT / DIAG_INFO / DIAG_WARNING / DIAG_ERROR — ordered, so
+# `diag_severity(d) >= DIAG_WARNING` is a portable filter. Frozen ABI.
 fn diag_severity(d) { return load64(d + 8); }
+
+# Message text (NUL-terminated cstr). Owned by whoever built the record —
+# `diag_new` stores the pointer, it does not copy. Frozen ABI.
 fn diag_msg(d)      { return load64(d + 16); }
 
 # Called once per render frame from render_frame. Allocates a fresh
@@ -545,6 +578,12 @@ fn plugin_last_diags() { return _plugin_last_diags; }
 # "FILE:LINE:COL — preview" cstrings, on_select dispatches to
 # `plugin_buf_load_file` + `buf_move`.
 
+# Put up a bottom-anchored popup picker over `items` (a vec of cstrs).
+# `on_select` fires with the chosen index; j/k move, Enter selects, Esc/q
+# dismiss. One list at a time — a second call replaces the first.
+#
+# While a list is up, `editor_dispatch` intercepts those keys at the very top,
+# so the buffer stays untouched. Additive ABI, v1.5.0.
 fn plugin_list_display(s, items, count, on_select) {
     # v1.5.3 (F-CO-3 closeout finding) — defensively clear any
     # latched prefix (e.g. KEY_G after a `g` keystroke). Otherwise
@@ -566,8 +605,13 @@ fn plugin_list_display(s, items, count, on_select) {
 
 # Public accessors so tests + render code don't reach into globals.
 fn plugin_list_active()    { return _plugin_list_active; }
+# The item vec of the active picker, or 0 when no list is up.
 fn plugin_list_items()     { return _plugin_list_items; }
+
+# Number of items in the active picker; 0 when no list is up.
 fn plugin_list_count()     { return _plugin_list_count; }
+
+# Zero-based index of the highlighted row in the active picker.
 fn plugin_list_index()     { return _plugin_list_index; }
 
 # Internal helpers — driven by editor_dispatch's list-mode

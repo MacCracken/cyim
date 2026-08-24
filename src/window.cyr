@@ -31,6 +31,9 @@ var WIN_RATIO_FULL = 1000;     # denominator for split ratios
 
 # ── Allocation
 
+# Allocate a LEAF window showing buflist slot `buf_idx`. Children are 0, the
+# rect is zeroed until `window_layout` runs, and the parent is 0 until the
+# node is spliced into a split.
 fn window_new_leaf(buf_idx) {
     var w = alloc(80);
     store64(w + 0,  WIN_LEAF);
@@ -69,23 +72,52 @@ fn window_new_split(type, a, b, ratio_a) {
 
 # ── Accessors
 
+# ── Field accessors over the 80-byte Window record documented above.
+# Rect fields are meaningless until `window_layout` has walked the tree.
+
+# WIN_LEAF / WIN_SPLIT_H / WIN_SPLIT_V.
 fn window_type(w)     { return load64(w + 0); }
+
+# Buflist slot this leaf shows. ⚠ Meaningless on a SPLIT (-1 by convention).
 fn window_buf_idx(w)  { return load64(w + 8); }
+
+# First child of a split (top for H, left for V); 0 on a leaf.
 fn window_child_a(w)  { return load64(w + 16); }
+
+# Second child of a split (bottom for H, right for V); 0 on a leaf.
 fn window_child_b(w)  { return load64(w + 24); }
+
+# child_a's share of the split, out of WIN_RATIO_FULL (500 = 50/50).
 fn window_ratio(w)    { return load64(w + 32); }
+
+# Top row of this node's rect, 0-indexed. Set by `window_layout`.
 fn window_rect_row(w) { return load64(w + 40); }
+
+# Left column of this node's rect, 0-indexed. Set by `window_layout`.
 fn window_rect_col(w) { return load64(w + 48); }
+
+# Height of this node's rect in rows, status row included.
 fn window_rect_h(w)   { return load64(w + 56); }
+
+# Width of this node's rect in columns.
 fn window_rect_w(w)   { return load64(w + 64); }
 
+# Is `w` a leaf (as opposed to a split)? 1 / 0.
 fn window_is_leaf(w)  {
     if (window_type(w) == WIN_LEAF) { return 1; }
     return 0;
 }
 
+# Point a leaf at a different buflist slot. Used by `:b` / `:e` to retarget
+# the focused window without rebuilding the tree.
 fn window_set_buf_idx(w, idx) { store64(w + 8, idx); return 0; }
+
+# Parent Window*, or 0 at the root. This is what lets `window_split_active`
+# rewire a leaf into a split in O(1) instead of re-walking from the root.
 fn window_parent(w)           { return load64(w + 72); }
+
+# Set the parent pointer. Maintained by the split / close paths; a stale
+# parent silently breaks upward navigation.
 fn window_set_parent(w, p)    { store64(w + 72, p); return 0; }
 
 # Rewire `parent`'s old child pointer (must be `old`) to `new`. Used
@@ -156,6 +188,9 @@ fn window_layout(w, row, col, h, wd) {
 # top-to-bottom order (the natural depth-first traversal). Callers walk
 # the result with vec_get / vec_len.
 
+# Append every leaf under `w` to `out_leaves` in depth-first order, which is
+# also the visual top-to-bottom / left-to-right order the window-nav commands
+# and the render loop both rely on.
 fn window_collect_leaves(w, out_leaves) {
     if (window_is_leaf(w) == 1) {
         vec_push(out_leaves, w);
@@ -166,6 +201,8 @@ fn window_collect_leaves(w, out_leaves) {
     return vec_len(out_leaves);
 }
 
+# Number of leaves under `w`. Recursive; used by the close path to decide
+# whether the last window is being closed (which quits instead).
 fn window_count_leaves(w) {
     if (window_is_leaf(w) == 1) { return 1; }
     return window_count_leaves(window_child_a(w))
@@ -195,9 +232,19 @@ fn window_leaf_at(w, row, col) {
 # helpers keep the surface tidy and let buflist / command / render
 # treat the tree as opaque.
 
+# Root of the window tree, or 0 before `window_init` has run.
 fn editor_window_root(s)        { return load64(s + 88); }
+
+# The focused leaf. Rendered in reverse video; `:w` / motions apply to its
+# buffer. Always a LEAF, never a split.
 fn editor_active_leaf(s)        { return load64(s + 96); }
+
+# Install the window-tree root. Callers are responsible for the tree being
+# well-formed — nothing here validates it.
 fn editor_set_window_root(s, w) { store64(s + 88, w); return 0; }
+
+# Move focus to `w`. ⚠ Must be a leaf: the render and dispatch paths read
+# `window_buf_idx` off it, which is meaningless on a split.
 fn editor_set_active_leaf(s, w) { store64(s + 96, w); return 0; }
 
 # Lazy-init: create a single LEAF root showing whatever buffer the

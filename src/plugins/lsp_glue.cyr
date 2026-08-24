@@ -619,6 +619,10 @@ fn _cyim_lsp_gr(s) {
 # Idempotent only in the "single source of truth" sense — calling
 # twice double-registers.
 
+# Register cyim-lsp's hook callbacks and `:lsp-*` ex-commands against cyim's
+# plugin ABI. Called once from `main()`. Registers NOTHING under
+# `CYRIUS_TARGET_AGNOS` — agnos has no subprocess spawn, so LSP is simply
+# absent there and cyim runs as a plain editor.
 fn cyim_lsp_init() {
     # LSP is Linux-only. cyim-lsp drives a language server as a child
     # process over bidirectional stdin/stdout pipes — fork + execve +
