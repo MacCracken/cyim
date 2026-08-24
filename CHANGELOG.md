@@ -4,6 +4,122 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.7] — 2026-08-23
+
+**Closeout cut for the 1.8.x cycle — all 11 `CLAUDE.md` steps.** Full audit:
+[`docs/audit/2026-08-23-1.8x-closeout.md`](docs/audit/2026-08-23-1.8x-closeout.md).
+
+**2 findings, both fixed. One refactor landed, output byte-identical. No
+regressions. 1.8.x is closed; 1.9.0 opens clean.**
+
+### Fixed — code review pass (step 5)
+
+- **`sys_fchmod`'s return was discarded in the atomic save path.** It carries
+  the target's permission bits onto the temp before the rename, and a failure
+  meant **the rename proceeded at 0644** — a mode-600 file coming back
+  world-readable, with no error anywhere. Barely reachable (we own an fd we
+  just created), but a silent permission change is not a failure mode to leave
+  resting on a guess.
+
+  The fix decides rather than merely checking: "cannot preserve the mode" is
+  exactly what [ADR 0006](docs/adr/0006-atomic-save.md)'s in-place conditions
+  exist for, and the failure happens **before any write** — so it now **falls
+  back to writing in place** instead of failing the save. The `fchmod` moved
+  into `buf_save_file` beside the temp-create, so both pre-write fallback
+  triggers sit in the one function that owns the fallback decision. The
+  invariant that *only* pre-write failures may fall back is now visible in one
+  place instead of split across two functions.
+
+  Dropped a duplicate `stat` on the way — `_buf_save_can_rename` already had
+  the mode and now reports it through a slot, so a save costs one `stat`.
+
+- **The grammar-path buffer's bound spanned three functions.**
+  `_hl_load_one` wrote into a shared `alloc(1024)` scratch with no check. Safe
+  by construction — readlink capped at 511, plus 9 for `grammars/`, 11 for the
+  longest grammar name, 6 for `.cyml` and the NUL = 537 — but that arithmetic
+  was distributed across three functions with nowhere stating it, and the
+  input is external (this process's own path length). Named `HL_PATH_BUF` with
+  the arithmetic written down; `_hl_load_one` refuses rather than overruns.
+  *"Provably fine three call frames away"* is how the 1.8.3 audit's F-3 got
+  written in the first place.
+
+### Changed — refactor pass (step 4)
+
+- **`render_build_line` and `render_build_line_naked` were 94.4% identical** —
+  73 and 69 code lines differing only in the tail reservation (`out_max - 6`
+  vs `- 4`) and the two CRLF bytes.
+
+  That duplication was load-bearing in the worst way: **the 1.8.3 audit had to
+  apply the same two bounds fixes to both copies**, and a future fix landing in
+  one and not the other would stay invisible until something overran. Two
+  implementations of the same bounds arithmetic is one more than can be kept
+  correct.
+
+  `render_build_line` is now a wrapper that hands `_naked` a budget two bytes
+  smaller and appends the CRLF itself; the reservation works out identically.
+  **Verified byte-identical across 46 cases** — 3 lines × 2 widths × plain and
+  highlighted × 5 buffer capacities from 20 to 8192, plus an empty buffer,
+  comparing exact output bytes before and after. `src/render.cyr` 723 → 663
+  lines.
+
+  A latent defect fell out of the rewrite: the old CRLF append was
+  **unconditional**, so an `out_max` under 2 wrote past the caller's buffer.
+  Not reachable — the two callers pass 1024 and 8192 — and guarded now.
+
+### Verification
+
+All 11 closeout steps pass. Highlights:
+
+- **Tests + fuzz** — 21 suites / **1177 assertions**, `cyrius fuzz` 4/4,
+  CLI smoke **128**, PTY integration smoke, DCE parity. Clean build from
+  `rm -rf build`, plus `--agnos` and `--aarch64` cross-builds.
+- **Dead code** — floor 24, **every one with a caller somewhere**; 0 unused
+  globals.
+- **Security re-scan** — no `sys_system`, no `/bin/sh`, no raw `execve`/`fork`;
+  all four M6/M7 regression guards present; no stack buffer ≥ 64 KB; **0
+  slot-vs-byte findings** (the BUG-002 shape) across `src/`, `tests/`, `fuzz/`.
+- **Cleanup** — 0 stale comments, 0 orphaned files, 0 TODO/FIXME markers in
+  `src/`, 0 untracked lint deferrals, 0 lint warnings, 0 undocumented fns.
+- **Downstream** — `agnoshi` and `aethersafha` both present locally and
+  **neither has reached the integration point** (zero references in either
+  manifest or `src/`), matching state.md's *Planned*. The consumer that *is*
+  live is `daimon` via the CLI verbs — which is exactly where the cycle's HIGH
+  finding landed hardest, because an agent's only feedback is the exit code.
+- **Benchmarks** — nothing regressed. `render_build_line_80c_x1000` is 255 µs
+  against 251 µs at 1.8.6, inside spread, and that is the function this cut
+  rewrote.
+- `cyrius smoke` — 4 passed / 9 failed, unchanged: BUG-002, owned upstream.
+  The only known-red gate, and not cyim's to turn green.
+
+### Binary
+
+**1,197,552 B** — **−4,080 B** vs 1.8.6, from the render deduplication.
+
+### The 1.8.x cycle, closed
+
+| | 1.8.0 | 1.8.7 |
+|---|---:|---:|
+| Assertions | 1129 | **1177** |
+| CLI smoke | 118 | **128** |
+| Undocumented public fns | 103 | **0** |
+| Untracked lint deferrals | 20 | **0** |
+| Lint warnings | 10 | **0** |
+| Binary | 1,175,856 B | 1,197,552 B |
+
+The cycle's defining discovery: **cyim could destroy most of a file and report
+success**, on every write path, reachable by any full filesystem. Found at
+1.8.3, made loud there, made harmless at 1.8.4. Everything after it —
+1.8.5's cleanliness, 1.8.6's documentation, this closeout — is the
+follow-through.
+
+Findings across the cycle: 1 HIGH, 1 MEDIUM, 3 LOW, 3 informational (1.8.3)
+plus 2 at closeout. All fixed. Two ADRs written, three architecture notes, and
+the ADR/architecture indexes that had been missing since the tree was
+scaffolded.
+
+**Nothing open blocks 1.9.0.** Everything deferred is in one table —
+[`roadmap.md` § Everything Still Deferred](docs/development/roadmap.md).
+
 ## [1.8.6] — 2026-08-23
 
 **Documentation sweep. `cyrius audit`'s "101 undocumented public fns"

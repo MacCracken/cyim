@@ -104,8 +104,21 @@ fn _hl_resolve_dir() {
 # grammar name (as `hl_grammar_name` returns it) — the ".cyml" suffix is
 # appended here so the one table can serve both the loader and the
 # routing drift guard in `tests/lang.tcyr`.
+# Capacity of the shared path scratch `highlight_init` hands to
+# `_hl_load_one`. The buffer must hold `<exe-dir>` + "grammars/" + the longest
+# grammar name + ".cyml" + NUL — 511 (readlink's cap in `_hl_resolve_dir`) + 9
+# + 11 + 6 = 537 today, so 1024 is comfortable. Named at the 1.8.7 closeout
+# because that invariant previously spanned three functions with no single
+# place stating it, and `_hl_load_one` wrote into the buffer without checking.
+var HL_PATH_BUF = 1024;
+
 fn _hl_load_one(dir, dir_len, name, path_buf) {
     var nlen = strlen(name);
+    # Refuse rather than overrun. Unreachable by construction today — see
+    # HL_PATH_BUF — but the bound is external data (the length of this
+    # process's own path) and "provably fine three call frames away" is how
+    # the 1.8.3 audit's F-3 got written in the first place.
+    if (dir_len + nlen + 6 > HL_PATH_BUF) { return 0; }
     var i = 0;
     while (i < dir_len) { store8(path_buf + i, load8(dir + i)); i = i + 1; }
     var j = 0;
@@ -228,7 +241,7 @@ fn highlight_init() {
     if (dir == 0) { return 0; }
 
     registry_init();
-    var path = alloc(1024);
+    var path = alloc(HL_PATH_BUF);
     var dlen = strlen(dir);
 
     var i = 0;

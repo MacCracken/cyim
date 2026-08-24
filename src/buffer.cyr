@@ -474,7 +474,12 @@ fn _buf_is_symlink(path) {
 
 # May `path` be saved by rename? 1 = yes, 0 = write in place.
 # The conditions, in ADR 0006's order.
-fn _buf_save_can_rename(path) {
+# `mode_slot` receives the permission bits the atomic path must carry onto the
+# temp, or -1 when there is nothing to preserve (the target does not exist).
+# Reported from here so the caller does not have to `stat` the same path a
+# second time, and so the fchmod is checked where the fallback decision lives.
+fn _buf_save_can_rename(path, mode_slot) {
+    store64(mode_slot, 0 - 1);
     # (6) agnos: no `fchmod`, no uid in its stat, and `xfsync` is a
     # whole-system `sync()`. A platform that cannot preserve the mode should
     # not be quietly resetting it.
@@ -506,6 +511,7 @@ fn _buf_save_can_rename(path) {
     # welcome.
     if (load32(&st + STAT_UID) != sys_geteuid()) { return 0; }
 
+    store64(mode_slot, mode & 0xFFF);
     return 1;
     #endif
 }
@@ -597,16 +603,9 @@ fn _buf_save_in_place(b, path) {
 # leave the original alone. Folding both into one return value here is how the
 # first draft of this function got it wrong — see `buf_save_file`.
 fn _buf_save_atomic(b, path, tmp, fd) {
-    # Carry the target's permission bits onto the temp BEFORE the rename, so
-    # the file the user ends up with has the mode it started with rather than
-    # the 0644 the create asked for. A brand-new file has no mode to inherit.
-    #ifndef CYRIUS_TARGET_AGNOS
-    var st[144];
-    if (xstat(path, &st) == 0) {
-        sys_fchmod(fd, load32(&st + STAT_MODE) & 0xFFF);
-    }
-    #endif
-
+    # `fd` arrives already chmod'd to the target's mode — see `buf_save_file`.
+    # Everything from here on is post-open, so every failure unlinks the temp
+    # and reports; none of them may fall back to writing in place.
     var total = _buf_write_segments(b, fd);
     if (total < 0) { file_close(fd); xunlink(tmp); return total; }
     if (xfsync(fd) < 0) { file_close(fd); xunlink(tmp); return 0 - 5; }
@@ -633,7 +632,9 @@ fn _buf_save_atomic(b, path, tmp, fd) {
 # Atomic by default (ADR 0006). `buf_save_was_atomic()` reports which path the
 # last call took.
 fn buf_save_file(b, path) {
-    var go_atomic = _buf_save_can_rename(path);
+    var mode_slot[8];
+    store64(&mode_slot, 0 - 1);
+    var go_atomic = _buf_save_can_rename(path, &mode_slot);
     var tmp = 0;
     var fd = 0 - 1;
 
@@ -649,12 +650,40 @@ fn buf_save_file(b, path) {
         if (fd < 0) { go_atomic = 0; }
     }
 
+    # Carry the target's permission bits onto the temp BEFORE the rename, so
+    # the user ends up with the mode they started with rather than the 0644 the
+    # create asked for.
+    #
+    # ⭐ 1.8.7 closeout review: this return used to be DISCARDED. A failed
+    # fchmod meant the rename silently proceeded at 0644 — a mode-600 file
+    # coming back world-readable, with no error anywhere. Barely reachable (we
+    # own an fd we just created), but a silent permission change is not a
+    # failure mode to leave on a guess.
+    #
+    # Failing here is a FALLBACK, not an error: "cannot preserve the mode" is
+    # exactly what the in-place conditions exist for, and nothing has been
+    # written yet, so falling back is safe. This is the second and last
+    # pre-write fallback trigger — see the warning below.
+    #ifndef CYRIUS_TARGET_AGNOS
+    if (go_atomic == 1) {
+        var want_mode = load64(&mode_slot);
+        if (want_mode >= 0) {
+            if (sys_fchmod(fd, want_mode) < 0) {
+                file_close(fd);
+                xunlink(tmp);
+                go_atomic = 0;
+            }
+        }
+    }
+    #endif
+
     if (go_atomic == 1) {
         _buf_save_atomic_last = 1;
         return _buf_save_atomic(b, path, tmp, fd);
     }
 
-    # ⚠ ONLY a failed temp create reaches here from the atomic branch.
+    # ⚠ ONLY the two PRE-WRITE failures reach here from the atomic branch — a
+    # failed temp create and a failed fchmod.
     # Falling back after a failed WRITE would be catastrophic — it would
     # re-open the target `O_TRUNC` and destroy exactly the content the atomic
     # path had just preserved. The first draft of this function did that.

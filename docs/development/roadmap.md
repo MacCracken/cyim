@@ -34,7 +34,7 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.8.6** (see [`state.md`](state.md)). The 1.6.x
+cyim is at **1.8.7** (see [`state.md`](state.md)). The 1.6.x
 catch-up cycle closed at 1.6.8; 1.7.0 opened the post-catch-up
 era with the darshana TUI dep pickup, and **1.8.0 is the one
 feature cut since** — cyim runs on AGNOS, full-screen on the
@@ -67,7 +67,11 @@ renaming would break something the user relies on more.
 there was nothing to delete, and the whole tree came out
 lint-clean. **1.8.6** closed the last documentation gap: every
 public function is documented, and every remaining deferral is
-in one table below.
+in one table below. **1.8.7 is the closeout** — all 11 CLAUDE.md
+steps, 2 code-review findings fixed, and the 94%-duplicated
+`render_build_line` / `_naked` pair collapsed to a wrapper with
+byte-identical output. **The 1.8.x cycle is closed; 1.9.0 opens
+clean, and nothing on the deferred list blocks it.**
 
 The full LSP user-visible surface — diagnostics, `gd` goto-def
 same-file + cross-file, `gr` references quickfix, `:lsp-*`
@@ -134,6 +138,7 @@ this is a sequencing index.
 | **v1.8.4** — **Atomic save** ([ADR 0006](../adr/0006-atomic-save.md)), closing audit residual R-1. A save writes a sibling temp, `fchmod`s it to the target's mode, writes, `fsync`s, `rename`s over the target, then `fsync`s the parent directory — so a write that dies part way leaves the original bit-for-bit intact. Atomic by DEFAULT, not unconditionally: six enumerated conditions (symlink, `nlink > 1`, non-regular file, foreign uid, non-writable directory, agnos) take the in-place path, because rename changes the inode and for those shapes that breaks something the user relies on more. Return contract unchanged; no call site touched. `buf_save_was_atomic()` added so a silent fallback cannot rot unobserved. Suite 1161 → 1174; CLI smoke 122 → 128; both the conditions and the fall-through logic mutation-tested | Shipped 2026-08-23 |
 | **v1.8.5** — **Dead-code + cleanliness cut**, closing audit residual R-2 — with the honest answer that there was nothing to delete: all 24 cyim-side unreachable functions are frozen ABI, test-only introspection, or documented-deferred config, and the one symbol with no caller anywhere (`diag_msg`) was a coverage hole closed with a test. Real dead code sat one level down: **five named constants the code was not using** (`BUFFER_REC_SIZE`, `RENDER_LINE_BUF`, `KEY_CTRL_R`, the `REPLACE_*` pair, `_CYIMRC_PALETTE_SLOTS`) — the same size-expressed-twice shape the last two audits kept finding. Four wired up, one deleted as unusable by construction. **Five stale comments** corrected, describing states that had stopped being true up to five minors earlier. **20 untracked lint deferrals → 0**: 8 cross-referenced to a new roadmap § Deferred in-source notes, 5 stale ones corrected, 7 false positives given `#skip-lint` with a reason. Ten over-length test lines wrapped. Suite 1174 → 1177; whole tree now lint-clean | Shipped 2026-08-23 |
 | **v1.8.6** — **Documentation sweep.** `cyrius audit`'s "101 undocumented public fns" advisory → **0**: every public function in `src/` and `src/plugins/` now carries a docstring saying what it *means* rather than what it loads — the 40-accessor editor-state block in `mode.cyr` and the 20-accessor window record are the bulk, and both now read as self-describing tables instead of requiring a scroll to the layout comment. Doc-tree sweep alongside: README's status was four minors stale (still "1.7.5 — released", old pins, "3 fuzz harnesses"), SECURITY.md's most recent state was "v1.6.0: 0 CRITICAL / 0 HIGH" when the 1.8.3 audit had since found a HIGH, and BENCHMARKS.md had not been re-run since v1.6.0. All three current. Roadmap gains a single **Everything Still Deferred** table — the 1.8.x line had left open items in four separate places | Shipped 2026-08-23 |
+| **v1.8.7** — **Closeout cut for the 1.8.x cycle**, all 11 CLAUDE.md steps ([audit](../audit/2026-08-23-1.8x-closeout.md)). 2 code-review findings, both fixed: `sys_fchmod`'s return was discarded in the atomic save path, so a failure would have let the rename proceed at 0644 — a mode-600 file coming back world-readable with no error (now a pre-write fallback to in-place, which is what "cannot preserve the mode" means, plus a duplicate `stat` dropped); and `_hl_load_one` wrote into a 1024-byte scratch whose bound was distributed across three functions with nowhere stating it. **Refactor:** `render_build_line` and `render_build_line_naked` were **94.4% identical** — and the 1.8.3 audit had to apply the same bounds fixes to both copies — collapsed to a wrapper, verified byte-identical across 46 cases, `render.cyr` 723 → 663 lines, binary −4,080 B. Dead-code floor 24 with every symbol having a caller; 0 unused globals; security re-scan clean; downstream `agnoshi` / `aethersafha` confirmed not yet integrated | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -417,6 +422,20 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-08-23 (v1.8.7 — **closeout cut for the
+1.8.x cycle**; all 11 CLAUDE.md steps green. 2 code-review
+findings fixed: a discarded `sys_fchmod` return that would have
+let the atomic save's rename proceed at 0644, and a grammar-path
+bound spanning three functions with nowhere stating it. One
+refactor: `render_build_line` and `render_build_line_naked` were
+94.4% identical, and the 1.8.3 audit had to fix the same bounds
+logic in BOTH — collapsed to a wrapper, byte-identical across 46
+verification cases. Cycle totals: 1129 → 1177 assertions, 118 →
+128 CLI smoke, 103 → 0 undocumented fns, 20 → 0 untracked
+deferrals, 10 → 0 lint warnings. **1.8.x is closed. 1.9.0 opens
+clean** — nothing in § Everything Still Deferred blocks it; the
+two worth settling early are BUG-002 and ADR 0005.)*
 
 *Last updated: 2026-08-23 (v1.8.6 — **documentation sweep**.
 `cyrius audit`'s "101 undocumented public fns" advisory is now

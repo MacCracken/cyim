@@ -2,22 +2,22 @@
 
 > **Volatile.** This file is the **live state** of the project — current version, sizes, test counts, in-flight slot, consumer build status. Refreshed every release. Don't put durable rules here (those live in [`CLAUDE.md`](../../CLAUDE.md)); don't put release history here (that lives in [`CHANGELOG.md`](../../CHANGELOG.md)); don't put sequencing here (that lives in [`roadmap.md`](roadmap.md)).
 
-*Last bumped: 2026-08-23 (v1.8.6 — **documentation sweep**. `cyrius audit`'s "101 undocumented public fns" advisory is now **0**: every public function in `src/` and `src/plugins/` carries a docstring saying what it MEANS to a caller rather than what it loads. Doc-tree sweep alongside — README was four minors stale and missing 1.8.0 entirely, SECURITY.md still reported "v1.6.0: 0 CRITICAL / 0 HIGH" after the 1.8.3 audit found cyim's first HIGH, and BENCHMARKS.md had not been re-run since v1.6.0. All three current. **All remaining deferred work is now in one roadmap table** (§ Everything Still Deferred) — the 1.8.x line had left it scattered across four places. No code change; binary unchanged.)*
+*Last bumped: 2026-08-23 (v1.8.7 — **closeout cut for the 1.8.x cycle**, all 11 CLAUDE.md steps: [`docs/audit/2026-08-23-1.8x-closeout.md`](../audit/2026-08-23-1.8x-closeout.md). 2 code-review findings, both fixed — a discarded `sys_fchmod` return that would have let a rename silently proceed at 0644 (now a pre-write fallback to in-place, which is what "cannot preserve the mode" means), and a grammar-path bound that spanned three functions with nowhere stating it. One refactor: `render_build_line` and `render_build_line_naked` were **94.4% identical**, and the 1.8.3 audit had to fix the same bounds logic in both — collapsed to a wrapper, verified byte-identical across 46 cases. **1.8.x is closed; 1.9.0 opens clean**, with nothing on the deferred list blocking it.)*
 
 ---
 
 ## Version
 
-- **VERSION**: `1.8.6`
+- **VERSION**: `1.8.7`
 - **Cyrius toolchain pin**: `6.5.35`
-- **Last release**: `1.8.6` — Patch; documentation sweep. 103 undocumented public fns → 0; README / SECURITY.md / BENCHMARKS.md brought current (all three had drifted, one by four minors); every remaining deferred item consolidated into a single roadmap table. No code change. 2026-08-23. Full entry in CHANGELOG.
+- **Last release**: `1.8.7` — Patch; **1.8.x closeout**. All 11 closeout steps pass. 2 code-review findings fixed (unchecked `sys_fchmod`; unbounded grammar-path write); the 94%-duplicated render pair collapsed to a wrapper with byte-identical output. 2026-08-23. Full entry in CHANGELOG; audit at [`docs/audit/2026-08-23-1.8x-closeout.md`](../audit/2026-08-23-1.8x-closeout.md).
 
 ## Binary
 
-- **`build/cyim`** (CYRIUS_DCE=1): **1,201,632 B**
-  - Last delta: **0 B** at 1.8.6 (documentation only — comments do not survive compilation). Prior: +4,096 B at 1.8.5 (comment volume shifting DCE alignment; the constants-wiring itself is size-neutral). Prior: +32 B at 1.8.4 (the atomic-save path largely replaces code DCE was already keeping). Prior: +4,120 B at 1.8.3, +17,528 B at 1.8.2 (cyrius `6.5.18→6.5.35` codegen + `vyakarana 2.2.3→2.4.0` scanner additions + a wholly replaced stdlib snapshot). Not attributed further — three independent movers in one cut.
-  - **`build/cyim_agnos`**: 1,209,848 B — static x86-64 ELF64, passes `stage_one`'s file-type gate in agnos's `scripts/burn/stage-tools.sh`.
-  - **`build/cyim_aarch64`**: 1,615,272 B — ARM aarch64 ELF64. Re-verified at 1.8.2 because darshana 0.9.2 fixed an aarch64-only ioctl misdirection on the five termios callsites cyim uses.
+- **`build/cyim`** (CYRIUS_DCE=1): **1,197,552 B**
+  - Last delta: **−4,080 B** at 1.8.7 (the render deduplication). Prior: 0 B at 1.8.6 (documentation only — comments do not survive compilation). Prior: +4,096 B at 1.8.5 (comment volume shifting DCE alignment; the constants-wiring itself is size-neutral). Prior: +32 B at 1.8.4 (the atomic-save path largely replaces code DCE was already keeping). Prior: +4,120 B at 1.8.3, +17,528 B at 1.8.2 (cyrius `6.5.18→6.5.35` codegen + `vyakarana 2.2.3→2.4.0` scanner additions + a wholly replaced stdlib snapshot). Not attributed further — three independent movers in one cut.
+  - **`build/cyim_agnos`**: 1,205,768 B — static x86-64 ELF64, passes `stage_one`'s file-type gate in agnos's `scripts/burn/stage-tools.sh`.
+  - **`build/cyim_aarch64`**: 1,615,280 B — ARM aarch64 ELF64. Re-verified at 1.8.2 because darshana 0.9.2 fixed an aarch64-only ioctl misdirection on the five termios callsites cyim uses.
   - Per-release size history is in CHANGELOG's per-version Binary sections.
 
 ## Tests
@@ -31,7 +31,7 @@
 - **Performance benches** (`tests/perf.bcyr`): 9 benches, re-run and tabulated against the 1.6.8 baseline in [`BENCHMARKS.md`](../../BENCHMARKS.md) at 1.8.6 — the first re-bench since v1.6.0. ⚠ Two caveats there: cyrius 6.5.19 changed the measurement (timer floor now subtracted) and most of the improvement is the toolchain, not cyim. latest numbers + the 1.6.8 comparison table in [CHANGELOG 1.8.2 § Benchmarks](../../CHANGELOG.md#182--2026-08-23). Cold tokenize `highlight_buf_1MB_cyrius` 307 ms → **281 ms** at vyakarana 2.4.0, giving back about half of the +21% the 2.0.0 streaming-API migration cost at 1.6.1. Not a `perf.bcyr` bench but measured at 1.8.2: `highlight_init()` start-up cost 0.42 ms → **1.95 ms** (11 → 46 grammars), the price of the highlighting fix. Note cyrius 6.5.19 made the bench framework subtract a measured timer floor, so cross-era deltas are approximate.
 - **Documentation**: `cyrius doc --check` reports **0 undocumented public fns** across `src/` + `src/plugins/` as of 1.8.6 (was 103). `cyrius audit`'s docs step is silent.
 - **Cleanliness**: **whole tree lint-clean as of 1.8.5** — `cyrius lint` reports 0 warnings AND **0 untracked deferrals** across `src/`, `src/plugins/`, `tests/` and `fuzz/` (was 20 untracked deferrals + 10 long-line warnings). Genuine deferrals are cross-referenced to [`roadmap.md` § Deferred in-source notes](roadmap.md); false positives carry `#skip-lint` with a reason — the rule matches "follow-up" and "not yet", which in those lines are a prefix-sequence noun and assertion text. `cyrfmt --check` clean. ⚠ cyrius 6.5.28 made bare `cyrius fmt <file>` **rewrite in place**; `--dry` is the report-only mode.
-- **Security**: most recent audit at [`docs/audit/2026-08-23-1.8x-hardening.md`](../audit/2026-08-23-1.8x-hardening.md) — **1 HIGH / 1 MEDIUM / 3 LOW / 3 informational, all five code findings fixed**. **R-1 closed at 1.8.4** by [ADR 0006](../adr/0006-atomic-save.md); **R-2 closed at 1.8.5** (nothing to delete — see [architecture note 004](../architecture/004-reading-the-dce-report.md)). Still open from it: residual **R-1a** (xattrs/ACLs are not carried across the atomic path, and cyim cannot detect a non-trivial ACL without an xattr surface the stdlib lacks), and the **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)** policy question on cwd-relative `.cyimrc`. Carry-over: F-CO-2 from 1.5.2 stays informational. Earlier audits: [M5](../audit/2026-04-25-security-audit.md), [M7](../audit/2026-04-25-m7-audit.md), [1.5.x closeout](../audit/2026-05-07-1.5x-closeout.md). 0day-corpus survey in [`docs/security/2026-04-25-0day-corpus.md`](../security/2026-04-25-0day-corpus.md); trust-model ADR at [`docs/adr/0001-trust-model.md`](../adr/0001-trust-model.md).
+- **Security**: most recent pass is the [1.8.x closeout](../audit/2026-08-23-1.8x-closeout.md) (2026-08-23) — security re-scan clean, 2 code-review findings fixed. The defect-hunting audit behind it is [`2026-08-23-1.8x-hardening.md`](../audit/2026-08-23-1.8x-hardening.md) — **1 HIGH / 1 MEDIUM / 3 LOW / 3 informational, all five code findings fixed**. **R-1 closed at 1.8.4** by [ADR 0006](../adr/0006-atomic-save.md); **R-2 closed at 1.8.5** (nothing to delete — see [architecture note 004](../architecture/004-reading-the-dce-report.md)). Still open from it: residual **R-1a** (xattrs/ACLs are not carried across the atomic path, and cyim cannot detect a non-trivial ACL without an xattr surface the stdlib lacks), and the **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)** policy question on cwd-relative `.cyimrc`. Carry-over: F-CO-2 from 1.5.2 stays informational. Earlier audits: [M5](../audit/2026-04-25-security-audit.md), [M7](../audit/2026-04-25-m7-audit.md), [1.5.x closeout](../audit/2026-05-07-1.5x-closeout.md). 0day-corpus survey in [`docs/security/2026-04-25-0day-corpus.md`](../security/2026-04-25-0day-corpus.md); trust-model ADR at [`docs/adr/0001-trust-model.md`](../adr/0001-trust-model.md).
 
 ## CI / Release
 
@@ -43,11 +43,13 @@
 
 ## Cycle in flight
 
-**Current cycle: 1.8.x — demand-gated.** The 1.6.x catch-up cycle closed at 1.6.8. 1.7.1–1.7.5 were toolchain/dep-refresh cuts; **1.8.0 is the one feature cut of the era** (cyim runs on AGNOS — full-screen on the framebuffer console via `src/agnos_kbd.cyr`, or the `--line` ed/ex editor via `src/agnos_line.cyr`); 1.8.1 restored the `--agnos` *build*; 1.8.2 is this catch-up. No feature bite is in flight. **One item is now owned and waiting on an upstream cut**: BUG-002's fix is a `cyim-lsp` release, which cyim picks up with a `tag` bump and no source change. Otherwise the next cuts open as triggers surface (per [`roadmap.md`](roadmap.md)'s Post-1.5.x — Demand-Gated table). Closed milestones (M0–M7, all 1.x cuts through 1.8.2) are tracked in roadmap.md's Closed Milestones table.
+**The 1.8.x cycle is CLOSED at 1.8.7** — closeout pass complete, all 11 CLAUDE.md steps green ([audit](../audit/2026-08-23-1.8x-closeout.md)). The cycle ran: 1.8.0 AGNOS support (the one feature cut) → 1.8.1 the `--agnos` build → 1.8.2 dependency catch-up + the 34-language highlighting regression + CI repair → 1.8.3 P(-1) hardening → 1.8.4 atomic save → 1.8.5 dead code + cleanliness → 1.8.6 documentation → 1.8.7 closeout.
+
+**1.9.0 opens next, and nothing deferred blocks it.** No feature bite is claimed; the next cuts open as triggers surface (per [`roadmap.md`](roadmap.md)'s Post-1.5.x — Demand-Gated table). The two items worth knowing before starting: **BUG-002** (LSP dead on Linux; the fix is a `cyim-lsp` release, and the `cyrius smoke` CI gate lands green in the same cut) and **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)** (should `.cyimrc` load from the cwd at all — cheap to settle now, expensive once the config surface widens to keymaps). Everything deferred is in one table: [`roadmap.md` § Everything Still Deferred](roadmap.md).
 
 **Save semantics** are now [ADR 0006](../adr/0006-atomic-save.md): atomic by default, in-place for six enumerated file shapes. `buf_save_was_atomic()` reports which path the last save took — the two are otherwise indistinguishable from outside, which is how a silent fallback would rot unobserved.
 
-**Nearest closeout gate:** `1.9.0` will be the next minor, so a closeout pass is owed as the last patch before it (CLAUDE.md § Closeout Pass). 1.8.2 covers several of its steps already — full test + fuzz suite, bench baseline, security-class sweep, doc sync, clean cross-target builds — but not the dead-code audit, refactor pass, or full-diff code review.
+**Closeout gate: satisfied.** The 1.8.x closeout shipped as 1.8.7, per CLAUDE.md § Closeout Pass. The next one is owed as the last patch of the 1.9.x line.
 
 ## Consumers
 
@@ -71,7 +73,7 @@
 ## Verification Hosts
 
 - **x86_64 Linux** — primary dev host; verified continuously.
-- **aarch64 Linux (Pi)** — out-of-band; not blocking. Cross-build re-verified at 1.8.2 (`build/cyim_aarch64`, 1,615,272 B) because darshana 0.9.2 fixed an aarch64-only ioctl misdirection cyim was exposed to on all five termios callsites. Not run on real hardware this cut — the build is proof the symbol resolves, not that the Pi works.
+- **aarch64 Linux (Pi)** — out-of-band; not blocking. Cross-build re-verified at 1.8.2 (`build/cyim_aarch64`, 1,615,280 B) because darshana 0.9.2 fixed an aarch64-only ioctl misdirection cyim was exposed to on all five termios callsites. Not run on real hardware this cut — the build is proof the symbol resolves, not that the Pi works.
 - **Apple Silicon Mach-O** — out-of-band; not blocking.
 - **Windows PE32+** — out of scope (TTY editor; Linux/macOS/BSD targets only).
 
