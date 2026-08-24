@@ -1,8 +1,8 @@
 # ADR 0005 — `.cyimrc` is loaded from the current directory, and that is a trust boundary ADR 0001 does not cover
 
-**Status:** Proposed
+**Status:** Accepted (decided 2026-08-23, implemented v1.9.2)
 **Date:** 2026-08-23
-**Tags:** security, trust-model, config, v1.8.3
+**Tags:** security, trust-model, config, v1.9.2
 
 ---
 
@@ -48,65 +48,122 @@ Two of vim's CVE-adjacent embarrassments live in this neighbourhood.
 
 ## Decision
 
-**Undecided — this ADR is Proposed, and records the options rather than
-picking one.** What *is* decided:
+**The user's config lives in their home directory. A project-local
+`.cyimrc` may override it, and that is accepted.**
 
-1. **ADR 0001 does not extend to cwd-relative config.** Its "the user is
-   trusted" clause is scoped to input the user actually supplies. A file
-   found in the working directory is the directory's input. ADR 0001
-   should carry a pointer to this ADR rather than continuing to imply
-   coverage it does not have.
-2. **Memory safety is not in scope for the trust model.** Any value
-   `.cyimrc` can express must be range-checked before it reaches an index,
-   a length, or a loop bound — regardless of how the policy question below
-   is answered. Implemented at 1.8.3 (`_cyimrc_palette_valid`,
-   `_cyimrc_parse_int`'s digit cap, `_render_u16_ascii`'s clamp).
+Concretely — **option C's search path, with the opt-in inverted to on**:
+
+1. **`$XDG_CONFIG_HOME/cyim/cyimrc`** is the primary config, falling back to
+   **`$HOME/.config/cyim/cyimrc`** when `XDG_CONFIG_HOME` is unset. This is
+   where a user's actual preferences belong: it follows them between
+   directories, it is unambiguously theirs, and it is the file they will edit.
+2. **`./.cyimrc` is then loaded on top**, overriding any key it sets. No flag,
+   no prompt. Per-project colour choices are a real use for an editor and
+   making people opt in per project would be friction for no proportional gain.
+3. **Later wins, key by key.** The loader stores into per-key slots, so a
+   local file overrides only the keys it names and inherits the rest.
+
+And the two things that were already settled, restated because they are what
+make (2) defensible:
+
+4. **ADR 0001 does not extend to cwd-relative config.** Its "the user is
+   trusted" clause is scoped to input the user actually supplies. A file found
+   in the working directory is the *directory's* input. ADR 0001 carries a
+   pointer here.
+5. **Memory safety is not in scope for the trust model.** Any value `.cyimrc`
+   can express is range-checked before it reaches an index, a length, or a
+   loop bound — regardless of which file it came from. Implemented at 1.8.3
+   (`_cyimrc_palette_valid`, `_cyimrc_parse_int`'s digit cap,
+   `_render_u16_ascii`'s clamp).
+
+### The rule that keeps this honest
+
+Accepting local override is a judgement about **what `.cyimrc` can currently
+express**: ten colour indexes and three display integers. The worst a hostile
+directory achieves is a wrong colour. That is a fine trade.
+
+It stops being a fine trade the moment a key can do something else. So:
+
+> **Every new `.cyimrc` key must be classified as local-overridable or
+> home-only when it is added, and the classification recorded here.**
+
+Not machinery — a line in a table and a check in `_cyimrc_apply` if the answer
+is ever "home-only". Today the table is trivial:
+
+| Key group | Local override | Why |
+|---|---|---|
+| `palette.*` (10 keys) | **yes** | A colour. Per-project palettes are the obvious use |
+| `ignorecase`, `line_numbers`, `tabstop` | **yes** | Display and search preferences, scoped to the file you are looking at |
+| *(none yet)* | **no** | — |
+
+**Keymaps, when they land, are the first serious candidate for home-only.** A
+colour accepted from a directory you just cloned is a wrong colour; a *keymap*
+accepted from it decides what your keystrokes do. That is a different
+proposition, and this ADR exists so the question gets asked then rather than
+discovered afterwards.
 
 ## Options considered
 
-| Option | What it costs | What it buys |
-|---|---|---|
-| **A. Status quo** — keep loading `./.cyimrc` unconditionally | Nothing | Nothing. Correct *today* only because the surface is ten colour indexes |
-| **B. Drop cwd; load only from `$XDG_CONFIG_HOME/cyim/cyimrc`** | Breaks per-project config, which is a real use for an editor | Removes the boundary entirely; simplest to reason about |
-| **C. Load both; cwd requires an opt-in** (env var or a key in the user-level config) | One flag to document; a surprise for anyone relying on cwd config today | vim's `exrc` shape, with vim's track record behind it |
-| **D. Load both; restrict what the cwd copy may set** | Two config grammars to keep in step — the failure mode is forgetting to restrict a newly added key | Per-project colours keep working; the widening surface stays safe |
+| Option | What it costs | What it buys | Verdict |
+|---|---|---|---|
+| **A. Status quo** — keep loading `./.cyimrc` unconditionally, no home config | Nothing | Nothing. Correct *today* only because the surface is ten colour indexes — and leaves users with no config that follows them between projects | Rejected |
+| **B. Drop cwd; load only from `$XDG_CONFIG_HOME/cyim/cyimrc`** | Breaks per-project config, which is a real use for an editor | Removes the boundary entirely; simplest to reason about | Rejected — throws out a legitimate use to close a hole whose blast radius is a colour |
+| **C. Load both; cwd requires an opt-in** (env var or a key in the user-level config) | One flag to document; friction on every project for a risk that is currently a wrong colour | vim's `exrc` shape, with vim's track record behind it | **Chosen, opt-in inverted to on** — the search path is right, the gate is premature |
+| **D. Load both; restrict what the cwd copy may set** | Two config grammars to keep in step — the failure mode is forgetting to restrict a newly added key | Per-project colours keep working; the widening surface stays safe | **Adopted as a rule, not machinery** — see the classification table above. The restriction becomes code the first time a key needs it |
 
-**C and D are not exclusive**, and vim ships both (`exrc` + `secure`).
+**C and D are not exclusive**, and vim ships both (`exrc` + `secure`). cyim
+takes C's *shape* with the gate open, and holds D in reserve as a written rule
+rather than unwritten code — because the thing that would justify D (a key
+that does more than choose a colour) does not exist yet, and building the
+restriction before the thing it restricts is how you get machinery nobody
+remembers the reason for.
 
-## Why this is not urgent, and why it should not be left open either
+## Why the risk is acceptable today, and what would change that
 
-**Not urgent:** today's entire `.cyimrc` surface is ten palette indexes
-and three integers that are stored but not yet rendered. The worst a
-hostile config achieves is *the wrong colour*. There is no path from
-`.cyimrc` to code execution, file access, or command dispatch, because
-cyim has no scripting language to reach for — the
-[no-embedded-scripting constraint](../../CLAUDE.md) is doing real work
-here.
+Today's entire `.cyimrc` surface is ten palette indexes and three integers.
+The worst a hostile directory achieves is **the wrong colour**. There is no
+path from `.cyimrc` to code execution, file access, or command dispatch,
+because cyim has no scripting language to reach for — the
+[no-embedded-scripting constraint](../../CLAUDE.md) is doing real work here,
+and it is what makes "local override, no questions asked" a reasonable default
+rather than a shrug.
 
-**Not to be left open:** the surface is scheduled to widen.
+What would change it: the surface widening.
 [`docs/guides/cyimrc.md`](../guides/cyimrc.md) names keymaps as an M4
-candidate, and `line_numbers` / `tabstop` are already parsed against a
-future render integration. **A keymap accepted from a directory you just
-cloned is a different proposition from a colour** — it decides what your
-keystrokes do. The decision should be made while the answer is cheap,
-not in the cut that adds keymaps.
+candidate, and `line_numbers` / `tabstop` are already parsed against a future
+render integration. **A keymap accepted from a directory you just cloned is a
+different proposition from a colour.** The classification rule above is the
+mechanism that forces that question to be asked in the cut that adds it,
+rather than discovered afterwards.
 
 ## Consequences
 
-### If this stays Proposed
+### What this enables
 
-`.cyimrc` keeps loading from the cwd. Every key added to it inherits the
-boundary silently. The 1.8.3 audit's F-2 fix means new keys are at least
-range-checked, but nothing forces the *policy* question to be asked
-again — which is exactly how this went unexamined from M2 to 1.8.3.
+- **Config that follows the user.** Preferences live in one place and apply
+  everywhere, which is what people expect and what cyim did not have.
+- **Per-project overrides keep working**, unchanged, including every existing
+  `./.cyimrc` in the wild — cwd is still consulted and still wins.
+- **The precedence is stated**, so "why is my colour different in this repo"
+  has an answer a user can look up.
 
-### Whichever option is chosen
+### What this forbids (without a follow-up ADR)
 
-- ADR 0001 gets an amendment note pointing here, so its "the user is
-  trusted" clause stops implying coverage it lacks.
-- `docs/guides/cyimrc.md` gains a "where this file is read from, and what
-  that means" section — currently it documents the *keys* but never says
-  the file is cwd-relative.
+- **Adding a `.cyimrc` key without classifying it.** The table above is the
+  deliverable of this decision, not decoration; a key that lands without a row
+  has not been thought about.
+- **Executing anything named in a config file**, from either location. That is
+  the no-embedded-scripting constraint, and it is the reason this decision can
+  be as permissive as it is.
+
+### Residuals
+
+- **No `secure`-style ownership check.** vim additionally refuses the
+  dangerous subset in a file not owned by the invoking user. cyim has no
+  dangerous subset to refuse, so the check would guard nothing. Revisit
+  alongside the first home-only key.
+- **Symlinked or shared home directories** are trusted the same as any other
+  path under `$HOME` — ADR 0001's model, unchanged.
 - Any future config key gets a documented answer to "is this safe to
   accept from an untrusted directory?" before it ships.
 

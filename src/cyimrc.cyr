@@ -1,8 +1,13 @@
 # cyimrc.cyr — `.cyimrc` palette overrides (M2 surface)
 #
-# Parses a flat CYML file at `./.cyimrc` (cwd-relative for M2; XDG search
-# paths come at M4 when the config surface widens to keymaps + tab width
-# + line numbers per the roadmap).
+# Parses a flat CYML file from two locations, later overriding earlier
+# (v1.9.2, per ADR 0005):
+#
+#   1. `$XDG_CONFIG_HOME/cyim/cyimrc`, else `$HOME/.config/cyim/cyimrc`
+#   2. `./.cyimrc` — project-local, overrides key by key
+#
+# Before 1.9.2 only (2) existed, so a user had no config that followed them
+# between projects and every setting was whatever the current directory said.
 #
 # Recognised keys (one per line, `palette.<kind> = <ansi_code>`):
 #   palette.ident
@@ -266,10 +271,96 @@ fn cyimrc_load_path(path) {
     return 1;
 }
 
-# Convenience: try `./.cyimrc`. (XDG paths come at M4 when the
-# config surface broadens.)
+# Join `dir` + "/" + `tail` into a fresh NUL-terminated cstr. Returns 0 if
+# `dir` is 0 or empty — an unset $HOME must not silently produce "/.config/…".
+fn _cyimrc_join(dir, tail) {
+    if (dir == 0) { return 0; }
+    var dlen = strlen(dir);
+    if (dlen == 0) { return 0; }
+    var tlen = strlen(tail);
+    var out = alloc(dlen + tlen + 2);
+    if (out == 0) { return 0; }
+    var i = 0;
+    while (i < dlen) { store8(out + i, load8(dir + i)); i = i + 1; }
+    var pos = dlen;
+    # Tolerate a trailing slash on $XDG_CONFIG_HOME rather than emitting "//".
+    if (load8(out + pos - 1) != 47) { store8(out + pos, 47); pos = pos + 1; }
+    var j = 0;
+    while (j < tlen) { store8(out + pos + j, load8(tail + j)); j = j + 1; }
+    store8(out + pos + tlen, 0);
+    return out;
+}
+
+# The user-level config path, or 0 when neither variable is set.
+#   $XDG_CONFIG_HOME/cyim/cyimrc   (preferred)
+#   $HOME/.config/cyim/cyimrc      (fallback)
+fn _cyimrc_home_path() {
+    var xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg != 0) {
+        if (strlen(xdg) > 0) { return _cyimrc_join(xdg, "cyim/cyimrc"); }
+    }
+    var home = getenv("HOME");
+    if (home != 0) {
+        if (strlen(home) > 0) { return _cyimrc_join(home, ".config/cyim/cyimrc"); }
+    }
+    return 0;
+}
+
+# Did the most recent `cyimrc_load()` apply a project-local `./.cyimrc` on top
+# of the user-level file? Exists so the precedence is observable — "why is my
+# colour different in this repo" should have an answer someone can check,
+# and a test can assert which files actually took effect.
+var _cyimrc_local_applied = 0;
+var _cyimrc_home_applied  = 0;
+
+# Did the last `cyimrc_load()` find and apply the USER-level config
+# (`$XDG_CONFIG_HOME/cyim/cyimrc` or `$HOME/.config/cyim/cyimrc`)? 1 / 0.
+fn cyimrc_home_applied()  { return _cyimrc_home_applied; }
+
+# Did the last `cyimrc_load()` find and apply a project-local `./.cyimrc` on
+# top of it? 1 / 0. Together with `cyimrc_home_applied` this makes the
+# precedence observable rather than inferred.
+fn cyimrc_local_applied() { return _cyimrc_local_applied; }
+
+# Load the user's config, then let a project-local file override it.
+#
+# Per [ADR 0005](../docs/adr/0005-cyimrc-cwd-trust-boundary.md):
+#
+#   1. `$XDG_CONFIG_HOME/cyim/cyimrc` (or `$HOME/.config/cyim/cyimrc`) — the
+#      user's actual preferences, which follow them between directories.
+#   2. `./.cyimrc` on top, overriding KEY BY KEY. The slot table is keyed per
+#      setting, so a local file overrides only what it names and inherits the
+#      rest — no need to restate a whole palette to change one colour.
+#
+# ⚠ The local file is the DIRECTORY's input, not the user's: clone a repo, cd
+# in, open a file, and you have applied that repo's config. ADR 0005 accepts
+# that deliberately — the whole surface is ten colour indexes and three
+# display integers, so the worst a hostile directory achieves is a wrong
+# colour, and cyim has no scripting language for it to reach for.
+#
+# ⭐ That acceptance is conditional on the surface staying that small.
+# **Every new key must be classified local-overridable or home-only when it is
+# added**, per ADR 0005's table. Keymaps are the first serious candidate for
+# home-only: a colour from a cloned directory is a wrong colour; a keymap from
+# it decides what your keystrokes do.
+#
+# Returns 1 if either file was found and parsed, 0 if neither was.
 fn cyimrc_load() {
-    return cyimrc_load_path(".cyimrc");
+    _cyimrc_home_applied = 0;
+    _cyimrc_local_applied = 0;
+    var any = 0;
+    var hp = _cyimrc_home_path();
+    if (hp != 0) {
+        if (cyimrc_load_path(hp) == 1) {
+            _cyimrc_home_applied = 1;
+            any = 1;
+        }
+    }
+    if (cyimrc_load_path(".cyimrc") == 1) {
+        _cyimrc_local_applied = 1;
+        any = 1;
+    }
+    return any;
 }
 
 # Look up the user-configured palette code for `kind`. Returns the

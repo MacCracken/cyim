@@ -12,8 +12,11 @@
 > while fixing an out-of-bounds write driven by an unvalidated value in
 > that file. The memory-safety half is fixed and was never a trust
 > question; the policy half — whether a cwd-relative config should be
-> loaded at all, and with what restrictions — is
-> [ADR 0005](0005-cyimrc-cwd-trust-boundary.md), status Proposed.
+> loaded at all, and with what restrictions — is settled by
+> [ADR 0005](0005-cyimrc-cwd-trust-boundary.md) (Accepted, v1.9.2): config
+> lives in `$XDG_CONFIG_HOME/cyim/cyimrc`, and a project-local `./.cyimrc`
+> overrides it key by key. Accepted because the whole surface is ten colour
+> indexes — every new key must be classified local-overridable or home-only.
 > Read clause 1 as scoped to input the user actually supplies.
 
 ---

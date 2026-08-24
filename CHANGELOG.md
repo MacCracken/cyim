@@ -4,6 +4,108 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.9.2] — 2026-08-23
+
+**Your config now lives in your home directory.** ADR 0005 is decided and
+implemented: `$XDG_CONFIG_HOME/cyim/cyimrc` is the primary config, and a
+project-local `./.cyimrc` overrides it key by key.
+
+Until now cyim read config from **only** the current directory — so a user had
+no settings that followed them between projects, and every preference was
+whatever the directory they happened to be in said it was.
+
+### Added — a user-level config path
+
+| # | Path | Role |
+|---|---|---|
+| 1 | `$XDG_CONFIG_HOME/cyim/cyimrc`, else `$HOME/.config/cyim/cyimrc` | Your config; follows you between projects |
+| 2 | `./.cyimrc` | Per-project override |
+
+**Overrides are key by key.** The loader stores into per-setting slots, so a
+local file that changes one colour inherits every other setting from your user
+config — you never restate a palette to change one entry.
+
+`_cyimrc_join` refuses an empty directory rather than producing a path from
+it: with `$HOME` and `$XDG_CONFIG_HOME` both unset the user-level file is
+**skipped, not guessed at**. cyim will not read `/.config/cyim/cyimrc`.
+
+`cyimrc_home_applied()` / `cyimrc_local_applied()` report which files actually
+took effect, so the precedence is observable rather than inferred — "why is my
+colour different in this repo" should have an answer someone can check.
+
+**Fully backward compatible.** Every existing `./.cyimrc` keeps working
+identically: cwd is still read and still wins.
+
+### Decided — [ADR 0005](docs/adr/0005-cyimrc-cwd-trust-boundary.md) is Accepted
+
+The open question was whether a config file found in the *working directory*
+should be loaded at all. `./.cyimrc` is the **directory's** input, not the
+user's — clone a repo, `cd` in, open a file, and you have applied that repo's
+configuration without reading it. That is vim's `.exrc` problem, which vim
+answers with `exrc` + `secure`, off by default.
+
+**Decision: option C's search path with the gate open.** Local override is
+accepted, no flag and no prompt, because the trade is sized by what `.cyimrc`
+can currently express — ten colour indexes and three display integers. The
+worst a hostile directory achieves is **a wrong colour**, and there is no path
+from a config file to code execution, file access or command dispatch, because
+cyim has no scripting language for one to reach for. Making people opt in per
+project would be friction for no proportional gain.
+
+**What keeps that honest is a rule, not machinery:**
+
+> Every new `.cyimrc` key must be classified as local-overridable or
+> home-only when it is added, and the classification recorded in ADR 0005.
+
+Today every key is local-overridable and the table says so. Option D's
+restriction becomes *code* the first time a key needs it — building the
+mechanism before the thing it restricts is how you get machinery nobody
+remembers the reason for. **Keymaps are the first serious candidate**: a
+colour from a cloned directory is a wrong colour; a keymap from it decides
+what your keystrokes do.
+
+Recorded residuals: no `secure`-style ownership check (cyim has no dangerous
+subset to refuse, so it would guard nothing), and symlinked or shared home
+directories are trusted per ADR 0001, unchanged.
+
+### Changed — documentation
+
+`docs/guides/cyimrc.md`'s "File location" section said cyim looks in the cwd
+and that XDG paths were "deferred to a future bite". Replaced with the real
+search order, a worked override example, and a plain statement that **the
+local file is the directory's input, not yours** — which the guide never said,
+and which is the one thing a user should know about it.
+
+### Tests
+
+`tests/cyimrc.tcyr` **50 → 59 assertions**:
+
+- `_cyimrc_join` builds paths, tolerates a trailing slash without emitting
+  `//`, and returns 0 for a null or empty directory — the last being what
+  stops an unset `$HOME` resolving to `/.config/cyim/cyimrc`.
+- **Local overrides home key by key**: home sets three colours, local
+  overrides one, and the other two survive.
+- **Precedence is ordered, not incidental** — a control that loads the two
+  files in the *reverse* order and asserts home wins. Without it, every
+  assertion above would still pass on an implementation that had the
+  precedence backwards.
+
+Verified end to end under a pty with a real `$XDG_CONFIG_HOME`: home colours
+apply, a local file overrides only the key it names, the untouched home key is
+inherited, and bundled defaults apply when neither file exists.
+
+### Verification
+
+- `cyrius tests` — 21 suites, **1209 assertions**, 0 failures · `cyrius fuzz`
+  4/4 · `cyrius smoke` 13/13 · `tests/cli_smoke.sh` 128 · PTY integration
+  smoke all PASS.
+- `cyrius lint` 0 warnings / 0 untracked deferrals · `cyrfmt --check` clean ·
+  0 undocumented public fns · `cyrius audit` clean · all three targets build.
+
+### Binary
+
+**1,201,728 B** (+64 B vs 1.9.1).
+
 ## [1.9.1] — 2026-08-23
 
 **LSP works. BUG-002 is closed** — the feature has been dead on its only

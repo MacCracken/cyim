@@ -11,14 +11,54 @@ overrides at runtime.
 
 ---
 
-## File location
+## Where cyim reads it from
 
-cyim looks for `.cyimrc` in the current working directory at startup.
-A missing or empty file is a silent no-op — bundled defaults apply.
+Two files, in order, **later overriding earlier** (v1.9.2 —
+[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)):
 
-(XDG search paths — `$XDG_CONFIG_HOME/cyim/cyimrc`,
-`$HOME/.config/cyim/cyimrc` — are deferred to a future bite. For now,
-ship a project-local `.cyimrc` next to your code.)
+| # | Path | What it's for |
+|---|---|---|
+| 1 | `$XDG_CONFIG_HOME/cyim/cyimrc`, else `$HOME/.config/cyim/cyimrc` | **Your** config. Follows you between projects |
+| 2 | `./.cyimrc` — the current working directory | Per-project overrides |
+
+**Overrides are key by key.** A local file that sets one colour keeps every
+other setting from your user config — you never restate a whole palette to
+change one entry:
+
+```cyml
+# ~/.config/cyim/cyimrc
+palette.keyword = 141
+palette.string  = 113
+palette.number  = 215
+```
+```cyml
+# ./.cyimrc in one project
+palette.string = 99      # only this changes; keyword and number stay 141 / 215
+```
+
+A missing or empty file at either location is a silent no-op. With neither,
+bundled defaults apply. If `$HOME` and `$XDG_CONFIG_HOME` are both unset, the
+user-level file is **skipped**, not guessed at — cyim will not read
+`/.config/cyim/cyimrc`.
+
+### The local file is the directory's input, not yours
+
+Worth knowing plainly: `./.cyimrc` is read from wherever you happen to be. If
+you clone a repository, `cd` into it and open a file, you have applied that
+repository's configuration without reading it.
+
+[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md) accepts that on purpose,
+and the reason is the size of the surface: the whole of `.cyimrc` is ten
+colour indexes and three display integers, so **the worst a hostile directory
+achieves is a wrong colour**. There is no path from a config file to code
+execution, file access or command dispatch, because cyim has no scripting
+language for one to reach for.
+
+That acceptance is conditional on the surface staying small. Every new key
+gets classified — local-overridable or user-config-only — when it is added.
+Keymaps, if they ever land, are the first serious candidate for the latter: a
+colour from a cloned directory is a wrong colour, but a keymap from it decides
+what your keystrokes do.
 
 ---
 
@@ -76,6 +116,7 @@ The full color value space is 0..255 (xterm 256-color). See
 |----------------|---------|---------|------------------------------|--------|
 | `ignorecase`   | 0 / 1   | 0       | `:set ic` / `:set noic`      | Case-fold byte compare in `/` `?` `*` `#` `n` `N` |
 | `line_numbers` | 0 / 1   | 0       | `:set number` / `:set nonumber` | Reserved — render integration deferred to a follow-up bite |
+
 | `tabstop`      | integer | 4       | `:set tabstop=N`             | Display width of a TAB byte (storage only today; render integration deferred) |
 
 `line_numbers` and `tabstop` are stored on the editor state and

@@ -34,7 +34,7 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.9.0** (see [`state.md`](state.md)). The 1.6.x
+cyim is at **1.9.2** (see [`state.md`](state.md)). The 1.6.x
 catch-up cycle closed at 1.6.8; 1.7.0 opened the post-catch-up
 era with the darshana TUI dep pickup, and **1.8.0 is the one
 feature cut since** — cyim runs on AGNOS, full-screen on the
@@ -150,6 +150,8 @@ this is a sequencing index.
 | **v1.8.6** — **Documentation sweep.** `cyrius audit`'s "101 undocumented public fns" advisory → **0**: every public function in `src/` and `src/plugins/` now carries a docstring saying what it *means* rather than what it loads — the 40-accessor editor-state block in `mode.cyr` and the 20-accessor window record are the bulk, and both now read as self-describing tables instead of requiring a scroll to the layout comment. Doc-tree sweep alongside: README's status was four minors stale (still "1.7.5 — released", old pins, "3 fuzz harnesses"), SECURITY.md's most recent state was "v1.6.0: 0 CRITICAL / 0 HIGH" when the 1.8.3 audit had since found a HIGH, and BENCHMARKS.md had not been re-run since v1.6.0. All three current. Roadmap gains a single **Everything Still Deferred** table — the 1.8.x line had left open items in four separate places | Shipped 2026-08-23 |
 | **v1.8.7** — **Closeout cut for the 1.8.x cycle**, all 11 CLAUDE.md steps ([audit](../audit/2026-08-23-1.8x-closeout.md)). 2 code-review findings, both fixed: `sys_fchmod`'s return was discarded in the atomic save path, so a failure would have let the rename proceed at 0644 — a mode-600 file coming back world-readable with no error (now a pre-write fallback to in-place, which is what "cannot preserve the mode" means, plus a duplicate `stat` dropped); and `_hl_load_one` wrote into a 1024-byte scratch whose bound was distributed across three functions with nowhere stating it. **Refactor:** `render_build_line` and `render_build_line_naked` were **94.4% identical** — and the 1.8.3 audit had to apply the same bounds fixes to both copies — collapsed to a wrapper, verified byte-identical across 46 cases, `render.cyr` 723 → 663 lines, binary −4,080 B. Dead-code floor 24 with every symbol having a caller; 0 unused globals; security re-scan clean; downstream `agnoshi` / `aethersafha` confirmed not yet integrated | Shipped 2026-08-23 |
 | **v1.9.0** — **`o` / `O`: open a line below / above and enter INSERT.** New action ids `ACT_OPEN_BELOW` (16) / `ACT_OPEN_ABOVE` (17), additive under ADR 0004. Undoable as one unit and dot-repeatable with no special-casing — `_dot_begin` and `undo_record_pre_op` already key off "enters INSERT", so adding the two actions to those lists is the whole integration. **Fixed alongside: `A` appended BEFORE the character on a one-character line** — `buf_line_end(pos) == line_start` cannot distinguish an empty line from a one-char line, and `A` had shipped that way since it landed. Surfaced only when `o` copied the idiom and an end-to-end pty run disagreed with the unit suite; both call sites now share `_insert_eol_pos`. `tests/insert.tcyr` 37 → 62 assertions, mutation-tested in three directions | Shipped 2026-08-23 |
+| **v1.9.1** — **BUG-002 closed; LSP works.** `[deps.cyim-lsp]` `1.5.2 → 1.5.3` with **no cyim source change** — the defect was upstream (`var argv[4]`, four bytes for four 64-bit pointers, so every spawn with an argument overran and `execve` failed silently). `cyrius smoke` 4 passed / 9 failed → **13 / 0**. Everything the LSP surface shipped since 1.4.0 was correct code that never got to run. **`cyrius smoke` is now a CI gate** — the structural half, held back at 1.8.2 because a gate that fails on day one gets ignored, landed here green | Shipped 2026-08-23 |
+| **v1.9.2** — **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md) decided and implemented.** Config lives in `$XDG_CONFIG_HOME/cyim/cyimrc` (else `$HOME/.config/cyim/cyimrc`); `./.cyimrc` overrides it **key by key**. Before this, cyim read config from only the cwd, so nothing followed a user between projects. Local override accepted with no gate — the trade is sized by what `.cyimrc` can express, and the worst a hostile directory achieves is a wrong colour. Held honest by a rule rather than machinery: every new key gets classified local-overridable or home-only. Backward compatible; `tests/cyimrc.tcyr` 50 → 59 assertions including a reversed-order control | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -284,14 +286,14 @@ Ordered by what it would cost a user, not by when it was filed.
 
 | ID | Item | Why it is still open | What would move it |
 |---|---|---|---|
-| **ADR 0005** | Should `.cyimrc` be loaded from the current directory at all? | [Filed Proposed](../adr/0005-cyimrc-cwd-trust-boundary.md) with four costed options. The memory-safety half is fixed; this is the policy half. Today's blast radius is a wrong colour | A decision, before the config surface widens. `cyimrc.md` names keymaps as an M4 candidate, and **a keymap accepted from a directory you just cloned is a different proposition from a colour** |
+| ~~**ADR 0005**~~ | ~~Should `.cyimrc` be loaded from the current directory at all?~~ | ✅ **Decided and implemented at v1.9.2.** Config lives in `$XDG_CONFIG_HOME/cyim/cyimrc`; `./.cyimrc` overrides it key by key, accepted with no gate because the whole surface is ten colour indexes. **The live obligation it leaves**: every new `.cyimrc` key must be classified local-overridable or home-only when added, per [ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)'s table. Keymaps are the first serious candidate for home-only |
 | **R-1a** | Extended attributes and ACLs are not carried across the atomic save path | `fchmod` preserves permission bits; xattrs, POSIX ACLs and SELinux labels are not copied, and cyim cannot *detect* a non-trivial ACL without an `xattr` surface the stdlib does not expose. Narrow: needs an ACL'd file, owned by the invoking user, not a symlink, not hardlinked | A stdlib `listxattr`/`getxattr` surface — then the detection becomes a sixth in-place condition in [ADR 0006](../adr/0006-atomic-save.md) |
 | **`lang.cyr` refactor** | Two if-chains (`lang_name` / `hl_grammar_name`) that must stay in lockstep | Trigger fired at 1.8.2 (third growth). Their silent divergence is what cost 34 languages their highlighting for six minor versions. The drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt | An ADR choosing between parallel global string arrays and a **vyakarana metadata query** — `grammar_count()` / `grammar_name_at(i)` would let the load list be *derived* rather than restated, which is the real end state |
 | **F-7 / arch 003** | The renderer is byte-oriented: C1 pass-through, no double-width or combining-character handling | [Accepted and documented](../architecture/003-render-is-byte-oriented.md), not a defect queue. The obvious "fix" breaks every non-ASCII file, because `0x80`–`0x9F` overlaps UTF-8 continuation bytes | A consumer editing CJK or RTL text in earnest — `aethersafha` hosting cyim is the likeliest. It needs a codepoint coordinate system threaded through cursor / undo / marks / search, not a render patch |
 | **Resize-aware rendering** | `scr_cols` is a hardcoded 80 on Linux/macOS; `tty_winsize` is consulted only under agnos | Named since 1.7.4. darshana has shipped the primitives (`tty_winsize`, `tty_open_signalfd`, `TTY_SIGMASK_WINCH`) since 0.4.0 — cyim simply does not call them | Whoever wants a resizable editor. ⚠ The render scratch buffers were bounded by terminal geometry until 1.8.3 fixed them precisely *because* this feature would have made that live — the guards are already in place |
 | **F-CO-2** | Extract `_cyim_lsp_jump_to_uri_lc` | Informational since 1.5.2. Still 2 instances; CLAUDE.md's "wait for the third" applies | `:lsp-implementation` or `:lsp-type-definition` would be the third |
 
-Closed from this list recently: **BUG-002** and the **`cyrius smoke` CI gate**
+Closed from this list recently: **ADR 0005** at 1.9.2 (decided *and* implemented — see the live obligation it leaves above); **BUG-002** and the **`cyrius smoke` CI gate**
 at 1.9.1 (cyim-lsp 1.5.3's `argv` fix — a tag bump with no cyim source
 change); **R-1** (non-atomic save) at 1.8.4 via
 [ADR 0006](../adr/0006-atomic-save.md); **R-2** (dead-code floor) at 1.8.5 —
@@ -408,6 +410,20 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-08-23 (v1.9.2 — **ADR 0005 decided and
+implemented**. Config lives in `$XDG_CONFIG_HOME/cyim/cyimrc`;
+`./.cyimrc` overrides it key by key. Until now cyim read config
+from only the current directory, so a user had no settings that
+followed them between projects. Local override accepted without
+a gate: the trade is sized by what `.cyimrc` can express, and the
+worst a hostile directory achieves is a wrong colour. Held honest
+by a rule rather than machinery — **every new key must be
+classified local-overridable or home-only when it is added**, and
+keymaps are the first serious candidate for the latter. Backward
+compatible. Preceded by v1.9.1, which closed BUG-002 via a
+cyim-lsp tag bump and put `cyrius smoke` behind a CI gate — Open
+Bugs is now empty.)*
 
 *Last updated: 2026-08-23 (v1.9.0 — **`o` / `O` open line
 below / above**, the first feature of the 1.9.x line and the

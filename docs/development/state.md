@@ -2,27 +2,27 @@
 
 > **Volatile.** This file is the **live state** of the project — current version, sizes, test counts, in-flight slot, consumer build status. Refreshed every release. Don't put durable rules here (those live in [`CLAUDE.md`](../../CLAUDE.md)); don't put release history here (that lives in [`CHANGELOG.md`](../../CHANGELOG.md)); don't put sequencing here (that lives in [`roadmap.md`](roadmap.md)).
 
-*Last bumped: 2026-08-23 (v1.9.1 — **LSP works; BUG-002 closed.** A one-line `[deps.cyim-lsp]` tag bump `1.5.2 → 1.5.3` with **no cyim source change** — the defect was never cyim's. `_lsp_proc_exec` in the vendored bundle declared `var argv[4]`, four BYTES for four 64-bit pointers, so every spawn with an argument overran it and `execve` failed silently. `cyrius smoke`: **4 passed / 9 failed → 13 passed / 0 failed**. Everything the LSP surface has shipped since 1.4.0 was correct code that never got to run. **`cyrius smoke` is now a CI gate** — the structural half of BUG-002, held back at 1.8.2 because a gate that fails on day one gets ignored, landed here green.)*
+*Last bumped: 2026-08-23 (v1.9.2 — **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md) decided and implemented: config lives in your home directory.** `$XDG_CONFIG_HOME/cyim/cyimrc` (else `$HOME/.config/cyim/cyimrc`) is the primary config; `./.cyimrc` overrides it **key by key**. Until now cyim read config from only the cwd, so a user had no settings that followed them between projects. Local override is accepted with no gate — the trade is sized by what `.cyimrc` can express, and the worst a hostile directory achieves is a wrong colour. What keeps that honest is a rule rather than machinery: **every new key must be classified local-overridable or home-only when it is added**, per ADR 0005's table. Keymaps are the first serious candidate for home-only. Fully backward compatible: existing `./.cyimrc` files keep working, cwd still wins.)*
 
 ---
 
 ## Version
 
-- **VERSION**: `1.9.1`
+- **VERSION**: `1.9.2`
 - **Cyrius toolchain pin**: `6.5.35`
-- **Last release**: `1.9.1` — Patch; `[deps.cyim-lsp]` `1.5.2 → 1.5.3`, closing **BUG-002**. No cyim source change. `cyrius smoke` 4/9 → **13/13**, and it is now a CI step. 2026-08-23. Full entry in CHANGELOG.
+- **Last release**: `1.9.2` — Patch; ADR 0005 decided (Accepted) and implemented. XDG/home config path added, `./.cyimrc` overrides key by key. `tests/cyimrc.tcyr` 50 → 59 assertions. Backward compatible. 2026-08-23. Full entry in CHANGELOG.
 
 ## Binary
 
-- **`build/cyim`** (CYRIUS_DCE=1): **1,201,664 B**
-  - Last delta: **0 B** at 1.9.1 (the fix is inside the vendored bundle and DCE-identical at cyim's link boundary). Prior: +4,112 B at 1.9.0 (`o` / `O` handlers + dispatch). Prior: −4,080 B at 1.8.7 (the render deduplication). Prior: 0 B at 1.8.6 (documentation only — comments do not survive compilation). Prior: +4,096 B at 1.8.5 (comment volume shifting DCE alignment; the constants-wiring itself is size-neutral). Prior: +32 B at 1.8.4 (the atomic-save path largely replaces code DCE was already keeping). Prior: +4,120 B at 1.8.3, +17,528 B at 1.8.2 (cyrius `6.5.18→6.5.35` codegen + `vyakarana 2.2.3→2.4.0` scanner additions + a wholly replaced stdlib snapshot). Not attributed further — three independent movers in one cut.
+- **`build/cyim`** (CYRIUS_DCE=1): **1,201,728 B**
+  - Last delta: **+64 B** at 1.9.2 (the XDG search path). Prior: 0 B at 1.9.1 (the fix is inside the vendored bundle and DCE-identical at cyim's link boundary). Prior: +4,112 B at 1.9.0 (`o` / `O` handlers + dispatch). Prior: −4,080 B at 1.8.7 (the render deduplication). Prior: 0 B at 1.8.6 (documentation only — comments do not survive compilation). Prior: +4,096 B at 1.8.5 (comment volume shifting DCE alignment; the constants-wiring itself is size-neutral). Prior: +32 B at 1.8.4 (the atomic-save path largely replaces code DCE was already keeping). Prior: +4,120 B at 1.8.3, +17,528 B at 1.8.2 (cyrius `6.5.18→6.5.35` codegen + `vyakarana 2.2.3→2.4.0` scanner additions + a wholly replaced stdlib snapshot). Not attributed further — three independent movers in one cut.
   - **`build/cyim_agnos`**: 1,209,880 B — static x86-64 ELF64, passes `stage_one`'s file-type gate in agnos's `scripts/burn/stage-tools.sh`.
   - **`build/cyim_aarch64`**: 1,615,296 B — ARM aarch64 ELF64. Re-verified at 1.8.2 because darshana 0.9.2 fixed an aarch64-only ioctl misdirection on the five termios callsites cyim uses.
   - Per-release size history is in CHANGELOG's per-version Binary sections.
 
 ## Tests
 
-- **`cyrius tests`**: 21 suites, **1200 assertions** PASS, 0 failures *(measured at 1.9.0; +23 for `o` / `O` plus the `A` one-character-line regression, mutation-tested in three directions. At 1.8.5: +3 closing the `diag_msg` coverage hole. At 1.8.4: +13 for ADR 0006's save-path selection tests, which assert WHICH path ran rather than only the outcome. At 1.8.3: +25 from the hardening audit's regressions, every one mutation-tested against the pre-fix source. At 1.8.2: +4 openqasm routing, +3 the routing↔loading drift guard. The pre-1.8.1 "22 suites / 1150" counted `src/test.cyr`, an empty stub returning 0 — it asserts nothing)*
+- **`cyrius tests`**: 21 suites, **1209 assertions** PASS, 0 failures *(measured at 1.9.2; +9 for ADR 0005's config precedence, including a reversed-order control that would catch the precedence being backwards. At 1.9.0: +23 for `o` / `O` plus the `A` one-character-line regression, mutation-tested in three directions. At 1.8.5: +3 closing the `diag_msg` coverage hole. At 1.8.4: +13 for ADR 0006's save-path selection tests, which assert WHICH path ran rather than only the outcome. At 1.8.3: +25 from the hardening audit's regressions, every one mutation-tested against the pre-fix source. At 1.8.2: +4 openqasm routing, +3 the routing↔loading drift guard. The pre-1.8.1 "22 suites / 1150" counted `src/test.cyr`, an empty stub returning 0 — it asserts nothing)*
 - **`cyrius fuzz`**: 4 harnesses, all PASS — `fuzz/{buffer,driver,tokenizer}.fcyr` + `tests/cyim.fcyr` (10K random buffer ops, 5K keystrokes, 100×1KB tokenizer buffers). **This is the gate that matters after a toolchain bump**: cyrius 6.3.13 moved function-local `var X[N]` onto a guard-paged stack, so latent undersized buffers that were benign before now segfault.
 - **CLI smoke** (`tests/cli_smoke.sh`): **128 PASS** — +6 at 1.8.4 (ADR 0006: a failed write leaves the original byte-identical and no `.cyimtmp.` behind; symlink survives; hardlink stays linked; mode 600 stays 600; a writable file in a 0555 directory still saves). +4 at 1.8.3 (audit F-1).
 - **Integration smoke** (`tests/integration_smoke.py`): all PASS (PTY-driven + headless-subprocess sections covering `--headless`, `--write`, `--replace[-all]`, `--grep[files]`, `--batch`, `--replace-files[-all]`, `--regex=`, `--expect[/-not/-N/-1]`, multi-window cascade). DCE parity build re-runs it green.
@@ -47,7 +47,7 @@
 
 **No bugs are tracked open.** BUG-001 closed at 1.3.3, BUG-002 at 1.9.1. That is about what is *filed*, not a claim of correctness — the 1.8.x line found seven unfiled defects and 1.9.0 an eighth.
 
-No next feature is claimed; cuts open as triggers surface (per [`roadmap.md`](roadmap.md)'s Post-1.5.x — Demand-Gated table). The item most worth settling early is now **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)** — should `.cyimrc` load from the cwd at all, cheap now and expensive once the config surface widens to keymaps. Everything deferred is in one table: [`roadmap.md` § Everything Still Deferred](roadmap.md).
+No next feature is claimed; cuts open as triggers surface (per [`roadmap.md`](roadmap.md)'s Post-1.5.x — Demand-Gated table). **ADR 0005 is settled** (Accepted at 1.9.2 — home config with local override, and a rule that every new key gets classified). Everything deferred is in one table: [`roadmap.md` § Everything Still Deferred](roadmap.md).
 
 No next feature is claimed — subsequent cuts open as triggers surface (per [`roadmap.md`](roadmap.md)'s Post-1.5.x — Demand-Gated table). The two items worth settling early are unchanged: **BUG-002** (LSP dead on Linux; the fix is a `cyim-lsp` release, and the `cyrius smoke` CI gate lands green in the same cut) and **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)** (should `.cyimrc` load from the cwd at all — cheap now, expensive once the config surface widens to keymaps). Everything deferred is in one table: [`roadmap.md` § Everything Still Deferred](roadmap.md).
 

@@ -198,6 +198,48 @@ fn main() {
     store64(&_cyimrc_palette + 5 * 8, 0 - 1);
     store64(&_cyimrc_palette + 3 * 8, 0 - 1);
 
+    # ── v1.9.2 / ADR 0005 — home config, local override ──────────────────
+    #
+    # The decision: `$XDG_CONFIG_HOME/cyim/cyimrc` is the user's config and
+    # follows them between directories; `./.cyimrc` overrides it KEY BY KEY.
+    # These assert the precedence, not just that each file parses.
+
+    test_group("ADR 0005 — _cyimrc_join builds paths and refuses an empty dir");
+    assert_eq(streq(_cyimrc_join("/home/u", "cyim/cyimrc"), "/home/u/cyim/cyimrc"), 1,
+      "joins with a separator");
+    assert_eq(streq(_cyimrc_join("/home/u/", "cyim/cyimrc"), "/home/u/cyim/cyimrc"), 1,
+      "tolerates a trailing slash — no '//'");
+    assert_eq(_cyimrc_join(0, "x"),  0, "null dir -> 0");
+    assert_eq(_cyimrc_join("", "x"), 0, "empty dir -> 0, NOT '/x'");
+
+    # An unset HOME must not resolve to a bare '/.config/...'; `_cyimrc_join`
+    # refusing an empty dir is what prevents that, and this is the assertion
+    # that says so out loud.
+    test_group("ADR 0005 — home path is skipped, not guessed, when unset");
+    assert_eq(_cyimrc_join("", ".config/cyim/cyimrc"), 0,
+      "no home -> no path (never '/.config/cyim/cyimrc')");
+
+    test_group("ADR 0005 — local overrides home KEY BY KEY");
+    var HOME_FIX  = "build/cyimrc-home.txt";
+    var LOCAL_FIX = "build/cyimrc-local.txt";
+    # Home sets three colours...
+    write_fixture(HOME_FIX,
+      "palette.keyword = 10\npalette.string = 20\npalette.number = 30\n");
+    # ...local overrides only one of them.
+    write_fixture(LOCAL_FIX, "palette.string = 99\n");
+    cyimrc_load_path(HOME_FIX);
+    cyimrc_load_path(LOCAL_FIX);
+    assert_eq(cyimrc_palette(TK_KEYWORD), 10, "untouched home key survives");
+    assert_eq(cyimrc_palette(TK_STRING),  99, "local key wins");
+    assert_eq(cyimrc_palette(TK_NUMBER),  30, "other untouched home key survives");
+
+    # Order matters: home-after-local would silently invert the precedence,
+    # and every assertion above would still pass on a single-file test.
+    test_group("ADR 0005 — precedence is ordered, not incidental");
+    cyimrc_load_path(LOCAL_FIX);
+    cyimrc_load_path(HOME_FIX);
+    assert_eq(cyimrc_palette(TK_STRING), 20, "reversed order -> home wins (control)");
+
     return assert_summary();
 }
 
