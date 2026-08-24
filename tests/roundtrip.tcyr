@@ -110,6 +110,67 @@ fn main() {
     }
     assert_eq(content_match, 1, "all 300 bytes round-tripped");
 
+    # ── 1.8.4 / ADR 0006 — which save path ran ───────────────────────────
+    # The two paths are indistinguishable from their return value and from
+    # the bytes on disk, which is exactly why `buf_save_was_atomic()` exists:
+    # a silent fallback to the non-atomic path is the kind of thing that rots
+    # unobserved. These assert the DECISION, not just the outcome.
+    test_group("ADR 0006 — save path selection");
+
+    var ap = "build/test-atomic-plain.txt";
+    var pb = buf_new();
+    buf_insert(pb, "plain file content\n", 19);
+    assert_eq(buf_save_file(pb, ap) > 0, 1, "plain file saves");
+    assert_eq(buf_save_was_atomic(), 1, "plain regular file takes the ATOMIC path");
+
+    # A brand-new path has nothing to preserve and nothing to destroy, so the
+    # atomic path is strictly better — a failed create leaves no partial file.
+    var np = "build/test-atomic-fresh.txt";
+    xunlink(np);
+    var nb = buf_new();
+    buf_insert(nb, "fresh\n", 6);
+    assert_eq(buf_save_file(nb, np) > 0, 1, "new file saves");
+    assert_eq(buf_save_was_atomic(), 1, "nonexistent target takes the ATOMIC path");
+
+    # Condition (1): rename would replace the LINK rather than its target.
+    var lp = "build/test-atomic-link.txt";
+    xunlink(lp);
+    # ⚠ The target is a BARE BASENAME on purpose. A symlink's target resolves
+    # relative to the LINK's own directory, not the cwd — passing "build/..."
+    # here would point build/test-atomic-link.txt at build/build/... and give
+    # a broken link, which is a different test than the one intended.
+    assert_eq(xsymlink("test-atomic-plain.txt", lp), 0, "symlink fixture created");
+    var sb = buf_new();
+    buf_insert(sb, "through the link\n", 17);
+    assert_eq(buf_save_file(sb, lp) > 0, 1, "save through a symlink succeeds");
+    assert_eq(buf_save_was_atomic(), 0, "symlink target takes the IN-PLACE path");
+    # The link must still be a link afterwards — the failure mode this
+    # condition exists to prevent is it becoming a regular file.
+    var probe[64];
+    assert_eq(xreadlink(lp, &probe, 64) > 0, 1, "target is STILL a symlink after saving");
+    # ...and the write landed on the file it points at.
+    var rb = buf_new();
+    buf_load_file(rb, ap);
+    assert_eq(buf_len(rb), 17, "the symlink's TARGET received the bytes");
+
+    # Condition (2): rename breaks the hardlink set, leaving the other names
+    # on the old content.
+    var hp = "build/test-atomic-hard.txt";
+    xunlink(hp);
+    assert_eq(xlink(ap, hp), 0, "hardlink fixture created");
+    var hb = buf_new();
+    buf_insert(hb, "hardlinked write\n", 17);
+    assert_eq(buf_save_file(hb, hp) > 0, 1, "save to a hardlinked file succeeds");
+    assert_eq(buf_save_was_atomic(), 0, "nlink > 1 takes the IN-PLACE path");
+    # The other name must see the new content — that is what "still linked"
+    # means, and what a rename would have broken.
+    var ob = buf_new();
+    buf_load_file(ob, ap);
+    assert_eq(buf_len(ob), 17, "the OTHER hardlink name sees the new content");
+
+    xunlink(lp);
+    xunlink(hp);
+
     return assert_summary();
 }
 

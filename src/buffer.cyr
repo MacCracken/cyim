@@ -358,25 +358,139 @@ fn _buf_write_all(fd, ptr, len) {
     return off;
 }
 
-# Write the buffer's logical content to `path` (O_WRONLY|O_CREAT|O_TRUNC, 0644).
-# Returns bytes written on success, or a NEGATIVE value on any failure — open,
-# short/failed write, fsync, or close. Pre-gap and post-gap segments are written
-# separately so the cursor position is not disturbed.
+# ── Saving (ADR 0006: atomic by default, enumerated in-place fallback) ──
 #
-# Every caller (`:w`, `:wq`, `cyim --write` / `--replace[-all]` / `--batch`,
-# and the agnos line editor) tests `< 0`, so a failure here is what makes the
-# editor keep the modified flag set and the CLI exit non-zero.
+# 1.8.3 made a failing save REPORT the failure. It did not stop the failure
+# destroying the file: the target was opened `O_TRUNC`, so by the time a write
+# failed the original was already gone. 1.8.4 closes that (audit residual R-1).
 #
-# ⚠ NOT atomic, deliberately. The file is opened `O_TRUNC`, so a failure part
-# way through leaves a truncated file on disk — the caller is told, but the
-# damage is done. This matches vim's in-place default and ADR 0001 §3, which
-# accepts write-in-place TOCTOU semantics; moving to write-temp-then-rename
-# would change the inode on every save (breaking hardlinks and the
-# preserve-permissions expectation) and is an ADR-level decision, not a
-# hardening tweak. Tracked in the 1.8.3 audit as residual R-1.
-fn buf_save_file(b, path) {
-    var fd = file_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
-    if (fd < 0) { return 0 - 1; }
+# The default path writes a sibling temp and `rename(2)`s it over the target,
+# which is atomic within a filesystem — a reader sees the whole old file or the
+# whole new one, and a failure leaves the original untouched.
+#
+# It is NOT unconditional, because rename changes the inode, and for several
+# ordinary files that is worse than the problem it solves.
+# `_buf_save_can_rename` enumerates when to write in place instead; every
+# condition is there because removing it breaks something a user relies on.
+# See ADR 0006 for the reasoning and the rejected alternatives.
+
+# Did the most recent `buf_save_file` take the atomic path?
+#
+# Exists because the two paths are indistinguishable from outside — same
+# return value, same bytes on disk — so a test cannot otherwise assert WHICH
+# one ran, and a silent fallback to the non-atomic path is exactly the kind of
+# thing that rots unobserved. Not plugin ABI.
+var _buf_save_atomic_last = 0;
+
+fn buf_save_was_atomic() { return _buf_save_atomic_last; }
+
+# Sibling temp path: "<path>.cyimtmp.<pid>.<counter>".
+#
+# A SIBLING, not something under /tmp: `rename` only works within one
+# filesystem, and the target's own directory is the only place guaranteed to
+# be on the same one.
+#
+# cyim grows its own rather than calling the stdlib's `_io_tmp_name`: that is
+# an underscore-private of `lib/io.cyr`, and cyim has already paid once for
+# depending on a neighbour's internals (darshana 0.7.0 renamed `tty_itoa` out
+# from under `src/render.cyr`). The distinct `.cyimtmp.` infix also makes any
+# temp left behind by a crash attributable at a glance.
+var _buf_tmp_ctr = 0;
+
+fn _buf_append_dec(buf, pos, val) {
+    if (val < 0) { val = 0; }
+    if (val == 0) {
+        store8(buf + pos, 48);
+        return pos + 1;
+    }
+    var tmp[24];
+    var d = 0;
+    while (val > 0) {
+        store8(&tmp + d, 48 + val % 10);
+        val = val / 10;
+        d = d + 1;
+    }
+    var i = 0;
+    while (i < d) {
+        store8(buf + pos + i, load8(&tmp + d - 1 - i));
+        i = i + 1;
+    }
+    return pos + d;
+}
+
+fn _buf_tmp_name(path) {
+    var plen = strlen(path);
+    var out = alloc(plen + 48);
+    var i = 0;
+    while (i < plen) { store8(out + i, load8(path + i)); i = i + 1; }
+    var suffix = ".cyimtmp.";
+    var j = 0;
+    while (j < 9) { store8(out + plen + j, load8(suffix + j)); j = j + 1; }
+    var pos = plen + 9;
+    pos = _buf_append_dec(out, pos, sys_getpid());
+    store8(out + pos, 46);   # '.'
+    pos = pos + 1;
+    _buf_tmp_ctr = _buf_tmp_ctr + 1;
+    pos = _buf_append_dec(out, pos, _buf_tmp_ctr);
+    store8(out + pos, 0);
+    return out;
+}
+
+# Is `path` a symlink?
+#
+# `readlink(2)` answers -EINVAL for anything that is not one, and a byte count
+# for one that is — so an 8-byte probe buffer is enough to ask the question
+# without caring about the answer's content. Preferred over an lstat + S_IFLNK
+# test because `xreadlink` is portable across every target cyim builds for,
+# whereas bare `lstat` is x86_64-Linux-only (aarch64 has to go through
+# `fstatat` + `AT_SYMLINK_NOFOLLOW`).
+fn _buf_is_symlink(path) {
+    var probe[8];
+    if (xreadlink(path, &probe, 8) >= 0) { return 1; }
+    return 0;
+}
+
+# May `path` be saved by rename? 1 = yes, 0 = write in place.
+# The conditions, in ADR 0006's order.
+fn _buf_save_can_rename(path) {
+    # (6) agnos: no `fchmod`, no uid in its stat, and `xfsync` is a
+    # whole-system `sync()`. A platform that cannot preserve the mode should
+    # not be quietly resetting it.
+    #ifdef CYRIUS_TARGET_AGNOS
+    return 0;
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
+    # (1) Symlink — rename replaces the LINK, not its target. Editing a
+    # dotfile that points into a dotfiles repo must not delete the link.
+    if (_buf_is_symlink(path) == 1) { return 0; }
+
+    var st[144];
+    # No such file: nothing to preserve and nothing to destroy. Atomic is
+    # strictly better — a failed create leaves no partial file behind.
+    if (xstat(path, &st) != 0) { return 1; }
+
+    # (3) Not a regular file — FIFO, device, /dev/stdout. Renaming over one
+    # is meaningless at best.
+    var mode = load32(&st + STAT_MODE);
+    if ((mode & 0xF000) != 0x8000) { return 0; }
+
+    # (2) Hardlinked — rename breaks the set and every other name silently
+    # keeps the old content.
+    if (load32(&st + STAT_NLINK) > 1) { return 0; }
+
+    # (4) Owned by someone else — rename hands ownership to the writer.
+    # Effective uid, because that is what the kernel stamps on a file this
+    # process creates. Matters most under `sudo`, which is when it is least
+    # welcome.
+    if (load32(&st + STAT_UID) != sys_geteuid()) { return 0; }
+
+    return 1;
+    #endif
+}
+
+# Write both gap segments of `b` to an already-open `fd`. Returns the byte
+# count, or a negative errno. Shared by both save paths.
+fn _buf_write_segments(b, fd) {
     var data = load64(b);
     var gs = load64(b + 8);
     var ge = load64(b + 16);
@@ -384,20 +498,144 @@ fn buf_save_file(b, path) {
     var total = 0;
     if (gs > 0) {
         var n1 = _buf_write_all(fd, data, gs);
-        if (n1 < 0) { file_close(fd); return n1; }
+        if (n1 < 0) { return n1; }
         total = total + n1;
     }
     var post_len = cap - ge;
     if (post_len > 0) {
         var n2 = _buf_write_all(fd, data + ge, post_len);
-        if (n2 < 0) { file_close(fd); return n2; }
+        if (n2 < 0) { return n2; }
         total = total + n2;
     }
-    # Durability + late errors. Some filesystems (NFS most visibly) only
-    # surface a write error at fsync or close time, so reporting success
-    # before both have returned cleanly is reporting a guess.
+    return total;
+}
+
+# fsync the directory containing `path`, so the rename itself survives a power
+# loss rather than merely being atomic against concurrent readers.
+#
+# Best-effort by design: the caller ignores the result. The data is already
+# fsynced and the rename has already happened, so failing an otherwise
+# complete save because a directory could not be opened for fsync would trade
+# a real success for a theoretical one. See ADR 0006 § Residuals.
+fn _buf_fsync_parent(path) {
+    var plen = strlen(path);
+    var cut = 0 - 1;
+    var i = 0;
+    while (i < plen) {
+        if (load8(path + i) == 47) { cut = i; }
+        i = i + 1;
+    }
+    var dir = 0;
+    if (cut < 0) {
+        dir = ".";
+    } else {
+        var dlen = cut;
+        if (dlen == 0) { dlen = 1; }        # "/foo" -> "/"
+        dir = alloc(dlen + 1);
+        var j = 0;
+        while (j < dlen) { store8(dir + j, load8(path + j)); j = j + 1; }
+        store8(dir + dlen, 0);
+    }
+    var dfd = file_open(dir, O_RDONLY, 0);
+    if (dfd < 0) { return 0; }
+    xfsync(dfd);
+    file_close(dfd);
+    return 0;
+}
+
+# Write in place: open O_TRUNC, write, fsync, close. 1.8.3's body.
+#
+# ⚠ A failure here leaves a TRUNCATED file — that is the whole reason
+# `_buf_save_can_rename` exists to avoid this path when it can. The caller is
+# told (negative return), but the damage is done. Reached only when renaming
+# would break something the user cares about more; ADR 0006 § in-place
+# conditions.
+fn _buf_save_in_place(b, path) {
+    var fd = file_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0x1A4);
+    if (fd < 0) { return 0 - 1; }
+    var total = _buf_write_segments(b, fd);
+    if (total < 0) { file_close(fd); return total; }
+    # Some filesystems (NFS most visibly) only surface a write error at fsync
+    # or close, so reporting success before both have returned cleanly is
+    # reporting a guess.
     if (xfsync(fd) < 0) { file_close(fd); return 0 - 5; }
     var cr = file_close(fd);
     if (cr < 0) { return cr; }
     return total;
+}
+
+# Write a sibling temp, then rename it over `path`.
+#
+# On ANY failure the temp is unlinked and the error returned — `path` is never
+# opened for writing, so the original is bit-for-bit untouched.
+#
+# Takes the temp path and its ALREADY-OPEN fd, because the caller has to be
+# the one that sees the create fail: a failed create is in-place condition (5)
+# and must fall back, while every failure AFTER the create must report and
+# leave the original alone. Folding both into one return value here is how the
+# first draft of this function got it wrong — see `buf_save_file`.
+fn _buf_save_atomic(b, path, tmp, fd) {
+    # Carry the target's permission bits onto the temp BEFORE the rename, so
+    # the file the user ends up with has the mode it started with rather than
+    # the 0644 the create asked for. A brand-new file has no mode to inherit.
+    #ifndef CYRIUS_TARGET_AGNOS
+    var st[144];
+    if (xstat(path, &st) == 0) {
+        sys_fchmod(fd, load32(&st + STAT_MODE) & 0xFFF);
+    }
+    #endif
+
+    var total = _buf_write_segments(b, fd);
+    if (total < 0) { file_close(fd); xunlink(tmp); return total; }
+    if (xfsync(fd) < 0) { file_close(fd); xunlink(tmp); return 0 - 5; }
+    var cr = file_close(fd);
+    if (cr < 0) { xunlink(tmp); return cr; }
+
+    var rr = file_rename(tmp, path);
+    if (rr < 0) { xunlink(tmp); return rr; }
+
+    _buf_fsync_parent(path);
+    return total;
+}
+
+# Write the buffer's logical content to `path`. Returns bytes written on
+# success, or a NEGATIVE value on any failure — open, short/failed write,
+# fsync, close, or rename.
+#
+# Every caller (`:w`, `:wq`, `cyim --write` / `--replace[-all]` / `--batch` /
+# `--replace-files[-all]`, and the agnos line editor) tests `< 0`, so a
+# failure here is what keeps the editor's modified flag set and makes the CLI
+# exit non-zero. The return contract did not change at 1.8.4; no call site
+# needed touching.
+#
+# Atomic by default (ADR 0006). `buf_save_was_atomic()` reports which path the
+# last call took.
+fn buf_save_file(b, path) {
+    var go_atomic = _buf_save_can_rename(path);
+    var tmp = 0;
+    var fd = 0 - 1;
+
+    if (go_atomic == 1) {
+        tmp = _buf_tmp_name(path);
+        # `O_EXCL` is load-bearing twice: it refuses to follow a pre-existing
+        # temp (a stale one from a crashed run, or a planted symlink), and its
+        # failure IS in-place condition (5) — a writable file in a
+        # non-writable directory. Discovered by attempting the create rather
+        # than by pre-checking the directory, because the pre-check would be
+        # its own TOCTOU.
+        fd = file_open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0x1A4);
+        if (fd < 0) { go_atomic = 0; }
+    }
+
+    if (go_atomic == 1) {
+        _buf_save_atomic_last = 1;
+        return _buf_save_atomic(b, path, tmp, fd);
+    }
+
+    # ⚠ ONLY a failed temp create reaches here from the atomic branch.
+    # Falling back after a failed WRITE would be catastrophic — it would
+    # re-open the target `O_TRUNC` and destroy exactly the content the atomic
+    # path had just preserved. The first draft of this function did that.
+    _buf_save_atomic_last = 0;
+    return _buf_save_in_place(b, path);
 }

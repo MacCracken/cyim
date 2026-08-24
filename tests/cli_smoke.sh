@@ -887,7 +887,108 @@ else
     echo "FAIL: --write with no rlimit did not reproduce the payload byte-for-byte"
 fi
 
-rm -f "$SHORTW" "$PAYLOAD"
+# ── 1.8.4 / ADR 0006 — a failed write must not DESTROY the file ──────────
+#
+# 1.8.3 made the failure visible; 1.8.4 makes it harmless. The save now writes
+# a sibling temp and renames it over the target, so a write that dies part way
+# leaves the original bit-for-bit intact.
+#
+# This is the case that guards the subtle half of the change. An earlier draft
+# of `buf_save_file` fell back to the in-place path on ANY atomic failure —
+# which re-opens the target `O_TRUNC` and destroys exactly the content the
+# atomic path had just preserved. Measured against that draft: 100 of 575
+# bytes survived. Only a failed temp CREATE may fall back.
+SAFE=/tmp/cyim-cli-smoke-atomic.txt
+cp "$PAYLOAD" "$SAFE" 2>/dev/null || printf 'placeholder\n' > "$SAFE"
+ORIG_SUM=$(cksum < "$SAFE")
+( ulimit -f 1; trap '' XFSZ; "$BIN" --write "$SAFE" < "$PAYLOAD" >/dev/null 2>&1 )
+RC=$?
+NEW_SUM=$(cksum < "$SAFE")
+if [ "$RC" != "0" ] && [ "$ORIG_SUM" = "$NEW_SUM" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: failed --write did not leave the original intact (rc=$RC)"
+fi
 
-echo "$PASS passed, $FAIL failed (122 total)"
+# No temp may survive a failed save.
+LEFTOVER=$(ls /tmp/cyim-cli-smoke-atomic.txt.cyimtmp.* 2>/dev/null | wc -l)
+if [ "$LEFTOVER" = "0" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: a .cyimtmp. temp survived a failed save"
+    rm -f /tmp/cyim-cli-smoke-atomic.txt.cyimtmp.*
+fi
+
+# ── ADR 0006 in-place conditions, from the outside ───────────────────────
+# Each of these is a file shape where renaming would break something the user
+# relies on. The assertion is that the shape SURVIVES the save.
+
+# (1) A symlink must still be a symlink, and its target must get the bytes.
+SL_REAL=/tmp/cyim-cli-smoke-real.txt
+SL_LINK=/tmp/cyim-cli-smoke-link.txt
+printf 'before\n' > "$SL_REAL"
+rm -f "$SL_LINK"
+ln -s "$SL_REAL" "$SL_LINK"
+printf 'after\n' | "$BIN" --write "$SL_LINK" >/dev/null 2>&1
+if [ -L "$SL_LINK" ] && [ "$(cat "$SL_REAL")" = "after" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: saving through a symlink replaced the link or missed the target"
+fi
+rm -f "$SL_REAL" "$SL_LINK"
+
+# (2) A hardlink set must stay linked — the other name sees the new content.
+HL_A=/tmp/cyim-cli-smoke-hard-a.txt
+HL_B=/tmp/cyim-cli-smoke-hard-b.txt
+printf 'before\n' > "$HL_A"
+rm -f "$HL_B"
+ln "$HL_A" "$HL_B"
+printf 'after\n' | "$BIN" --write "$HL_A" >/dev/null 2>&1
+if [ "$(cat "$HL_B")" = "after" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: saving a hardlinked file broke the link (other name kept old content)"
+fi
+rm -f "$HL_A" "$HL_B"
+
+# (3) Permission bits must survive the atomic path — a mode-600 file coming
+# back as 644 is a security regression, not a cosmetic one.
+MODE_F=/tmp/cyim-cli-smoke-mode.txt
+printf 'before\n' > "$MODE_F"
+chmod 600 "$MODE_F"
+printf 'after\n' | "$BIN" --write "$MODE_F" >/dev/null 2>&1
+MODE_AFTER=$(ls -l "$MODE_F" | cut -c1-10)
+if [ "$MODE_AFTER" = "-rw-------" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: mode not preserved across save — got '$MODE_AFTER', expected '-rw-------'"
+fi
+rm -f "$MODE_F"
+
+# (4) A writable file in a NON-writable directory must still save, via the
+# in-place fallback — the temp cannot be created beside it.
+RO_DIR=/tmp/cyim-cli-smoke-rodir
+rm -rf "$RO_DIR"; mkdir -p "$RO_DIR"
+RO_F="$RO_DIR/f.txt"
+printf 'before\n' > "$RO_F"
+chmod 0555 "$RO_DIR"
+printf 'after\n' | "$BIN" --write "$RO_F" >/dev/null 2>&1
+RO_RC=$?
+chmod 0755 "$RO_DIR"
+if [ "$RO_RC" = "0" ] && [ "$(cat "$RO_F")" = "after" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: writable file in a read-only directory did not save (rc=$RO_RC)"
+fi
+rm -rf "$RO_DIR"
+
+rm -f "$SHORTW" "$PAYLOAD" "$SAFE"
+
+echo "$PASS passed, $FAIL failed (128 total)"
 [ "$FAIL" = "0" ] || exit 1

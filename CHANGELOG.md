@@ -4,6 +4,160 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.4] — 2026-08-23
+
+**A failed save no longer destroys the file.** Closes residual **R-1** from
+the 1.8.3 hardening audit, per
+**[ADR 0006 — Saving is atomic by default, with an enumerated in-place
+fallback](docs/adr/0006-atomic-save.md)**.
+
+1.8.3 made a failing save *report* the failure. It did not stop the failure
+destroying the data: the target was opened `O_TRUNC`, so by the time a write
+failed the original was already gone. Now a save writes a sibling temp and
+`rename(2)`s it over the target — atomic within a filesystem, so a reader sees
+either the whole old file or the whole new one, and a failure leaves the
+original bit-for-bit intact.
+
+The remaining 1.8.3 items — R-2 (dead-code floor), ADR 0005 (cwd-relative
+`.cyimrc` policy), and F-7 (byte-oriented renderer) — stay deferred as filed.
+
+### Added
+
+- **Atomic save** (`src/buffer.cyr`). The path: create a sibling
+  `<file>.cyimtmp.<pid>.<n>` with `O_EXCL`, `fchmod` it to the target's mode,
+  write every byte, `fsync`, `close`, `rename` over the target, then `fsync`
+  the parent directory so the rename itself survives a power loss. On **any**
+  failure the temp is unlinked and the error returned.
+
+  Measured, 575-byte payload under `RLIMIT_FSIZE` = 100 bytes — the same
+  scenario that destroyed 475 bytes at 1.8.2:
+
+  | verb | exit | file on disk |
+  |---|---:|---|
+  | `cyim --write` | 1 | **intact** |
+  | `cyim --replace` | 1 | **intact** |
+  | `cyim --batch` | 1 | **intact** |
+
+  No temp is left behind in any failure case.
+
+- **`buf_save_was_atomic()`** — reports which path the last save took. The two
+  paths are indistinguishable from their return value and from the bytes on
+  disk, so without this a silent fallback to the non-atomic path is exactly
+  the kind of thing that rots unobserved. Not plugin ABI.
+
+### Changed
+
+- **`buf_save_file` is atomic by default, not unconditionally.** Rename
+  changes the inode, and for several ordinary files that is worse than the
+  problem it solves. Six enumerated conditions take the in-place path instead,
+  each because removing it breaks something a user relies on:
+
+  | # | Condition | Why rename is wrong |
+  |---|---|---|
+  | 1 | Target is a **symlink** | `rename` replaces the link, not its target. Editing a dotfile that points into a dotfiles repo would silently delete the link |
+  | 2 | `st_nlink > 1` (**hardlinked**) | Breaks the set; every other name silently keeps the old content |
+  | 3 | Target exists and is **not a regular file** | FIFOs, devices, `/dev/stdout` |
+  | 4 | Target owned by a **different uid** | Rename hands ownership to the writer — matters most under `sudo`, which is when it is least welcome |
+  | 5 | The temp **cannot be created** beside the target | A writable file in a non-writable directory. Discovered by attempting the `O_EXCL` create, not by pre-checking the directory — the pre-check would be its own TOCTOU |
+  | 6 | Target platform is **agnos** | No `fchmod`, no uid in its `stat`, and `xfsync` is a whole-system `sync()`. A platform that cannot preserve the mode should not be quietly resetting it |
+
+  The in-place path is **not** a degraded path — it is 1.8.3's `buf_save_file`
+  unchanged (loop until every byte lands, `fsync`, check `close`). What it
+  cannot offer is the guarantee that a failure leaves the original intact,
+  which is precisely what the conditions say cannot be had without breaking
+  something the user cares about more.
+
+  **The return contract did not change.** Bytes written on success, negative
+  on any failure. No call site needed touching.
+
+- **`CLAUDE.md`'s `--batch` "Atomic" claim is true again**, and now says which
+  kinds of failure it covers. 1.8.3 had to weaken it to "atomic with respect
+  to *logical* mid-batch failure" because a write failure truncated the file;
+  1.8.4 restores the stronger claim for everything outside the in-place set.
+
+- **[ADR 0001](docs/adr/0001-trust-model.md) § 3 is amended.** Its
+  symlink-*following* half stands — and is now an explicit condition rather
+  than an accident. What no longer holds is the implied consequence that a
+  failed write may destroy the file, and the closing sentence ("tools that
+  need atomic-write semantics should use a different tool") is no longer true
+  as written.
+
+### Why not just call the stdlib's `file_write_atomic`
+
+It ships this exact loop, and 1.8.3 deliberately did not adopt it. Renaming
+unconditionally replaces symlinks with regular files, breaks hardlink sets,
+discards mode and ownership, and makes a writable file in a non-writable
+directory unsaveable. vim answers the same problem with `backupcopy=auto` — a
+per-file decision — and that reasoning is what ADR 0006 adopts. cyim ships the
+`auto` behaviour **without** vim's knob: the other two settings are "always
+break symlinks" and "never be atomic", and neither has a use the enumerated
+conditions do not already handle. Per CLAUDE.md's *reference, don't mimic* —
+the reasoning is right, the compatibility surface is not something cyim has to
+inherit.
+
+### Residuals
+
+- **Extended attributes and ACLs are not preserved** across the atomic path.
+  `fchmod` carries the permission bits; xattrs, POSIX ACLs and SELinux labels
+  are not copied, and cyim cannot currently *detect* a non-trivial ACL without
+  an `xattr` surface the stdlib does not expose. Filed as **R-1a**. Narrow: it
+  needs a file with an ACL, owned by the invoking user, not a symlink, not
+  hardlinked.
+- **agnos still saves in place** (condition 6) and therefore keeps R-1 on that
+  target. Its `xfsync` is already a whole-system `sync()`, so crash durability
+  there is coarse regardless. Revisit when agnos grows `fchmod` and a
+  uid-carrying `stat`.
+- **The directory `fsync` is best-effort** — its failure does not fail the
+  save. The data is already fsynced and the rename has happened; only the
+  ordering guarantee across a power loss is weakened. Failing an otherwise
+  complete save because a directory could not be opened would trade a real
+  success for a theoretical one.
+
+### Tests
+
+Both the conditions and the fall-through logic were **mutation-tested**.
+
+- `tests/roundtrip.tcyr` **36 assertions** (+13). Asserts the *decision*, not
+  just the outcome: a plain file and a nonexistent target take the atomic
+  path; a symlink and a hardlinked file take the in-place path, the link is
+  **still a link** afterwards, its target got the bytes, and the other
+  hardlink name sees the new content. Against a build with the conditions
+  removed: **5 failures**.
+- `tests/cli_smoke.sh` **122 → 128**. A failed write leaves the original
+  byte-identical (`cksum` before/after) and leaves no `.cyimtmp.` behind;
+  symlink survives; hardlink stays linked; mode `600` stays `600`; a writable
+  file in a `0555` directory still saves.
+
+**The case worth naming.** An earlier draft of `buf_save_file` fell back to
+the in-place path on *any* atomic failure — which re-opens the target
+`O_TRUNC` and destroys exactly the content the atomic path had just preserved.
+Measured against that draft: 100 of 575 bytes survived, i.e. it was no better
+than 1.8.2. Only a failed temp **create** may fall back, and
+`tests/cli_smoke.sh` now fails if that ever changes.
+
+### Verification
+
+- `cyrius tests` — 21 suites, **1174 assertions** PASS (was 1161), 0 failures.
+- `cyrius fuzz` 4/4 · `tests/cli_smoke.sh` **128** · PTY integration smoke all
+  PASS · `cyrius lint` 0 warnings · `cyrfmt --check` clean.
+- `cyrius smoke` — 4 passed / 9 failed, unchanged: BUG-002, owned upstream.
+
+### Binary
+
+**1,197,536 B** (+32 B vs 1.8.3). `build/cyim_agnos` 1,209,848 B ·
+`build/cyim_aarch64` 1,615,272 B.
+
+### Benchmarks
+
+Unmoved — the save path is not covered by `perf.bcyr` and nothing else
+changed. `render_build_line_80c_x1000` 252.9 µs, `highlight_buf_1MB_cyrius`
+281.6 ms, both inside run-to-run spread.
+
+A save now costs one extra `stat`, one `readlink`, one `fchmod`, a `rename`,
+and a directory `fsync` on top of 1.8.3's file `fsync`. Not benchmarked: an
+editor save is user-initiated and already dominated by the `fsync` 1.8.3
+added.
+
 ## [1.8.3] — 2026-08-23
 
 **P(-1) hardening pass: 1 HIGH, 1 MEDIUM, 3 LOW, 3 informational — all five

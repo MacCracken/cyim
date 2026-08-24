@@ -63,6 +63,18 @@ In particular:
    need atomic-write semantics (config-file editors, package
    managers) should use a different tool.
 
+   > **Amended 2026-08-23 (v1.8.4) by [ADR 0006](0006-atomic-save.md).**
+   > The symlink-*following* half of this clause stands, and is now an
+   > explicit condition rather than an accident — saving through a symlink
+   > deliberately writes in place so the link survives. What no longer
+   > holds is the implied consequence that a *failed* write may destroy
+   > the file: saving is atomic by default (sibling temp + `rename`), with
+   > an enumerated set of file shapes — symlinks, hardlink sets,
+   > non-regular files, files owned by another uid, non-writable
+   > directories, and agnos — that still write in place. The last sentence
+   > above is no longer true as written: cyim now has atomic-write
+   > semantics for the ordinary case.
+
 4. **File content from disk is treated as untrusted *for display*
    but trusted to be data.** Per the M5/M6 audit response: control
    bytes are ^X-substituted in render (closing terminal-escape

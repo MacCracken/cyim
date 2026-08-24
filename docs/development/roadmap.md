@@ -57,11 +57,11 @@ covers everything `src/lang.cyr` routes, guarded both ways by
 Its HIGH finding is worth knowing even if you read nothing else:
 every write path in cyim treated a short `write(2)` as a
 completed one, so `:w` and all six agent verbs could destroy
-most of a file and report success. Fixed, with the residual
-that the save is still not *atomic* — recorded as R-1 rather
-than changed, because temp-file-plus-rename contradicts
-[ADR 0001](../adr/0001-trust-model.md) § 3 and is an ADR-level
-call.
+most of a file and report success. Fixed at 1.8.3 (the failure is reported)
+and **closed at 1.8.4** (the failure is harmless): saving is now
+atomic by default per [ADR 0006](../adr/0006-atomic-save.md),
+with an enumerated in-place fallback for the file shapes where
+renaming would break something the user relies on more.
 
 The full LSP user-visible surface — diagnostics, `gd` goto-def
 same-file + cross-file, `gr` references quickfix, `:lsp-*`
@@ -125,6 +125,7 @@ this is a sequencing index.
 | **v1.8.1** — the agnos *build* restored. `cyrius build --agnos` was failing inside the vendored cyim-lsp bundle on a Linux-shaped 3-arg `sys_waitpid`; fixed upstream and picked up as cyim-lsp 1.5.0 → 1.5.2 (per-target `sys_waitpid`, spawn half compiled out behind matched `#ifdef`/`#ifndef` arms, `LSP_HAVE_SUBPROC` exposed). Toolchain pin 6.2.36 → 6.5.18 + `lib sync --full`; 10 test files repaired for missing includes. No cyim source change for the fix | Shipped 2026-08-11 |
 | **v1.8.2** — dependency + toolchain catch-up, **plus the highlighting regression it uncovered**. cyrius 6.5.18 → 6.5.35; darshana 0.8.2 → **1.0.0** (the API freeze; carries 0.9.2's aarch64 `SYS_IOCTL` fix and two pre-freeze breaks cyim does not trip); vyakarana 2.2.3 → 2.4.0 with all 45 `grammars/*.cyml` re-synced and `openqasm` added as the 46th (`LANG_COUNT` 45 → 46, `.qasm` routing); `lib/` full re-sync to the 6.5.35 snapshot and `lib/agnosys.cyr` pruned (stdlib-retired at cyrius 6.2.37; `lib sync` copies without pruning). **Fixed: 34 of 45 routed languages rendered uncolored** — `highlight_init()`'s grammar load list stayed at its original 11 through 1.6.2's 11 → 45 routing growth, and it suppresses vyakarana's cwd-relative fallback, so a missing entry means no grammar rather than a slower path. Load list is now the `hl_grammar_name(i)` table with a two-way, mutation-tested drift guard in `tests/lang.tcyr`. Three files reformatted for 6.5.28's parenthesis-tracking `cyrfmt`. **CI repaired**: both workflows hand-unpacked the release tarball into the flat, pre-`versions/` `~/.cyrius/{bin,lib}`, so every run died at `cyrius deps` — they now delegate to the upstream `install.sh` (patra's shape), pinned to the tag, with a layout-assertion step; a format gate, a CLI-smoke gate and `src/plugins/` linting were added alongside. **BUG-002 root-caused** — see Open Bugs | Shipped 2026-08-23 |
 | **v1.8.3** — **P(-1) audit / refactor / hardening / security pass.** 1 HIGH, 1 MEDIUM, 3 LOW, 3 informational; all five code findings fixed with mutation-tested regressions. HIGH: `buf_save_file` treated a short `write(2)` as success, so `:w` cleared the modified flag and all six agent verbs exited 0 on a truncated file (measured 475 of 575 bytes lost) — and made `--batch`'s documented atomicity false. MEDIUM: an unvalidated `.cyimrc` palette value reached a backward-filled buffer index and overran `render_build_line`'s 12-byte escape reservation. LOW ×3: render scratch buffers bounded by terminal geometry rather than their own size (latent until resize support lands), an i64-undersized itoa scratch, and an integer parser that wrapped instead of rejecting. Docs: ADR 0005 filed (Proposed), the missing `docs/adr/{README,template}.md` and `docs/architecture/README.md` written, architecture notes 002 and 003 added, and two doc claims that contradicted the code corrected. Suite 1136 → 1161; CLI smoke 118 → 122; benchmarks unmoved | Shipped 2026-08-23 |
+| **v1.8.4** — **Atomic save** ([ADR 0006](../adr/0006-atomic-save.md)), closing audit residual R-1. A save writes a sibling temp, `fchmod`s it to the target's mode, writes, `fsync`s, `rename`s over the target, then `fsync`s the parent directory — so a write that dies part way leaves the original bit-for-bit intact. Atomic by DEFAULT, not unconditionally: six enumerated conditions (symlink, `nlink > 1`, non-regular file, foreign uid, non-writable directory, agnos) take the in-place path, because rename changes the inode and for those shapes that breaks something the user relies on more. Return contract unchanged; no call site touched. `buf_save_was_atomic()` added so a silent fallback cannot rot unobserved. Suite 1161 → 1174; CLI smoke 122 → 128; both the conditions and the fall-through logic mutation-tested | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -256,7 +257,8 @@ each with the reason. Full context in
 
 | ID | Item | Why it is open |
 |---|---|---|
-| **R-1** | The save path is not atomic — `O_TRUNC` in place, so a failed write leaves a truncated file | The fix exists in the stdlib (`file_write_atomic`), but temp-file-plus-rename changes the inode on every save: breaks hardlinks, discards the target's permissions, and fails where the user can write the file but not create a sibling. It also contradicts [ADR 0001](../adr/0001-trust-model.md) § 3, which *accepts* write-in-place semantics because vim's default does. ADR-level, not a patch-cut change. The shape worth costing is vim's: a `backupcopy`-style choice rather than one fixed behaviour |
+| ~~**R-1**~~ | ~~The save path is not atomic~~ | ✅ **Closed at v1.8.4** by [ADR 0006](../adr/0006-atomic-save.md). The concern that kept it open — that unconditional rename breaks hardlinks, symlinks, modes and non-writable directories — is answered by making the atomic path the default with six enumerated in-place conditions, the `backupcopy=auto` shape this row anticipated |
+| **R-1a** | Extended attributes and ACLs are not carried across the atomic path | `fchmod` preserves the permission bits; xattrs, POSIX ACLs and SELinux labels are not copied, and cyim cannot *detect* a non-trivial ACL without an `xattr` surface the stdlib does not expose. Narrow: needs a file with an ACL, owned by the invoking user, not a symlink, not hardlinked. New at 1.8.4 |
 | **R-2** | Dead-code floor of 20 cyim-side functions | Mostly not dead: frozen plugin ABI ([ADR 0004](../adr/0004-plugin-abi-freeze.md) forbids removal), test/fuzz introspection reachable from harnesses but not `main`, and two documented-deferred config getters. A DCE report is not a dead-code list for a project with a frozen ABI and an out-of-line harness |
 | **ADR 0005** | Should `.cyimrc` be loaded from the current directory at all? | [Filed as Proposed](../adr/0005-cyimrc-cwd-trust-boundary.md) with four costed options. Not urgent — the whole surface is ten colour indexes, and the worst a hostile config achieves is the wrong colour. Not to be left open either: `cyimrc.md` names keymaps as an M4 candidate, and a keymap accepted from a directory you just cloned is a different proposition from a colour. Decide while the answer is cheap |
 | **F-7** | The renderer is byte-oriented; C1 bytes pass through, no double-width or combining-character handling | Accepted and documented as [architecture note 003](../architecture/003-render-is-byte-oriented.md), not filed as a defect — these are one decision, and the obvious "fix" (substituting `0x80`–`0x9F`) breaks every non-ASCII file, because that range overlaps UTF-8 continuation bytes. The trigger that would change the calculus is a consumer editing CJK or RTL text in earnest — `aethersafha` is the likeliest |
@@ -358,6 +360,22 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-08-23 (v1.8.4 — **atomic save**, closing
+audit residual R-1 per [ADR 0006](../adr/0006-atomic-save.md).
+A save writes a sibling temp and renames it over the target, so
+a write that dies part way leaves the original bit-for-bit
+intact — measured across all three write verbs under
+`RLIMIT_FSIZE`, with no temp left behind. Atomic by DEFAULT,
+not unconditionally: six enumerated conditions take the in-place
+path, because rename changes the inode and would otherwise
+replace symlinks, break hardlink sets, discard modes and
+ownership, and make a writable file in a non-writable directory
+unsaveable. ADR 0001 § 3 amended. Return contract unchanged; no
+call site touched. The other 1.8.3 items — R-2, ADR 0005, F-7 —
+stay deferred as filed, and R-1a (xattrs/ACLs) is new. Suite
+1161 → 1174, CLI smoke 122 → 128, binary 1,197,504 →
+1,197,536 B, benchmarks unmoved.)*
 
 *Last updated: 2026-08-23 (v1.8.3 — **P(-1) audit / refactor /
 hardening / security pass.** 1 HIGH, 1 MEDIUM, 3 LOW, 3
