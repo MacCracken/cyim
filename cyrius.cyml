@@ -99,9 +99,21 @@ modules = ["dist/vyakarana.cyr"]
 # `args` (agnos-only: io.cyr's `getenv()` delegates to `args_agnos.cyr`). Both
 # arrive automatically via the `dist/cyim-lsp.deps` sidecar — cyim already
 # declares `args`, so no change is needed on this side.
+#
+# 1.5.2 → 1.5.3 CLOSES BUG-002 — the LSP client works on Linux for the first
+# time. `_lsp_proc_exec` declared `var argv[4]`: four BYTES for four 64-bit
+# pointers, so `lsp_client_start_default()`'s
+# ("/usr/bin/env", "cyrius-lsp", 0) wrote 24 bytes into 4, `execve` got a
+# clobbered vector, and the child died on its own `sys_exit(127)`. Silent,
+# because execve never took and so `env` was never there to complain.
+#
+# Root-caused from this repo at 1.8.2 and fixed upstream; **no cyim source
+# change is involved** — `cyrius smoke` goes 4 passed / 9 failed → 13 / 0 on
+# the tag bump alone. The `cyrius smoke` CI gate lands in this same cut, now
+# that it can go in green.
 [deps.cyim-lsp]
 git = "https://github.com/MacCracken/cyim-lsp.git"
-tag = "1.5.2"
+tag = "1.5.3"
 modules = ["dist/cyim-lsp.cyr"]
 
 # darshana — TTY/raw-mode primitives (termios + ANSI + cursor).

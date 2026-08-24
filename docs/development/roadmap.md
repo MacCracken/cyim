@@ -284,16 +284,16 @@ Ordered by what it would cost a user, not by when it was filed.
 
 | ID | Item | Why it is still open | What would move it |
 |---|---|---|---|
-| **BUG-002** | LSP is non-functional on Linux — `lsp_client_start_default()` never completes the handshake | Root-caused at 1.8.2 to `cyim-lsp`'s `var argv[4]`, sized in pointer slots rather than bytes. **Not cyim's to fix**; the bundle is upstream | A `cyim-lsp` release carrying `argv[32]` / `fallback[8]`. cyim picks it up with a `tag` bump and no source change. Land the `cyrius smoke` CI gate in the same cut — it can go in green then, and not before |
 | **ADR 0005** | Should `.cyimrc` be loaded from the current directory at all? | [Filed Proposed](../adr/0005-cyimrc-cwd-trust-boundary.md) with four costed options. The memory-safety half is fixed; this is the policy half. Today's blast radius is a wrong colour | A decision, before the config surface widens. `cyimrc.md` names keymaps as an M4 candidate, and **a keymap accepted from a directory you just cloned is a different proposition from a colour** |
 | **R-1a** | Extended attributes and ACLs are not carried across the atomic save path | `fchmod` preserves permission bits; xattrs, POSIX ACLs and SELinux labels are not copied, and cyim cannot *detect* a non-trivial ACL without an `xattr` surface the stdlib does not expose. Narrow: needs an ACL'd file, owned by the invoking user, not a symlink, not hardlinked | A stdlib `listxattr`/`getxattr` surface — then the detection becomes a sixth in-place condition in [ADR 0006](../adr/0006-atomic-save.md) |
 | **`lang.cyr` refactor** | Two if-chains (`lang_name` / `hl_grammar_name`) that must stay in lockstep | Trigger fired at 1.8.2 (third growth). Their silent divergence is what cost 34 languages their highlighting for six minor versions. The drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt | An ADR choosing between parallel global string arrays and a **vyakarana metadata query** — `grammar_count()` / `grammar_name_at(i)` would let the load list be *derived* rather than restated, which is the real end state |
 | **F-7 / arch 003** | The renderer is byte-oriented: C1 pass-through, no double-width or combining-character handling | [Accepted and documented](../architecture/003-render-is-byte-oriented.md), not a defect queue. The obvious "fix" breaks every non-ASCII file, because `0x80`–`0x9F` overlaps UTF-8 continuation bytes | A consumer editing CJK or RTL text in earnest — `aethersafha` hosting cyim is the likeliest. It needs a codepoint coordinate system threaded through cursor / undo / marks / search, not a render patch |
 | **Resize-aware rendering** | `scr_cols` is a hardcoded 80 on Linux/macOS; `tty_winsize` is consulted only under agnos | Named since 1.7.4. darshana has shipped the primitives (`tty_winsize`, `tty_open_signalfd`, `TTY_SIGMASK_WINCH`) since 0.4.0 — cyim simply does not call them | Whoever wants a resizable editor. ⚠ The render scratch buffers were bounded by terminal geometry until 1.8.3 fixed them precisely *because* this feature would have made that live — the guards are already in place |
 | **F-CO-2** | Extract `_cyim_lsp_jump_to_uri_lc` | Informational since 1.5.2. Still 2 instances; CLAUDE.md's "wait for the third" applies | `:lsp-implementation` or `:lsp-type-definition` would be the third |
-| **`cyrius smoke` in CI** | The smoke suite is not a CI step | Structural half of BUG-002 — it is *why* a dead feature sat unobserved across seven cuts. Deliberately not added at 1.8.2 when CI was repaired: a gate that fails on day one gets ignored or reverted | Bundled with the BUG-002 fix. Needs `cyrius-lsp` on the runner — a packaging problem, not a reason to leave the harness unwatched |
 
-Closed from this list recently: **R-1** (non-atomic save) at 1.8.4 via
+Closed from this list recently: **BUG-002** and the **`cyrius smoke` CI gate**
+at 1.9.1 (cyim-lsp 1.5.3's `argv` fix — a tag bump with no cyim source
+change); **R-1** (non-atomic save) at 1.8.4 via
 [ADR 0006](../adr/0006-atomic-save.md); **R-2** (dead-code floor) at 1.8.5 —
 there was nothing to delete, see
 [architecture note 004](../architecture/004-reading-the-dce-report.md); the
@@ -339,62 +339,38 @@ and appear inside assertion messages — not deferrals.
 
 ## Open Bugs
 
-### BUG-002 — LSP fold smoke: `lsp_client_start_default()` handshake never completes (**P2**, opened 2026-08-11, **root-caused 2026-08-23**)
+**None.** BUG-001 closed at v1.3.3, BUG-002 at v1.9.1.
 
-`cyrius smoke` (`tests/smcyr/lsp_fold.smcyr`) reports **4 passed, 9 failed**.
-`lsp_client_start_default()` answers -1 and `lsp_client_describe()` reports
-`"(not attached)"`. The 8 trailing failures are all downstream of that one.
-
-**Root cause (found at 1.8.2):** `cyim-lsp/src/subprocess.cyr:180` declares
-`var argv[4]` — four **bytes** — and `_lsp_proc_exec` then stores up to four
-64-bit pointers into it. `lsp_client_start_default()` passes
-`("/usr/bin/env", "cyrius-lsp", 0)`, so the write range is `[0, 24)`: a 6×
-overrun of a 4-byte stack slot. `execve` receives a clobbered `argv`, fails, and
-the child falls through to its own `sys_exit(127)`. `var fallback[1]` eleven
-lines down is the same defect. Proven by construction — the identical spawn with
-`argv[32]` / `fallback[8]`, linked against the same unmodified 1.5.2 bundle,
-completes the handshake and gets a 397-byte `initialize` response.
-
-Same bug class the 1.5.2 audit already fixed once *in this file*
-(`var status_buf[1]` in `lsp_proc_close`) and missed twice. Deterministic since
-cyrius **6.3.13** moved function-local `var X[N]` onto a guard-paged stack —
-which cyim's pin crossed at 1.8.1 (`6.2.36 → 6.5.18`), which is why the smoke
-started failing exactly then. The 1.5.0 control run reproduced the same 4/9
-because it varied the *bundle*, not the *toolchain*.
-
-**Owner: `cyim-lsp`.** The fix is `argv[4]` → `argv[32]` and `fallback[1]` →
-`fallback[8]` plus a `cyrius distlib` regen; cyim picks it up with a `tag` bump
-under `[deps.cyim-lsp]` and **no cyim source change**, exactly as at 1.8.1.
-Blocked on that cut, not on investigation. cyim's own tree was swept for the
-same class at 1.8.2 — every `var NAME[N]` later read or written via
-`load64`/`store64`, checked against its maximum written offset — with **0
-findings**.
-
-**P2 rationale (unchanged):** nothing ships broken (all 1.8.2 gates green,
-editor unaffected on every target) and LSP is opt-in, so it is below BUG-001's
-P1 bar of a silent wrong answer on a scriptable surface — this failure is loud
-and self-announcing. But it is the whole LSP feature being non-functional on its
-only supported platform, across seven cuts of consumer-side glue built against
-an end-to-end path that was unproven until now.
-
-**Structural half is still open, and is the durable fix:** put `cyrius smoke`
-behind a CI gate. It is absent from `.github/workflows/ci.yml`, which is exactly
-how this rotted while `state.md` still claimed "13 PASS" (corrected at 1.8.1).
-Fixing `argv` makes the harness pass; it does not make anyone watch it. The gate
-needs `cyrius-lsp` on the runner — a packaging problem, not a reason to leave
-the harness unwatched.
-
-1.8.2 repaired CI and added three gates (format, CLI smoke, `src/plugins/`
-linting) but **deliberately left this one out**: a gate that fails on day one
-gets ignored or reverted. **Add it in the same cut that picks up the fixed
-`cyim-lsp` tag** — that is when it can land green.
-
-Full issue doc:
-[`issues/2026-08-11-lsp-fold-smoke-handshake.md`](issues/2026-08-11-lsp-fold-smoke-handshake.md).
+That is a statement about what is *tracked*, not a claim that cyim is
+bug-free — the 1.8.x line found seven defects nobody had filed, and 1.9.0
+found an eighth in `A` that had shipped since `A` landed. What it does mean is
+that every known defect has been fixed rather than parked.
 
 ---
 
 ## Closed Bugs
+
+### BUG-002 — LSP fold smoke: handshake never completed (CLOSED cyim v1.9.1, 2026-08-23)
+
+`lsp_client_start_default()` answered -1 and the whole LSP feature was dead on
+its only supported platform. **Root cause: `cyim-lsp`'s `_lsp_proc_exec`
+declared `var argv[4]`** — four *bytes* for four 64-bit pointers, so
+`("/usr/bin/env", "cyrius-lsp", 0)` wrote 24 bytes into 4, `execve` got a
+clobbered vector, and the child died on its own `sys_exit(127)`. Silent,
+because execve never took and so `env` was never there to complain it could
+not find `cyrius-lsp`.
+
+Root-caused from this repo at **1.8.2**, fixed upstream in **cyim-lsp 1.5.3**,
+picked up at **cyim 1.9.1** as a `tag` bump with **no cyim source change**.
+`cyrius smoke`: 4 passed / 9 failed → **13 passed / 0 failed**.
+
+**The structural half closed with it**: `cyrius smoke` is now a CI step. Its
+absence is why a dead feature sat unobserved for seven cuts. Deliberately held
+back at 1.8.2 when CI was repaired — a gate that fails on day one gets ignored
+or reverted — and landed here, green.
+
+Full issue doc:
+[`issues/2026-08-11-lsp-fold-smoke-handshake.md`](issues/2026-08-11-lsp-fold-smoke-handshake.md).
 
 ### BUG-001 — `cyim --replace` 4 KB `<new>` arg cap (CLOSED v1.3.3, 2026-05-06)
 

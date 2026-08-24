@@ -4,7 +4,7 @@
 **Filer:** cyim (self)
 **Affects file:** `tests/smcyr/lsp_fold.smcyr` — subject under test is `lib/cyim-lsp.cyr`'s client path (`lsp_client_start_default` → `_lsp_client_start_with` → `lsp_proc_spawn` + `_lsp_initialize`)
 **Severity:** P2 — an opt-in feature is dead on its only supported platform, but nothing ships broken: no CI gate covers it, the editor is unaffected, and no user-visible surface regressed
-**Status:** **ROOT-CAUSED 2026-08-23 (1.8.2)** — the defect is upstream, in `cyim-lsp`'s `src/subprocess.cyr`. Still OPEN from cyim's side: the fix is not cyim's to make, and cyim cannot pick it up until a `cyim-lsp` release carries it. See [§ Root cause](#root-cause-found-2026-08-23) below.
+**Status:** ✅ **CLOSED 2026-08-23 (cyim 1.9.1).** Fixed upstream in `cyim-lsp` **1.5.3** (`var argv[4]` → `argv[32]`, `var fallback[1]` → `fallback[8]`) and picked up by cyim as a `[deps.cyim-lsp].tag` bump with **no cyim source change**. `cyrius smoke` goes **4 passed / 9 failed → 13 passed / 0 failed**. The structural half — putting `cyrius smoke` behind a CI gate — landed in the same cut.
 **Internal label (cyim):** BUG-002 ([`../roadmap.md`](../roadmap.md) § Open Bugs)
 
 ---
@@ -204,12 +204,44 @@ cyim's own tree was swept for the same class during this cut — every
 findings**; `src/lang.cyr`'s and `src/render.cyr`'s fixed buffers are all
 byte-indexed via `store8`.
 
-### Still open after the fix lands
+### Resolution
 
-The CI-gate half of this issue stands unchanged: `cyrius smoke` is still not a
-step in `.github/workflows/ci.yml`, which is *why* a dead feature could sit
-unobserved across seven cuts. Fixing `argv` makes the harness pass; it does not
-make anyone watch it.
+**cyim-lsp 1.5.3**, 2026-08-23. `argv[4]` → `argv[32]` (4 pointer slots × 8
+bytes) and `fallback[1]` → `fallback[8]`, with the arithmetic written down
+beside the declaration.
+
+Confirmed two ways:
+
+1. **A/B in a single process** — the bundle's `lsp_proc_spawn` against a local
+   copy of the same function differing *only* in the argv size, same
+   arguments: the local copy gets a 397-byte `initialize` response, the
+   bundle gets EOF. A third probe spawning an **absolute path with no
+   arguments** survives on the buggy bundle, which pins the mechanism exactly:
+   with `ai` stuck at 1 the overrun is 16 bytes and happens not to break that
+   exec. **The bug needs a real argument to bite.**
+2. **This harness** — 4 passed / 9 failed → **13 passed / 0 failed** against a
+   real `cyrius-lsp`.
+
+cyim picked it up at **1.9.1** as a tag bump alone.
+
+**Why eight cyim-lsp releases of CI missed it:** that repo's
+`tests/subprocess.tcyr` only ever spawned `/bin/cat` with `arg1 = arg2 = 0` —
+the 16-byte overrun. 1.5.3 added spawn-with-arguments coverage via
+`/usr/bin/env cat`; restoring `argv[4]` fails 4 of those assertions.
+
+### The structural half — also closed
+
+
+
+`cyrius smoke` is now a step in `.github/workflows/ci.yml`, added in the same
+cut as the fix. That absence is *why* a dead feature sat unobserved across
+seven cuts — fixing `argv` makes the harness pass, but only the gate makes
+anyone watch it.
+
+The runner requirement turned out to be a non-problem: `cyrius-lsp` is in the
+toolchain's `[release].bins`, so `install.sh` has been putting it on PATH all
+along. The step asserts that explicitly before running, so a packaging
+regression fails loudly instead of silently skipping.
 
 **Deliberately not added at 1.8.2**, even though that cut did repair CI and add
 three other gates (format, CLI smoke, `src/plugins/` linting): a gate that fails

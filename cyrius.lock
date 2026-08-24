@@ -1,5 +1,5 @@
 commit	e2c8c5ab3b05f379ec238e5b7c045c12683bf285	vyakarana	https://github.com/MacCracken/vyakarana.git	2.4.0
-commit	0a52c6a6891de80b515dcf4b2465b3fa577eb427	cyim-lsp	https://github.com/MacCracken/cyim-lsp.git	1.5.2
+commit	36c71026c61b4b41e225ceae8cb0b1797739e498	cyim-lsp	https://github.com/MacCracken/cyim-lsp.git	1.5.3
 commit	5badca76c8f44c81c1a8d93973281ae7997046bb	darshana	https://github.com/MacCracken/darshana.git	1.0.0
 7240760b1260fa06c53c5a139d1a2086fb439e21ac90e53eacd4bf486ac0e9ca  lib/tagged.cyr
 5978751906616997dc497d5ffaa5171c92611c5cb6f6466ada2c6c1dd0b83c79  lib/net.cyr
@@ -73,7 +73,7 @@ f7b9d52f29de6d3d633962ccc765a76637091a7256eebc1da5547530eed2c44b  lib/args_win.c
 b8d9abb2807755668be3c6840bc6478f041b6584502d9d872cd6f7ceec422798  lib/syscalls_aarch64_linux.cyr
 2907e90cae9f66370dce6e9567e24b03dab31221cb4f0e505a5c5745232d5de4  lib/sha1.cyr
 1a6ede53a3380b26fd7d314efa3d48adaccaff8b0f08a5b650c9e5d9713e4c1c  lib/shadow.cyr
-327bf4846529edbee58cec45649b0734247c7dd136b908a690fe10d750a7805a  lib/cyim-lsp.cyr
+0755abb73934e1c279124a320b854a106fab22bf8b52750f4b8a336c892df792  lib/cyim-lsp.cyr
 0236ac247d6b1bd862988661c6eadbc8b56476b473c2aa6fc28740767b9244f1  lib/bench.cyr
 5beae9acb22a71322ecee7db099e6295fbb79ed9f630297a63fba60dcc849588  lib/sys.cyr
 7c059b6365d2150b636e520c7bbc82eadc7c08373553b275e6b11ddb155c919d  lib/sankoch.cyr

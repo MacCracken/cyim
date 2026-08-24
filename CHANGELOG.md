@@ -4,6 +4,79 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-08-23
+
+**LSP works. BUG-002 is closed** — the feature has been dead on its only
+supported platform since the fold-in at 1.4.0, and this cut is a **one-line
+tag bump**.
+
+`cyrius smoke`: **4 passed / 9 failed → 13 passed / 0 failed.**
+
+### Changed
+
+- **`[deps.cyim-lsp]` `1.5.2` → `1.5.3`.** **No cyim source change.** The
+  defect was never cyim's: `_lsp_proc_exec` in the vendored bundle declared
+  `var argv[4]` — four *bytes* for four 64-bit pointers. So
+  `lsp_client_start_default()`'s `("/usr/bin/env", "cyrius-lsp", 0)` wrote 24
+  bytes into 4, `execve` received a clobbered vector, and the child died on
+  its own `sys_exit(127)`.
+
+  The symptom was **silence**: `lsp_client_start_default()` returned -1,
+  `lsp_client_describe()` said `"(not attached)"`, and stderr was empty —
+  because `execve` never took, so `env` was never there to complain it could
+  not find `cyrius-lsp`. Root-caused from this repo at 1.8.2 by narrowing
+  spawn-vs-handshake with a four-step diagnostic; fixed upstream at cyim-lsp
+  1.5.3.
+
+  Everything the LSP surface has shipped since 1.4.0 — `gd` goto-def
+  same-file and cross-file, `gr` references quickfix, open-in-split,
+  diagnostics, the `:lsp-*` ex-commands — was correct code that never got to
+  run. It runs now.
+
+### Added — `cyrius smoke` is a CI gate
+
+The structural half of BUG-002, landed in the same cut as its fix.
+
+`tests/smcyr/lsp_fold.smcyr` drives the bundle end to end against a real
+`cyrius-lsp`: spawn, `initialize`, describe, idempotent re-attach, stop.
+Everything else in CI proves the bundle *compiles* and that the glue registers
+its hooks — **none of it proved the wire was connected**, which is exactly how
+a dead feature sat unobserved across seven cuts while `state.md` went on
+recording "13 PASS".
+
+Deliberately **not** added when CI was repaired at 1.8.2: the harness was red
+then, and a gate that fails on day one gets ignored or reverted. It goes in
+here because it now passes 13/13.
+
+The runner requirement turned out to be a non-problem — `cyrius-lsp` is in the
+toolchain's `[release].bins`, so `install.sh` has been putting it on PATH
+since the install step. The step asserts that explicitly, so a packaging
+regression fails loudly rather than silently skipping.
+
+### Closed
+
+**BUG-002 (P2)** — open since 2026-08-11. With BUG-001 closed at v1.3.3,
+[`roadmap.md` § Open Bugs](docs/development/roadmap.md) is now empty.
+
+That is a statement about what is *tracked*, not a claim that cyim is
+bug-free: the 1.8.x line found seven defects nobody had filed, and 1.9.0 found
+an eighth in `A`. It means every known defect has been fixed rather than
+parked.
+
+### Verification
+
+- **`cyrius smoke` — 13 passed / 0 failed** (was 4 / 9 since 2026-08-11).
+- `cyrius tests` — 21 suites, **1200 assertions**, 0 failures · `cyrius fuzz`
+  4/4 · `tests/cli_smoke.sh` 128 · PTY integration smoke all PASS · DCE parity.
+- `cyrius lint` 0 warnings / 0 untracked deferrals · `cyrfmt --check` clean ·
+  0 undocumented public fns · `cyrius audit` clean.
+- All three targets build.
+
+### Binary
+
+**1,201,664 B** — unchanged from 1.9.0. The fix is inside the vendored bundle
+and DCE-identical at cyim's link boundary.
+
 ## [1.9.0] — 2026-08-23
 
 **`o` and `O` — open a line below / above and enter INSERT.** The first

@@ -151,6 +151,37 @@ jobs:
         # the agent-facing half of cyim was ungated until 1.8.2.
         run: bash tests/cli_smoke.sh
 
+      - name: LSP smoke
+        # ⭐ The structural half of BUG-002, landed with its fix at 1.9.1.
+        #
+        # `tests/smcyr/lsp_fold.smcyr` drives the vendored `cyim-lsp` bundle
+        # end to end against a REAL `cyrius-lsp`: spawn, `initialize`
+        # handshake, describe, idempotent re-attach, stop. Everything else in
+        # this workflow proves the bundle COMPILES and that the glue registers
+        # its hooks — none of it proves the wire is connected.
+        #
+        # It was not a CI step before, and that is precisely how the whole LSP
+        # feature sat dead on its only supported platform for seven cuts while
+        # `docs/development/state.md` went on recording "13 PASS". A
+        # `var argv[4]` sized in pointer slots rather than bytes made every
+        # spawn overrun and `execve` fail; silently, because execve never took
+        # and so `env` was never there to complain. Fixed in cyim-lsp 1.5.3.
+        #
+        # Deliberately NOT added when CI was repaired at 1.8.2: the harness was
+        # red then, and a gate that fails on day one gets ignored or reverted.
+        # It goes in here because it now passes 13/13.
+        #
+        # Needs `cyrius-lsp` on the runner. It is in the toolchain's
+        # `[release].bins`, so `install.sh` has put it on PATH since the
+        # install step above — the packaging problem the issue doc worried
+        # about turned out to already be solved.
+        run: |
+          command -v cyrius-lsp >/dev/null 2>&1 || {
+            echo "::error::cyrius-lsp not on PATH — the LSP smoke cannot run"
+            exit 1
+          }
+          cyrius smoke
+
       - name: PTY integration smoke
         # tests/integration_smoke.py spawns the cyim binary under a
         # real PTY (via pty.fork) and drives recorded keystroke
