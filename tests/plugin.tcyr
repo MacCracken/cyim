@@ -292,7 +292,7 @@ fn main() {
     assert_eq(act_gg, ACT_MOVE_FILE_START, "built-in gg returned ACT_MOVE_FILE_START");
     assert_eq(_t_prefix_key_calls, pre_pk2, "plugin gg handler NOT called (built-in won)");
 
-    test_group("unregistered prefix follow-up returns ACT_NONE");
+    test_group("unregistered prefix follow-up returns ACT_NONE");   #skip-lint: prefix-sequence noun
     # (KEY_G, 'r') has no built-in, no plugin in this test → ACT_NONE.
     editor_dispatch(s5, 103);                # g
     var act_gr = editor_dispatch(s5, 114);   # r — neither built-in nor plugin

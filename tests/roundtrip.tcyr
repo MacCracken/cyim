@@ -110,7 +110,7 @@ fn main() {
     }
     assert_eq(content_match, 1, "all 300 bytes round-tripped");
 
-    # ── 1.8.4 / ADR 0006 — which save path ran ───────────────────────────
+    # ── 1.8.4 / ADR 0006 — which save path ran ─────────
     # The two paths are indistinguishable from their return value and from
     # the bytes on disk, which is exactly why `buf_save_was_atomic()` exists:
     # a silent fallback to the non-atomic path is the kind of thing that rots

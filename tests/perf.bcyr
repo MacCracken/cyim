@@ -2,7 +2,7 @@
 #
 # Runs via: cyrius bench tests/perf.bcyr
 #
-# Coverage targets the surfaces that M2/M3/M4 left "deferred until perf
+# Coverage targets the surfaces M2/M3/M4 left "deferred until perf   #skip-lint: roadmap.md § Deferred in-source notes
 # surfaces" notes against:
 #   - Gap-buffer ops at 1 MB / 10 MB / 100 MB
 #   - render_build_line cost (per-line tokenize + ANSI emit)

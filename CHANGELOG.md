@@ -4,6 +4,141 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.5] — 2026-08-23
+
+**Dead-code and cleanliness cut, closing audit residual R-2 — and the honest
+answer is that there was no dead code to delete.** All 24 cyim-side functions
+the DCE report calls unreachable are frozen plugin ABI, test-only
+introspection, or documented-deferred config. What the sweep *did* find sat
+one level down, in a class the function-level report does not model.
+
+The tree is now lint-clean end to end: **0 warnings and 0 untracked deferrals**
+across `src/`, `tests/` and `fuzz/`, down from 20 untracked deferrals.
+
+### Fixed — five named constants the code was not using
+
+Each was declared beside the thing it describes while the code carried on with
+the literal. That is worse than merely unused: the declaration and the literal
+drift independently, the constant's name shows up in comments as if it were
+load-bearing, and someone grepping for it finds nothing but prose.
+
+- **`BUFFER_REC_SIZE = 40`** (`src/buflist.cyr`) sat next to `alloc(40)`. A
+  sixth slot in the buffer-registry record would have updated the layout
+  comment and left the allocation one slot short.
+- **`RENDER_LINE_BUF = 8192`** (`src/render.cyr`) sat next to
+  `render_build_line(..., 8192)` — the *bound* is the half that matters, and
+  it was the half using the magic number.
+- **`KEY_CTRL_R = 18`** (`src/mode.cyr`) — the only seeded binding with no
+  printable character, which is exactly why it has a name, and the keymap
+  still wrote `map_u64_set(m, 18, ACT_REDO)`.
+- **`REPLACE_FIRST_UNIQUE` / `REPLACE_ALL`** (`src/cli.cyr`, `src/main.cyr`)
+  were half-wired: the first appeared at one comparison, the second at none,
+  and both verb dispatches that *choose* the mode passed a bare `0` / `1`
+  while the doc comment above `run_replace` named the constants as if they
+  were in use.
+- **`_CYIMRC_PALETTE_SLOTS = 80`** was unusable by construction — a
+  `var buf[N]` declaration needs a literal — while `_cyimrc_init` and
+  `cyimrc_palette` both open-coded the count `10`. Replaced with
+  `_CYIMRC_PALETTE_COUNT`, which both bounds now derive from. **This is the
+  one genuine deletion in the cut.**
+
+This is the same shape as the bug class the last two audits kept turning up
+(`argv[4]`, the `tmp[16]` itoa scratch, the terminal-geometry render bounds):
+a size or bound expressed twice, in two places that can disagree.
+
+### Fixed — five stale comments describing states that had stopped being true
+
+- **`src/plugin.cyr`** claimed only 2 of the 6 plugin hooks were wired and
+  that the rest "land at v1.3.5+". All six wired **at** 1.3.5 — the comment
+  was five minors out of date.
+- **`src/mode.cyr`** claimed multi-byte key sequences were "NOT handled here
+  yet" and deferred. `Ctrl-W`, `gg` (1.4.2), `m<letter>` and `'<letter>`
+  (1.6.0) are all multi-byte and all dispatch **in that file**. Rewritten to
+  say what is actually still missing: operator-pending shapes with a count or
+  a text object (`d2w`, `di(`).
+- **`src/marks.cyr`** deferred `viminfo` persistence and a `:marks` command
+  "to 1.6.x" — a window that closed at 1.6.8.
+- **`src/mode.cyr`** deferred `cfg_line_numbers` rendering "to M5 perf pass";
+  M5 closed long before.
+- **`src/test.cyr`** now says why it is empty *and* that it asserts nothing
+  while still printing a "passed" line — the trap that made releases through
+  1.8.0 report "22 suites / 1150 assertions" when the truth was 21 suites.
+
+### Changed — every deferral is now tracked
+
+`cyrius lint` reported **20 untracked deferrals**. They are now zero, split
+three ways rather than blanket-suppressed:
+
+- **8 genuine deferrals** cross-referenced to a new
+  [roadmap § Deferred in-source notes](docs/development/roadmap.md) table —
+  which is the actually useful outcome: the deferrals are visible in one place
+  instead of only to whoever happens to open that file.
+- **5 stale notes** corrected rather than referenced (above).
+- **7 false positives** given `#skip-lint` with a reason. The rule matches the
+  words "follow-up" and "not yet", which in those lines mean *the follow-up
+  byte of a prefix sequence* and appear inside assertion messages. The rule is
+  wrong about them, and saying so beats inventing a roadmap entry for a noun.
+
+### Added
+
+- **[Architecture note 004 — A DCE report is not a dead-code list](docs/architecture/004-reading-the-dce-report.md).**
+  ~514 symbols are unreachable from `main`, 24 of them cyim's own, and
+  deleting any would be wrong. The note gives the three structural reasons,
+  the question actually worth asking of the report ("does every unreachable
+  symbol have a caller *somewhere*?"), the shell loop that answers it, and a
+  pointer at where real dead code turned up instead. Written so R-2 does not
+  have to be re-derived from scratch at the next closeout.
+
+- **`diag_msg` coverage** (`tests/trailing_ws.tcyr`). It was the only
+  cyim-side symbol in the whole tree with no caller anywhere — and it was a
+  **coverage hole wearing a dead-code costume**: `diag_line` and
+  `diag_severity` were both tested and the third accessor of the same record
+  was not. Deleting it would have broken the frozen ABI ([ADR
+  0004](docs/adr/0004-plugin-abi-freeze.md)) and left an incomplete accessor
+  set. The fix was the test. Every unreachable symbol now has a caller.
+
+### Changed — test hygiene
+
+Ten test lines exceeded the 120-character lint cap (six pre-existing, four
+introduced by 1.8.3/1.8.4). All wrapped; `cyrius lint` is now clean over
+`tests/` and `fuzz/` as well as `src/`.
+
+**One of those wraps broke a test, and the failure is worth recording.**
+Splitting a 100-byte fixture literal as `"...50 chars" + "...50 chars"` looks
+like ordinary line-wrapping and is not: **cyrius has no string concatenation**,
+so `+` added two pointers and produced garbage, taking four `:e`-file-size-cap
+assertions in `tests/command.tcyr` with it. Caught by the suite immediately.
+Fixed by shortening the variable name instead, with the reason written down
+beside it.
+
+### Verification
+
+- `cyrius tests` — 21 suites, **1177 assertions** PASS (was 1174), 0 failures.
+- `cyrius fuzz` 4/4 · `tests/cli_smoke.sh` 128 · PTY integration smoke all
+  PASS · PTY DCE parity PASS.
+- **`cyrius lint` — 0 warnings, 0 untracked deferrals across `src/`,
+  `src/plugins/`, `tests/` and `fuzz/`** (was 20 untracked deferrals and 10
+  long-line warnings). `cyrfmt --check` clean. `cyrius audit` clean.
+- `cyrius smoke` — 4 passed / 9 failed, unchanged: BUG-002, owned upstream.
+
+### Binary
+
+**1,201,632 B** (+4,096 B vs 1.8.4). The constants-wiring is size-neutral; the
+delta is the new comment volume falling out of DCE's alignment rather than any
+code change.
+
+### Still deferred
+
+Unchanged and still filed: **ADR 0005** (cwd-relative `.cyimrc` policy,
+Proposed), **F-7** (byte-oriented renderer, accepted and documented),
+**R-1a** (xattrs/ACLs across the atomic save path), and the `lang.cyr` /
+`hl_grammar_name` two-table refactor whose trigger fired at 1.8.2 — that one
+wants an ADR and a vyakarana metadata query, not a patch cut.
+
+Also unchanged: `cyrius audit`'s **"101 undocumented public fns"** advisory. It
+is a real gap and a real piece of work; it is not dead code, and folding a
+documentation sweep into this cut would have buried the findings above.
+
 ## [1.8.4] — 2026-08-23
 
 **A failed save no longer destroys the file.** Closes residual **R-1** from

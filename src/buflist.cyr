@@ -25,10 +25,15 @@
 # undo / redo stacks are populated by src/undo.cyr — buflist owns the
 # storage slots, undo.cyr owns the snapshot semantics.
 
+# Size of one buffer-registry record: five 8-byte slots (offsets 0..32).
+# ⭐ USED by the allocator below, deliberately. Declared-but-unreferenced was
+# the 1.8.5 finding: a named size sitting beside a literal `alloc(40)` lets the
+# two drift the moment a sixth slot is added, and the layout comment above
+# would still read correctly while the record came back one slot short.
 var BUFFER_REC_SIZE = 40;
 
 fn _bl_record_new(buf, path) {
-    var r = alloc(40);
+    var r = alloc(BUFFER_REC_SIZE);
     store64(r,      buf);
     store64(r + 8,  path);
     store64(r + 16, 0);

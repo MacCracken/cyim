@@ -156,7 +156,8 @@ fn main() {
     assert_streq(detect_language_from_path("containerfile"),  "dockerfile", "containerfile (lowercase variant)");
     assert_streq(detect_language_from_path("Makefile"),       "makefile",   "Makefile (canonical)");
     assert_streq(detect_language_from_path("makefile"),       "makefile",   "makefile (lowercase variant)");
-    assert_streq(detect_language_from_path("GNUmakefile"),    "makefile",   "GNUmakefile (GNU Make precedence canonical)");
+    assert_streq(detect_language_from_path("GNUmakefile"),    "makefile",
+      "GNUmakefile (GNU Make precedence canonical)");
     assert_streq(detect_language_from_path(".bashrc"),        "shell",      ".bashrc (bash rc dotfile)");
     assert_streq(detect_language_from_path(".bash_profile"),  "shell",      ".bash_profile");
     assert_streq(detect_language_from_path(".bash_aliases"),  "shell",      ".bash_aliases");
@@ -167,12 +168,14 @@ fn main() {
     # Excluded by design (rarely customized; line-length cap on lang_basenames):
     # .bash_logout, .zlogin, .zlogout fall through to "plain" via the basename probe
     # but might still hit `.bash` family extensions — they don't, so verify "plain".
-    assert_streq(detect_language_from_path(".bash_logout"),   "plain",      ".bash_logout — excluded from basename list");
+    assert_streq(detect_language_from_path(".bash_logout"),   "plain",
+      ".bash_logout — excluded from basename list");
     assert_streq(detect_language_from_path(".zlogin"),        "plain",      ".zlogin — excluded from basename list");
 
     test_group("detect_language_from_path: 1.6.4 basename detection — paths with directory prefix");
     assert_streq(detect_language_from_path("subdir/Dockerfile"),         "dockerfile", "Dockerfile in subdir");
-    assert_streq(detect_language_from_path("/etc/Dockerfile"),           "dockerfile", "Dockerfile under absolute path");
+    assert_streq(detect_language_from_path("/etc/Dockerfile"),  "dockerfile",
+      "Dockerfile under absolute path");
     assert_streq(detect_language_from_path("./Makefile"),                "makefile",   "./Makefile");
     assert_streq(detect_language_from_path("/home/user/.bashrc"),        "shell",      "absolute path .bashrc");
     assert_streq(detect_language_from_path("a/b/c/d/GNUmakefile"),       "makefile",   "deep path GNUmakefile");
@@ -190,9 +193,11 @@ fn main() {
     test_group("detect_language_from_path: 1.6.4 basename probe runs before extension probe");
     # Sanity: extension probe still wins when there's no basename hit.
     # `Dockerfile.txt` has extension `.txt` which we don't route; falls through.
-    assert_streq(detect_language_from_path("Dockerfile.txt"),    "plain",    "Dockerfile.txt — extension '.txt' unmapped, basename 'Dockerfile.txt' not canonical");
+    assert_streq(detect_language_from_path("Dockerfile.txt"),    "plain",
+      "Dockerfile.txt — '.txt' unmapped, basename not canonical");
     # And: a `.json` file named `Dockerfile.json` routes via extension probe.
-    assert_streq(detect_language_from_path("Dockerfile.json"),   "json",     "Dockerfile.json — extension probe wins via .json");
+    assert_streq(detect_language_from_path("Dockerfile.json"),   "json",
+      "Dockerfile.json — extension probe wins via .json");
 
     test_group("detect_language_from_path: case-insensitive on the extension");
     assert_streq(detect_language_from_path("FOO.PY"), "python", ".PY uppercase");

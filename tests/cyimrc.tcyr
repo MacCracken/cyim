@@ -99,7 +99,7 @@ fn main() {
     assert_eq(cyimrc_cfg_line_numbers(), 1, "line_numbers = 1");
     assert_eq(cyimrc_cfg_tabstop(),      8, "tabstop = 8");
 
-    # ── 1.8.3 audit F-2 / F-5 ────────────────────────────────────────────
+    # ── 1.8.3 audit F-2 / F-5 ──────────────────────────
     # A palette value outside 0..255 must be dropped like any other
     # malformed value, not stored. Through 1.8.2 it was stored and reached
     # `_render_u16_ascii`, whose 8-byte scratch is indexed DOWNWARD from 7:
@@ -138,7 +138,7 @@ fn main() {
     cyimrc_load_path(FIXTURE_BASIC);
     assert_eq(cyimrc_cfg_tabstop(), 4, "23-digit tabstop rejected");
 
-    # ── 1.8.3 audit F-2, sink side ───────────────────────────────────────
+    # ── 1.8.3 audit F-2, sink side ─────────────────────
     # Asserted at `_render_u16_ascii` rather than through render_build_line:
     # this is the function whose contract was violated, and whose 12-byte
     # reservation in the caller depends on the return being <= 3. Driving it

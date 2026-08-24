@@ -51,12 +51,12 @@
 # producer hooks store fp directly. Keyed hooks store a pointer to
 # a 24 B record { name_ptr, name_len, fp }.
 #
-# v1.3.4 wires only post_save + post_change fire-points into cyim's
-# core dispatch (the obviously-shaped ones). The other 4 hooks have
-# their lookup / collect helpers in place but are not yet called
-# from cyim's render / mode-dispatch / command paths — those wire-
-# ups land at v1.3.5+ when a real plugin (cyim-lsp at v1.4.0)
-# surfaces what it actually needs.
+# All six hooks are wired into cyim's core dispatch. v1.3.4 landed
+# post_save + post_change (the obviously-shaped two); v1.3.5 wired the
+# remaining four — status_segment, normal_key, ex_command,
+# diagnostic_provider — once cyim-lsp surfaced what it actually needed.
+# (Through 1.8.4 this comment still said only two were wired and the rest
+# "land at v1.3.5+"; corrected at 1.8.5.)
 
 # Per-hook registries. Initialized lazily by plugin_init() so the
 # global initializer phase doesn't run alloc().
@@ -193,7 +193,7 @@ fn plugin_register_ex_command(name, fp) {
 #
 # Record layout (24 B):
 #   +0   prefix       i64  prefix byte (e.g. KEY_G = 103)
-#   +8   key          i64  follow-up byte (e.g. 'd' = 100)
+#   +8   key          i64  follow-up byte (e.g. 'd' = 100)  #skip-lint: prefix-sequence noun
 #   +16  fp           i64  callback function pointer
 fn _plugin_prefix_record_new(prefix, key, fp) {
     var rec = alloc(24);

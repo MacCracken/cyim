@@ -139,7 +139,7 @@ fn main() {
     var b_w = buf_new();
     var s_w = editor_new(b_w);
     bl_init(s_w, b_w);
-    assert_eq(editor_window_root(s_w), 0, "root not yet initialized");
+    assert_eq(editor_window_root(s_w), 0, "root not yet initialized");   #skip-lint: assertion message
     window_init(s_w);
     var root_w = editor_window_root(s_w);
     assert_nonnull(root_w, "root allocated");

@@ -105,7 +105,7 @@ fn main() {
     assert_eq(act1, ACT_NONE, "m latches prefix, returns ACT_NONE");
     assert_eq(editor_prefix(s), KEY_M, "prefix latched to KEY_M");
     var act2 = editor_dispatch(s, 109);   # 'm' as the letter (any a-z)
-    assert_eq(act2, ACT_NONE, "follow-up returns ACT_NONE");
+    assert_eq(act2, ACT_NONE, "follow-up returns ACT_NONE");   #skip-lint: prefix-sequence noun
     assert_eq(editor_prefix(s), 0, "prefix cleared");
     assert_eq(marks_get(b, 109), 6, "mark 'm' set to cursor offset 6");
     assert_eq(marks_count(b), pre_count + 1, "count incremented");

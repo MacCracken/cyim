@@ -133,7 +133,7 @@ fn print_help() {
     _help_line("                                      0=exact, 1=one edit, etc.; tight span via min-distance\n");
     _help_line("                                      walk over candidate lengths, ties broken to smallest L)\n");
     _help_line("       --fuzzy-edits=<n>   on --regex=fuzzy: max Levenshtein distance (0=exact)\n");
-    _help_line("                              Note: backreferences (\\1) deferred per niyama v1.\n");
+    _help_line("                              Note: backreferences (\\1) deferred per niyama v1.\n");   #skip-lint: help text quoting roadmap.md § Deferred in-source notes
     return 0;
 }
 
@@ -420,7 +420,7 @@ fn main() {
             var ba_wc = 0;
             var ba_expect = 0;
             var ba_expect_pol = 0;
-            var ba_mode = 0;
+            var ba_mode = REPLACE_FIRST_UNIQUE;
             var ba_pos0 = 0;
             var ba_npos = 0;
             var ba_wc_seen = 0;
@@ -444,7 +444,7 @@ fn main() {
                 }
                 if (streq(arg, "--all")     == 1) {
                     if (ba_all_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --all\n", 28); return 2; }
-                    ba_mode = 1; ba_all_seen = 1; consumed = 1;
+                    ba_mode = REPLACE_ALL; ba_all_seen = 1; consumed = 1;
                 }
                 if (consumed == 0) {
                     var s1 = _cli_argprefix(arg, "--expect=");

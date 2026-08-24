@@ -49,6 +49,14 @@
 # / strlen / load8 / store8).
 
 # `mode` argument for run_replace.
+# Substitution mode for `run_replace` / `run_batch`.
+#
+# ⭐ 1.8.5: these were half-wired. `REPLACE_FIRST_UNIQUE` appeared at exactly
+# one comparison, `REPLACE_ALL` at none, and every other site — including the
+# two verb dispatches that CHOOSE the mode — used a bare `0` / `1` while the
+# doc comments above `run_replace` named the constants as if they were in use.
+# A reader grepping `REPLACE_ALL` to find where --replace-all is wired found
+# nothing but prose. Now every comparison and both call sites use the names.
 var REPLACE_FIRST_UNIQUE = 0;
 var REPLACE_ALL          = 1;
 
@@ -96,9 +104,9 @@ var MATCHER_REGEX   = 1;
 #   unknown-flavor message.
 #
 # Caveats surfaced in --help (not enforced in cyim — engine-side):
-#   - Backreferences (`\1`-style) deferred per niyama's long-term
-#     security-against-misuse plan; not yet supported in any
-#     v1.3.0 flavor.
+#   - Backreferences (`\1`-style) deferred per niyama's long-term  (roadmap.md § Deferred in-source notes)
+#     security-against-misuse plan; unsupported in every flavor.
+#     Engine-side, not cyim's.
 #   - vim mode-aware syntax (`\v` / `\V` / `\m` / `\M`) compiles
 #     via niyama_vim_compile; default is "magic" (vim's `\m`).
 var FLAVOR_LITERAL = 0;
@@ -593,7 +601,7 @@ fn _cli_substitute(src, old, new, mode) {
             if (_cli_match_at(src, i, old, olen) == 1) { hit = 1; }
         }
         if (hit == 1) {
-            if (mode == 0) {
+            if (mode == REPLACE_FIRST_UNIQUE) {
                 if (done_first == 1) { hit = 0; }
             }
         }
@@ -1242,7 +1250,7 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavo
         syscall(1, 2, "cyim --replace: OLD not found in FILE\n", 38);
         return 4;
     }
-    if (mode == 0) {
+    if (mode == REPLACE_FIRST_UNIQUE) {
         if (count > 1) {
             syscall(1, 2, "cyim --replace: OLD occurs more than once — ", 46);
             syscall(1, 2, "not unique. Use --replace-all or pick a more specific OLD.\n", 59);
@@ -1379,7 +1387,7 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
                 syscall(1, 2, "cyim --batch: pair OLD not found in file\n", 41);
                 return 4;
             }
-            if (mode == 0) {
+            if (mode == REPLACE_FIRST_UNIQUE) {
                 if (count > 1) {
                     syscall(1, 2, "cyim --batch: pair OLD not unique — use --all or specify more\n", 64);
                     return 5;
@@ -1701,7 +1709,7 @@ fn _dispatch_replace(ac) {
             return 2;
         }
     }
-    return run_replace(r_p0, r_p1, r_p2, 0, r_wc, r_expect_n, r_regex_flavor, r_fuzzy_edits);
+    return run_replace(r_p0, r_p1, r_p2, REPLACE_FIRST_UNIQUE, r_wc, r_expect_n, r_regex_flavor, r_fuzzy_edits);
 }
 
 fn _dispatch_replace_all(ac) {
@@ -1803,7 +1811,7 @@ fn _dispatch_replace_all(ac) {
             return 2;
         }
     }
-    return run_replace(ra_p0, ra_p1, ra_p2, 1, ra_wc, ra_expect_n, ra_regex_flavor, ra_fuzzy_edits);
+    return run_replace(ra_p0, ra_p1, ra_p2, REPLACE_ALL, ra_wc, ra_expect_n, ra_regex_flavor, ra_fuzzy_edits);
 }
 
 fn _dispatch_replace_files(ac) {

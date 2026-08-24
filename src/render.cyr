@@ -22,6 +22,11 @@
 # Per-line output buffer. Sized to comfortably hold an 80-col line plus
 # CR/LF. A line longer than this is truncated visually — content is
 # unaffected, only the display is.
+# ⚠ A `var buf[N]` declaration needs a literal, so the size is written twice:
+# here, and at each declaration site. THIS constant is the one every *bound*
+# must be expressed in — passing a bare `8192` as `out_max` was the 1.8.5
+# finding, because it left `RENDER_LINE_BUF` unreferenced and let the
+# declaration shrink without the bound following it.
 var RENDER_LINE_BUF = 8192;
 
 # Sizes of the two fixed render scratch buffers whose write bound used to be
@@ -315,8 +320,8 @@ fn render_build_line_naked(b, line, cols, tb, out, out_max) {
 # highlighted when `tb` is a vyakarana tokenbuf. Truncates visual width
 # at `cols`.
 fn render_line(b, line, cols, tb) {
-    var out[8192];
-    var n = render_build_line(b, line, cols, tb, &out, 8192);
+    var out[8192];   # must equal RENDER_LINE_BUF — see its declaration
+    var n = render_build_line(b, line, cols, tb, &out, RENDER_LINE_BUF);
     syscall(1, 1, &out, n);
     return 0;
 }

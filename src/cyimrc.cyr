@@ -33,10 +33,18 @@
 # Requires: stdlib (file_open / file_read / file_close / strlen / load8 /
 #           store8 / store64 / alloc).
 
-# Per-kind override storage: 10 slots × 8 bytes = 80 bytes total.
-# All slots initialized to -1 (sentinel "not overridden") on first load.
-var _CYIMRC_PALETTE_SLOTS = 80;
-var _cyimrc_palette[80];
+# Per-kind override storage: one slot per vyakarana TK_* kind.
+#
+# ⭐ 1.8.5: the COUNT is the load-bearing number and it now has a name.
+# `_CYIMRC_PALETTE_SLOTS = 80` (the byte size) was declared and never
+# referenced, while `_cyimrc_init` and `cyimrc_palette` both open-coded the
+# literal `10` — so the bound that keeps `kind * 8` inside the array was a
+# magic number in two places, and an eleventh token kind would have needed
+# three separate edits to land safely. The byte-size constant is gone (a
+# `var [N]` declaration needs a literal, so it could never be used); the
+# COUNT is named and both bounds derive from it.
+var _CYIMRC_PALETTE_COUNT = 10;
+var _cyimrc_palette[80];   # == _CYIMRC_PALETTE_COUNT * 8
 var _cyimrc_loaded = 0;
 
 # Editor config values parsed from .cyimrc. -1 = not set in file (caller
@@ -49,7 +57,7 @@ var _cyimrc_cfg_tabstop      = 0 - 1;
 fn _cyimrc_init() {
     if (_cyimrc_loaded == 1) { return 0; }
     var i = 0;
-    while (i < 10) {
+    while (i < _CYIMRC_PALETTE_COUNT) {
         store64(&_cyimrc_palette + i * 8, 0 - 1);
         i = i + 1;
     }
@@ -265,7 +273,7 @@ fn cyimrc_load() {
 # this first and falls back to the bundled default.
 fn cyimrc_palette(kind) {
     if (_cyimrc_loaded == 0) { return 0 - 1; }
-    if (kind < 0)            { return 0 - 1; }
-    if (kind >= 10)          { return 0 - 1; }
+    if (kind < 0)                        { return 0 - 1; }
+    if (kind >= _CYIMRC_PALETTE_COUNT)   { return 0 - 1; }
     return load64(&_cyimrc_palette + kind * 8);
 }

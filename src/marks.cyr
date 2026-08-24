@@ -19,7 +19,7 @@
 # Edit-tracking is queued for a future 1.6.x patch.
 #
 # No persistence — marks live in memory for the cyim session. Vim's
-# `viminfo` is post-1.6 (deferred until persistence earns its keep).
+# `viminfo` shape is deferred until persistence earns its keep — roadmap.md § Deferred in-source notes.
 #
 # Public API:
 #   marks_init()                       -> 0     # alloc storage; called from main()
@@ -139,7 +139,8 @@ fn marks_get_global(key) {
 }
 
 # Count per-buffer marks for `b`. Used by tests + a future ":marks"
-# command (deferred to 1.6.x).
+# command; see roadmap.md § Deferred in-source notes. (The 1.6.x window
+# this once named closed at 1.6.8 — corrected at 1.8.5.)
 fn marks_count(b) {
     if (_marks_per_buf == 0) { return 0; }
     if (b == 0) { return 0; }

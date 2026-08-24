@@ -80,6 +80,18 @@ fn main() {
     var d1 = vec_get(diags, 1);
     assert_eq(diag_line(d1), 3, "diag[1] line == 3");
 
+    # 1.8.5: `diag_msg` is frozen plugin ABI (ADR 0004) but had no test —
+    # `diag_line` and `diag_severity` were both covered and the third
+    # accessor of the same record was not. That is why it showed up as the
+    # only cyim-side symbol with no caller anywhere in the R-2 dead-code
+    # sweep: it was a coverage hole wearing a dead-code costume. Deleting it
+    # would have broken the ABI and left an incomplete accessor set.
+    assert_neq(diag_msg(d0), 0, "diag[0] msg non-null");
+    assert_eq(_streq(diag_msg(d0), "trailing whitespace"), 1,
+      "diag[0] msg == 'trailing whitespace'");
+    assert_eq(_streq(diag_msg(d1), "trailing whitespace"), 1,
+      "diag[1] msg == 'trailing whitespace'");
+
     test_group("status_segment renders TWS:N");
     var seg = _tws_status(s);
     assert_neq(seg, 0, "segment non-null when N > 0");

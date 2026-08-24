@@ -109,7 +109,8 @@ fn main() {
     # From column 6 ('w' in 'world') on line 0, j -> column 6 on line 1
     # except line 1 only has cols 0..6 ('foo bar', length 7), so col 6 = 'r' at pos 18.
     assert_eq(motion_down(b, 6), 18, "j from line0 col6 -> line1 col6 ('r')");
-    # From col 6 on line 1 ('r' at 18), j -> line 2 col 4 (line 2 is 5 chars '  baz' so col 6 clamps to col 4 = 'z' at 24).
+    # From col 6 on line 1 ('r' at 18), j -> line 2 col 4 (line 2 is 5 chars
+    # '  baz', so col 6 clamps to col 4 = 'z' at 24).
     assert_eq(motion_down(b, 18), 24, "j from line1 col6 clamps to line2 end ('z')");
     # Last line: no-op
     assert_eq(motion_down(b, 22), 22, "j on last line stays put");

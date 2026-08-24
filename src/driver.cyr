@@ -16,8 +16,8 @@
 # ── Dot-repeat tracking
 # A "vim undo unit" is recorded into editor.dot_buf so `.` can replay
 # it. Today only insert sessions are captured (i/a/A → bytes → Esc);
-# x / paste / visual aren't dot-replayable yet (deferred to keep the
-# bite tight; the same hook structure will accept them later).
+# x / paste / visual aren't dot-replayable (the same hook structure will
+# accept them; see roadmap.md § Deferred in-source notes).
 
 fn _dot_begin(s, key) {
     var db = editor_dot_buf(s);
@@ -163,9 +163,9 @@ fn editor_run(s, keys, n) {
 # Limitation: if a CSI sequence is split across reads (rare on
 # modern terminals; can happen on slow serial), the leading ESC
 # would dispatch a mode-exit on its own and the [ + final would
-# arrive as separate bytes the next iteration. Acceptable for
-# v1.2.0; a follow-up pass with a 1-iteration look-ahead buffer
-# would close that hole.
+# arrive as separate bytes the next iteration. A 1-iteration look-ahead
+# buffer would close that hole; see roadmap.md
+# § Deferred in-source notes.
 fn editor_feed(s, buf, len) {
     var i = 0;
     while (i < len) {

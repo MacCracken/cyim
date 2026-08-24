@@ -395,8 +395,12 @@ fn main() {
     test_group("F-2 — :e refuses files larger than cfg_max_filesize");
     var f2_path = "build/test-cmd-f2-large.txt";
     # Write a 100-byte fixture file.
-    var f2_content = "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ";
-    file_write_all(f2_path, f2_content, 100);
+    # One literal, NOT two joined with `+`: cyrius has no string
+    # concatenation, so `"a" + "b"` adds two POINTERS and yields garbage.
+    # Shortened the variable name instead to bring the line under the
+    # 120-char lint cap (1.8.5).
+    var f2c = "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ";
+    file_write_all(f2_path, f2c, 100);
 
     var b_f2 = buf_new();
     var s_f2 = editor_new(b_f2);

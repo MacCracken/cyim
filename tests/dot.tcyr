@@ -3,7 +3,7 @@
 # Drives editor_step so the dot-recording state machine fires through
 # the same code path the binary takes. Today's recording covers insert
 # sessions (i/a/A → bytes → Esc); x / paste / visual edits aren't
-# captured yet (deferred per M4.5 scope notes).
+# captured (roadmap.md § Deferred in-source notes).
 
 include "src/buffer.cyr"
 # marks.cyr must precede mode.cyr: mode's KEY_M / KEY_QUOTE prefix dispatch

@@ -1,5 +1,15 @@
 # cyim — top-level test entry (referenced by cyrius.cyml [build].test).
-# For unit tests, prefer adding cases to tests/cyim.tcyr.
+#
+# DELIBERATELY EMPTY. `[build].test` is a required manifest key, and the real
+# suites are the auto-discovered `tests/*.tcyr` files. This exists to satisfy
+# the key, nothing else — add cases to `tests/cyim.tcyr` or a dedicated
+# `tests/<area>.tcyr`, not here.
+#
+# ⚠ It asserts NOTHING but still prints a "passed" line, so a naive count of
+# `cyrius test` output counts it as a suite. That is how releases through
+# 1.8.0 reported "22 suites / 1150 assertions" when the true figure was 21
+# suites — corrected at 1.8.1, and recorded here so the miscount cannot come
+# back by someone re-deriving the number from the output.
 
 include "lib/syscalls.cyr"
 

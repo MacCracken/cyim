@@ -16,10 +16,14 @@
 # to special-case them. Motions, edits, and other in-mode actions leave
 # the mode unchanged; the caller is expected to apply them to the buffer.
 #
-# Multi-byte sequences (gg, dd, di(, escape codes for arrow keys, ...) are
-# NOT handled here yet. They need a small parsing state on top of the byte
-# stream; deferred to a later bite. This module does single-byte mappings
-# and the three mode-state defaults (literal-insert, cmdline-append).
+# Multi-byte sequences ARE handled here, via a one-byte prefix latch on the
+# editor state: Ctrl-W (window nav), `gg` (v1.4.2), `m<letter>` and
+# `'<letter>` (v1.6.0), plus plugin-registered prefix keys. Still absent:
+# operator-pending shapes with a count or a text object (`d2w`, `di(`), which
+# need a real parsing state rather than a single latch.
+# (Through 1.8.4 this comment claimed multi-byte sequences were unhandled here
+# and postponed — four cuts after the first one shipped in this very file.
+# Corrected at 1.8.5.)
 
 # ──── Modes
 var MODE_NORMAL      = 0;
@@ -64,7 +68,7 @@ var ACT_SEARCH_REPEAT_BACK = 30;  # `N` in NORMAL — repeat last in opposite di
 var ACT_SEARCH_WORD_FWD   = 31;   # `*` — find word under cursor, forward
 var ACT_SEARCH_WORD_BACK  = 32;   # `#` — find word under cursor, backward
 
-# NORMAL-mode motions (single-byte for now).
+# NORMAL-mode motions (single-byte).  #skip-lint: describes the current set, not a deferral
 var ACT_MOVE_LEFT         = 100;
 var ACT_MOVE_DOWN         = 101;
 var ACT_MOVE_UP           = 102;
@@ -105,7 +109,7 @@ var KEY_LF        = 10;
 var KEY_BACKSPACE = 8;
 var KEY_DEL       = 127;
 var KEY_CTRL_W    = 23;
-var KEY_CTRL_R    = 18;
+var KEY_CTRL_R    = 18;   # the ONLY seeded binding with no printable char
 var KEY_G         = 103;   # v1.4.2 — prefix for `gg` + plugin normal_prefix_key
 var KEY_M         = 109;   # v1.6.0 — prefix for `m<letter>` (set mark)
 var KEY_QUOTE     = 39;    # v1.6.0 — prefix for `'<letter>` (jump to mark)
@@ -158,9 +162,12 @@ var ERR_FILE_TOO_LARGE  = 6;  # M7 audit F-2 — :e refused because file > maxfi
 #   off 176  cfg_ignorecase   i64  0 = case-sensitive (default), 1 = fold
 #                                   case in / and ? scans.
 #   off 184  cfg_line_numbers i64  display gutter w/ line numbers (0/1).
-#                                   Wiring into render is deferred to M5
-#                                   perf pass; the config slot exists so
-#                                   `:set number` and `.cyimrc` agree.
+#                                   STORED, not rendered — see
+#                                   docs/guides/cyimrc.md and roadmap.md
+#                                   § Deferred in-source notes. The slot
+#                                   exists so `:set number` and `.cyimrc`
+#                                   agree. (Named the M5 perf pass through   #skip-lint: historical note, roadmap.md § Deferred in-source notes
+#                                   1.8.4; M5 closed long before.)
 #   off 192  cfg_tabstop      i64  display width of TAB (default 4).
 #   off 200  cfg_max_filesize i64  M7 F-2 fix — `:e` refuses files
 #                                   larger than this. Default 100 MB.
@@ -266,7 +273,7 @@ fn _seed_normal_keymap(m) {
     map_u64_set(m, 42,  ACT_SEARCH_WORD_FWD);    # *
     map_u64_set(m, 35,  ACT_SEARCH_WORD_BACK);   # #
     map_u64_set(m, 117, ACT_UNDO);               # u
-    map_u64_set(m, 18,  ACT_REDO);               # Ctrl-r (0x12)
+    map_u64_set(m, KEY_CTRL_R, ACT_REDO);        # Ctrl-r (0x12)
     map_u64_set(m, 118, ACT_TO_VISUAL);          # v
     map_u64_set(m, 86,  ACT_TO_VISUAL_LINE);     # V
     map_u64_set(m, 112, ACT_PASTE_AFTER);        # p
@@ -304,12 +311,13 @@ fn editor_dispatch(s, key) {
     # Multi-byte sequence: a previous keystroke set a prefix that the
     # current byte resolves. v1.4.2 generalizes prefix dispatch beyond
     # the original CTRL_W case — built-ins (CTRL_W window-nav, G-prefix
-    # `gg`) handle their own follow-up; anything else falls through to
+    # `gg`) handle their own follow-up byte; anything else falls through to   #skip-lint: prefix-sequence noun
     # plugin lookup via _plugin_lookup_normal_prefix_key.
     #
     # Built-ins win on conflict (ADR 0003 §3): plugin lookup is only
     # consulted after the built-in branch decides not to handle the
-    # follow-up. Plugin-returned actions flow through cyim's standard
+    # follow-up byte.  #skip-lint: prefix-sequence noun
+    # Plugin-returned actions flow through cyim's standard
     # action pipelines (motion / edit / etc) at driver.cyr's
     # editor_step, but plugin prefix-keys are NOT permitted to drive
     # mode transitions — the prefix path returns immediately, bypassing
@@ -344,7 +352,7 @@ fn editor_dispatch(s, key) {
         # v1.6.0 — m-prefix: set mark.
         # `m<a-z>` sets a per-buffer mark at the cursor.
         # `m<A-Z>` sets a global mark (cross-buffer).
-        # Any other follow-up byte is a no-op (silent).
+        # Any other follow-up byte is a no-op (silent).  #skip-lint: prefix-sequence noun
         if (prev_prefix == KEY_M) {
             var b_m = editor_buf(s);
             if (b_m != 0) {
@@ -365,7 +373,8 @@ fn editor_dispatch(s, key) {
         # v1.6.0 — '-prefix: jump to mark.
         # `'<a-z>` jumps to a per-buffer mark in the current buffer.
         # `'<A-Z>` jumps to a global mark (may switch buffers).
-        # Any other follow-up byte is a no-op (silent). Mark offsets
+        # Any other follow-up byte is a no-op (silent).  #skip-lint: prefix-sequence noun
+        # Mark offsets
         # are clamped to buf_len defensively (post-delete drift safety).
         if (prev_prefix == KEY_QUOTE) {
             if (key >= 97) {

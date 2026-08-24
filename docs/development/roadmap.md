@@ -126,6 +126,7 @@ this is a sequencing index.
 | **v1.8.2** — dependency + toolchain catch-up, **plus the highlighting regression it uncovered**. cyrius 6.5.18 → 6.5.35; darshana 0.8.2 → **1.0.0** (the API freeze; carries 0.9.2's aarch64 `SYS_IOCTL` fix and two pre-freeze breaks cyim does not trip); vyakarana 2.2.3 → 2.4.0 with all 45 `grammars/*.cyml` re-synced and `openqasm` added as the 46th (`LANG_COUNT` 45 → 46, `.qasm` routing); `lib/` full re-sync to the 6.5.35 snapshot and `lib/agnosys.cyr` pruned (stdlib-retired at cyrius 6.2.37; `lib sync` copies without pruning). **Fixed: 34 of 45 routed languages rendered uncolored** — `highlight_init()`'s grammar load list stayed at its original 11 through 1.6.2's 11 → 45 routing growth, and it suppresses vyakarana's cwd-relative fallback, so a missing entry means no grammar rather than a slower path. Load list is now the `hl_grammar_name(i)` table with a two-way, mutation-tested drift guard in `tests/lang.tcyr`. Three files reformatted for 6.5.28's parenthesis-tracking `cyrfmt`. **CI repaired**: both workflows hand-unpacked the release tarball into the flat, pre-`versions/` `~/.cyrius/{bin,lib}`, so every run died at `cyrius deps` — they now delegate to the upstream `install.sh` (patra's shape), pinned to the tag, with a layout-assertion step; a format gate, a CLI-smoke gate and `src/plugins/` linting were added alongside. **BUG-002 root-caused** — see Open Bugs | Shipped 2026-08-23 |
 | **v1.8.3** — **P(-1) audit / refactor / hardening / security pass.** 1 HIGH, 1 MEDIUM, 3 LOW, 3 informational; all five code findings fixed with mutation-tested regressions. HIGH: `buf_save_file` treated a short `write(2)` as success, so `:w` cleared the modified flag and all six agent verbs exited 0 on a truncated file (measured 475 of 575 bytes lost) — and made `--batch`'s documented atomicity false. MEDIUM: an unvalidated `.cyimrc` palette value reached a backward-filled buffer index and overran `render_build_line`'s 12-byte escape reservation. LOW ×3: render scratch buffers bounded by terminal geometry rather than their own size (latent until resize support lands), an i64-undersized itoa scratch, and an integer parser that wrapped instead of rejecting. Docs: ADR 0005 filed (Proposed), the missing `docs/adr/{README,template}.md` and `docs/architecture/README.md` written, architecture notes 002 and 003 added, and two doc claims that contradicted the code corrected. Suite 1136 → 1161; CLI smoke 118 → 122; benchmarks unmoved | Shipped 2026-08-23 |
 | **v1.8.4** — **Atomic save** ([ADR 0006](../adr/0006-atomic-save.md)), closing audit residual R-1. A save writes a sibling temp, `fchmod`s it to the target's mode, writes, `fsync`s, `rename`s over the target, then `fsync`s the parent directory — so a write that dies part way leaves the original bit-for-bit intact. Atomic by DEFAULT, not unconditionally: six enumerated conditions (symlink, `nlink > 1`, non-regular file, foreign uid, non-writable directory, agnos) take the in-place path, because rename changes the inode and for those shapes that breaks something the user relies on more. Return contract unchanged; no call site touched. `buf_save_was_atomic()` added so a silent fallback cannot rot unobserved. Suite 1161 → 1174; CLI smoke 122 → 128; both the conditions and the fall-through logic mutation-tested | Shipped 2026-08-23 |
+| **v1.8.5** — **Dead-code + cleanliness cut**, closing audit residual R-2 — with the honest answer that there was nothing to delete: all 24 cyim-side unreachable functions are frozen ABI, test-only introspection, or documented-deferred config, and the one symbol with no caller anywhere (`diag_msg`) was a coverage hole closed with a test. Real dead code sat one level down: **five named constants the code was not using** (`BUFFER_REC_SIZE`, `RENDER_LINE_BUF`, `KEY_CTRL_R`, the `REPLACE_*` pair, `_CYIMRC_PALETTE_SLOTS`) — the same size-expressed-twice shape the last two audits kept finding. Four wired up, one deleted as unusable by construction. **Five stale comments** corrected, describing states that had stopped being true up to five minors earlier. **20 untracked lint deferrals → 0**: 8 cross-referenced to a new roadmap § Deferred in-source notes, 5 stale ones corrected, 7 false positives given `#skip-lint` with a reason. Ten over-length test lines wrapped. Suite 1174 → 1177; whole tree now lint-clean | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -259,9 +260,45 @@ each with the reason. Full context in
 |---|---|---|
 | ~~**R-1**~~ | ~~The save path is not atomic~~ | ✅ **Closed at v1.8.4** by [ADR 0006](../adr/0006-atomic-save.md). The concern that kept it open — that unconditional rename breaks hardlinks, symlinks, modes and non-writable directories — is answered by making the atomic path the default with six enumerated in-place conditions, the `backupcopy=auto` shape this row anticipated |
 | **R-1a** | Extended attributes and ACLs are not carried across the atomic path | `fchmod` preserves the permission bits; xattrs, POSIX ACLs and SELinux labels are not copied, and cyim cannot *detect* a non-trivial ACL without an `xattr` surface the stdlib does not expose. Narrow: needs a file with an ACL, owned by the invoking user, not a symlink, not hardlinked. New at 1.8.4 |
-| **R-2** | Dead-code floor of 20 cyim-side functions | Mostly not dead: frozen plugin ABI ([ADR 0004](../adr/0004-plugin-abi-freeze.md) forbids removal), test/fuzz introspection reachable from harnesses but not `main`, and two documented-deferred config getters. A DCE report is not a dead-code list for a project with a frozen ABI and an out-of-line harness |
+| ~~**R-2**~~ | ~~Dead-code floor of 20 cyim-side functions~~ | ✅ **Closed at v1.8.5.** Re-derived as 24, of which **none should be deleted** — 9 frozen plugin ABI, 13 test/fuzz introspection, 2 documented-deferred config. The one symbol with no caller anywhere (`diag_msg`) was a coverage hole, not dead code, and was closed with a test. Real dead code was one level down: five named constants the code was not using. How to read the report without re-deriving all this: [architecture note 004](../architecture/004-reading-the-dce-report.md) |
 | **ADR 0005** | Should `.cyimrc` be loaded from the current directory at all? | [Filed as Proposed](../adr/0005-cyimrc-cwd-trust-boundary.md) with four costed options. Not urgent — the whole surface is ten colour indexes, and the worst a hostile config achieves is the wrong colour. Not to be left open either: `cyimrc.md` names keymaps as an M4 candidate, and a keymap accepted from a directory you just cloned is a different proposition from a colour. Decide while the answer is cheap |
 | **F-7** | The renderer is byte-oriented; C1 bytes pass through, no double-width or combining-character handling | Accepted and documented as [architecture note 003](../architecture/003-render-is-byte-oriented.md), not filed as a defect — these are one decision, and the obvious "fix" (substituting `0x80`–`0x9F`) breaks every non-ASCII file, because that range overlaps UTF-8 continuation bytes. The trigger that would change the calculus is a consumer editing CJK or RTL text in earnest — `aethersafha` is the likeliest |
+
+---
+
+## Deferred in-source notes
+
+Comments in `src/` that defer work. Tracked here so `cyrius lint`'s
+untracked-deferral rule has something to point at, and — more usefully — so
+the deferrals are visible in one place instead of only to whoever happens to
+read that file. Added at **1.8.5**, when the lint sweep found 20 untracked
+deferrals and five of them turned out to be **stale**: describing a state that
+had stopped being true, in some cases years of cuts ago.
+
+| Where | Deferred | Status |
+|---|---|---|
+| `src/cli.cyr` (regex caveats), `src/main.cyr` (`--help`) | Backreferences (`\1`) in regex flavors | Engine-side, not cyim's: deferred per niyama's own v1 plan. Reassess when niyama ships them |
+| `src/command.cyr` | Multi-byte ex ranges (`:1,5d`), `:%s/x/y/`, tab-completion, `:!cmd` | Out of scope since M1. `:!cmd` is additionally constrained by Refusal §0 — see Non-Goals |
+| `src/driver.cyr` | Dot-repeat captures insert sessions only; `x` / paste / visual are not replayable | The hook structure accepts them; needs a bite |
+| `src/driver.cyr` | A split CSI escape (ESC and `[`+final arriving in separate reads) dispatches a spurious mode-exit | Needs a 1-iteration look-ahead buffer. Not observed on modern terminals; plausible on slow serial |
+| `src/marks.cyr` | `viminfo`-style mark persistence across sessions | Post-1.6 and still unclaimed — gated on persistence earning its keep. *(The note said "post-1.6"; corrected at 1.8.5 from a stale "1.6.x" window that had closed.)* |
+| `src/marks.cyr` | A `:marks` command | `marks_count` exists for it. *(Was "deferred to 1.6.x" — stale, corrected at 1.8.5.)* |
+| `src/mode.cyr` | `cfg_line_numbers` / `cfg_tabstop` are stored but not rendered | Documented in [`cyimrc.md`](../guides/cyimrc.md) as storage-only. *(The note said "deferred to M5 perf pass"; M5 closed long ago — corrected at 1.8.5.)* |
+| `tests/perf.bcyr` | Bench coverage follows the "deferred until perf surfaces" notes M2–M4 left | Live; the bench suite is the answer to those notes |
+
+**Stale notes corrected at 1.8.5**, rather than cross-referenced — they were
+describing things that had already happened:
+
+- `src/plugin.cyr` claimed only 2 of the 6 hooks were wired and that the rest
+  "land at v1.3.5+". All six wired at **1.3.5**.
+- `src/mode.cyr` claimed multi-byte sequences were "NOT handled here yet" and
+  deferred. `Ctrl-W`, `gg` (1.4.2), `m<letter>` and `'<letter>` (1.6.0) are all
+  multi-byte and all dispatch in that file.
+
+**False positives** (`src/mode.cyr`, `src/plugin.cyr`, `tests/{marks,plugin,window}.tcyr`)
+carry `#skip-lint` with a reason: the rule matches the words "follow-up" and
+"not yet", which in those lines mean *the follow-up byte of a prefix sequence*
+and appear inside assertion messages — not deferrals.
 
 ---
 
@@ -360,6 +397,24 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-08-23 (v1.8.5 — **dead-code + cleanliness
+cut**, closing audit residual R-2. The finding is that there was
+no dead code to delete: all 24 cyim-side unreachable functions
+are frozen plugin ABI, test/fuzz introspection, or
+documented-deferred config, and `diag_msg` — the only symbol
+with no caller anywhere — was a coverage hole wearing a
+dead-code costume, closed with a test. Real dead code was one
+level down: five named constants the code was not using, the
+same size-expressed-twice shape the last two audits kept
+finding. Four wired up, one deleted. Five stale comments
+corrected (one five minors out of date). 20 untracked lint
+deferrals → 0. Whole tree lint-clean: 0 warnings, 0 untracked
+deferrals across src/, tests/, fuzz/. Architecture note 004
+records how to read a DCE report so R-2 is not re-derived next
+closeout. Suite 1174 → 1177. Still deferred: ADR 0005, F-7,
+R-1a, the lang.cyr two-table refactor, and the 101-undocumented-fns
+advisory.)*
 
 *Last updated: 2026-08-23 (v1.8.4 — **atomic save**, closing
 audit residual R-1 per [ADR 0006](../adr/0006-atomic-save.md).

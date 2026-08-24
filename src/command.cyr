@@ -14,7 +14,9 @@
 #   e <path> — load <path> into the main buffer (last_error = ERR_DIRTY if modified)
 #
 # Multi-byte ranges (`:1,5d`), search-replace (`:%s/x/y/`), tab-completion,
-# and shell-out (`:!cmd`) are all out of scope for M1.
+# and shell-out (`:!cmd`) have been out of scope since M1; see roadmap.md
+# § Deferred in-source notes. `:!cmd` is additionally constrained by
+# Refusal §0 — it is a Non-Goal, not merely unbuilt.
 #
 # Requires: src/buffer.cyr, src/mode.cyr (and stdlib alloc / io / strlen).
 
