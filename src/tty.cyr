@@ -15,6 +15,58 @@
 # strings name "cyim" explicitly, so it isn't a fit for darshana
 # (which is host-agnostic).
 
+# ── Terminal geometry (v1.10.0) ──────────────────────────
+#
+# Outside the per-target gates on purpose: darshana ships `tty_winsize` for
+# BOTH Linux and agnos, and both need the same clamping. Putting it inside
+# the Linux arm is exactly the mistake that broke the agnos build once — the
+# symbol vanished for a target that calls it.
+
+# Fallback grid, used when the terminal will not say how big it is (not a
+# TTY, or the ioctl fails). The classic VT100 default.
+var DEFAULT_ROWS = 24;
+var DEFAULT_COLS = 80;
+
+# Sanity bounds on terminal-reported geometry (v1.10.0).
+#
+# ⚠ `ws_row` / `ws_col` are u16, so a terminal is free to claim 65535 of
+# either — and the value flows straight into the render path's loop bounds and
+# buffer budgets. The 1.8.3 audit (finding F-3) fixed those buffers to be
+# bounded by their own size rather than by `cols` **specifically because this
+# feature would make terminal geometry live input**; clamping here is the
+# other half of that, so the absurd value never enters the system at all
+# rather than being caught at each sink.
+#
+# The floor matters as much as the ceiling: a 0-row or 1-row grid makes
+# `render_frame`'s status-row arithmetic (`rows - 1`) degenerate, and a 0-col
+# grid renders nothing. Below the floor cyim uses the fallback and draws
+# something legible instead of nothing.
+var MIN_ROWS = 2;
+var MIN_COLS = 20;
+var MAX_ROWS = 1000;
+var MAX_COLS = 1000;
+
+# Ask the terminal how big it is, clamped into [MIN, MAX] and falling back to
+# 24x80 when it will not answer. Writes through `out_rows` / `out_cols`.
+#
+# Returns 1 when the terminal answered with a usable size, 0 when the fallback
+# was used — so a caller can tell "the terminal says 24x80" from "the terminal
+# said nothing". Both produce a drawable grid.
+fn _query_winsize(out_rows, out_cols) {
+    store64(out_rows, DEFAULT_ROWS);
+    store64(out_cols, DEFAULT_COLS);
+    var wr = 0;
+    var wc = 0;
+    if (tty_winsize(0, &wr, &wc) != 0) { return 0; }
+    if (wr < MIN_ROWS) { return 0; }
+    if (wc < MIN_COLS) { return 0; }
+    if (wr > MAX_ROWS) { wr = MAX_ROWS; }
+    if (wc > MAX_COLS) { wc = MAX_COLS; }
+    store64(out_rows, wr);
+    store64(out_cols, wc);
+    return 1;
+}
+
 #ifdef CYRIUS_TARGET_LINUX
 
 # Diagnostic probe: enter raw on stdin, write a banner, sleep ~50 ms

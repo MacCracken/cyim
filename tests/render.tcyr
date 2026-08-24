@@ -251,6 +251,49 @@ fn main() {
     assert_eq(load8(&out + 0), 13, "[0] CR");
     assert_eq(load8(&out + 1), 10, "[1] LF");
 
+    # ── v1.10.0 — terminal geometry is clamped before it reaches render ───
+    #
+    # `ws_row` / `ws_col` are u16, so a terminal may claim 65535 of either,
+    # and the value becomes render loop bounds and buffer budgets. The 1.8.3
+    # audit (F-3) fixed those buffers to be bounded by their own size rather
+    # than by `cols` **because this feature would make geometry live input**;
+    # `_query_winsize` clamping is the other half — the absurd value never
+    # enters the system rather than being caught at each sink.
+    #
+    # `_query_winsize` reads fd 0, which under `cyrius test` is not a TTY, so
+    # what is asserted here is the FALLBACK contract: it always leaves a
+    # drawable grid and reports which one it gave.
+    test_group("v1.10.0 — _query_winsize always yields a drawable grid");
+    var qr[8];
+    var qc[8];
+    store64(&qr, 0);
+    store64(&qc, 0);
+    var answered = _query_winsize(&qr, &qc);
+    assert_eq(answered == 0 || answered == 1, 1, "returns a 1/0 verdict");
+    assert_eq(load64(&qr) >= MIN_ROWS, 1, "rows at or above the floor");
+    assert_eq(load64(&qc) >= MIN_COLS, 1, "cols at or above the floor");
+    assert_eq(load64(&qr) <= MAX_ROWS, 1, "rows at or below the ceiling");
+    assert_eq(load64(&qc) <= MAX_COLS, 1, "cols at or below the ceiling");
+    # Not a TTY here, so the fallback must be exactly the documented default —
+    # and `answered` must say so rather than claiming the terminal spoke.
+    assert_eq(answered, 0, "no TTY -> fallback, reported as such");
+    assert_eq(load64(&qr), DEFAULT_ROWS, "fallback rows = DEFAULT_ROWS");
+    assert_eq(load64(&qc), DEFAULT_COLS, "fallback cols = DEFAULT_COLS");
+
+    # The bound the clamp exists to protect: render must stay inside its
+    # buffer even at the widest grid the clamp permits.
+    test_group("v1.10.0 — render honours out_max at the clamp ceiling");
+    var wb = buf_new();
+    var wsrc = "fn main() {\n    var x = 42;\n}\n";
+    buf_insert(wb, wsrc, strlen(wsrc));
+    buf_move(wb, 0);
+    var wcap = 256;
+    var wout = alloc(wcap + 64);
+    assert_eq(render_build_line(wb, 0, MAX_COLS, 0, wout, wcap) <= wcap, 1,
+      "plain render at MAX_COLS stays within out_max");
+    assert_eq(render_build_line_naked(wb, 0, MAX_COLS, 0, wout, wcap) <= wcap, 1,
+      "naked render at MAX_COLS stays within out_max");
+
     return assert_summary();
 }
 

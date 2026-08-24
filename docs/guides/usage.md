@@ -538,6 +538,20 @@ selection in view.
 
 ---
 
+## Terminal size
+
+cyim uses your terminal's real dimensions, and **repaints when you resize the
+window** — no keystroke needed. (Before v1.10.0 it drew a fixed 24×80 on every
+target but agnos.)
+
+If the terminal will not report a size — output redirected, or a terminal that
+does not answer `TIOCGWINSZ` — cyim falls back to 24×80 and keeps going.
+
+Absurd sizes are clamped rather than trusted: a terminal reporting 65535
+columns gets a drawable grid, not a crash.
+
+---
+
 ## Troubleshooting
 
 **Tab inserts a tab character.** `:set tabstop=N` **stores** the display

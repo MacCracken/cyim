@@ -86,8 +86,98 @@ include "src/cli.cyr"
 include "src/agnos_kbd.cyr"
 include "src/agnos_line.cyr"
 
-var DEFAULT_ROWS = 24;
-var DEFAULT_COLS = 80;
+# ── Live resize: watch SIGWINCH alongside stdin ──────────
+#
+# Redrawing WHEN the terminal resizes — rather than on the next keystroke —
+# needs the editor's blocking `read(stdin)` to be woken by something other
+# than a keypress. Three mechanisms were considered:
+#
+#   - **A signal handler.** Refused upstream: darshana's ADR 0002 declines to
+#     ship a `sigaction`-shaped install API because of the `sa_restorer`
+#     trampoline trap, and cyim is not going to hand-roll one.
+#   - **A read timeout** (termios VMIN=0/VTIME=N). Would make an idle editor
+#     wake several times a second forever, and it means reaching into the
+#     termios state darshana owns — explicitly outside its state-restore model.
+#   - **signalfd + epoll.** SIGWINCH becomes a readable fd, and the loop waits
+#     on {stdin, that fd}. No handler, no polling, no termios meddling.
+#
+# The third. `tty_open_signalfd` blocks SIGWINCH and hands back the fd;
+# `tty_close_signalfd` unblocks it on the way out.
+#
+# ⚠ Entirely optional. Every failure here — no signalfd, no epoll, a register
+# that fails — falls back to the plain blocking read, and the per-frame
+# `_query_winsize` (src/tty.cyr) still keeps the grid correct on the next keystroke.
+# A resize watch that could not be established must not stop the editor from
+# starting.
+
+#ifdef CYRIUS_TARGET_AGNOS
+fn _resize_watch_open(wfd_slot) {
+    store64(wfd_slot, 0 - 1);
+    return 0 - 1;
+}
+fn _resize_watch_close(epfd, wfd) { return 0; }
+#endif
+#ifdef CYRIUS_TARGET_MACOS
+fn _resize_watch_open(wfd_slot) {
+    store64(wfd_slot, 0 - 1);
+    return 0 - 1;
+}
+fn _resize_watch_close(epfd, wfd) { return 0; }
+#endif
+#ifndef CYRIUS_TARGET_AGNOS
+#ifndef CYRIUS_TARGET_MACOS
+# Open the SIGWINCH signalfd and an epoll set watching it plus stdin.
+# Returns the epoll fd, or -1 if the watch could not be established.
+# Writes the signalfd through `wfd_slot` (-1 when there is none).
+fn _resize_watch_open(wfd_slot) {
+    store64(wfd_slot, 0 - 1);
+    var wfd = tty_open_signalfd(TTY_SIGMASK_WINCH);
+    if (wfd < 0) { return 0 - 1; }
+    var epfd = sys_epoll_create();
+    if (epfd < 0) {
+        tty_close_signalfd(wfd, TTY_SIGMASK_WINCH);
+        return 0 - 1;
+    }
+    # struct epoll_event: u32 events at 0, u64 data at 4 (x86_64 packs it) or
+    # at 8 (aarch64 leaves it aligned). Same split the stdlib's own reactor
+    # uses; the read side below must agree with this write.
+    var ev[16];
+    store32(&ev, 1);                 # EPOLLIN
+    #ifdef CYRIUS_ARCH_AARCH64
+    store64(&ev + 8, 0);             # data = the fd itself
+    #endif
+    #ifndef CYRIUS_ARCH_AARCH64
+    store64(&ev + 4, 0);
+    #endif
+    if (sys_epoll_ctl(epfd, EPOLL_CTL_ADD, 0, &ev) < 0) {
+        file_close(epfd);
+        tty_close_signalfd(wfd, TTY_SIGMASK_WINCH);
+        return 0 - 1;
+    }
+    store32(&ev, 1);
+    #ifdef CYRIUS_ARCH_AARCH64
+    store64(&ev + 8, wfd);
+    #endif
+    #ifndef CYRIUS_ARCH_AARCH64
+    store64(&ev + 4, wfd);
+    #endif
+    if (sys_epoll_ctl(epfd, EPOLL_CTL_ADD, wfd, &ev) < 0) {
+        file_close(epfd);
+        tty_close_signalfd(wfd, TTY_SIGMASK_WINCH);
+        return 0 - 1;
+    }
+    store64(wfd_slot, wfd);
+    return epfd;
+}
+
+# Tear the watch down, unblocking SIGWINCH. Safe with -1 for either fd.
+fn _resize_watch_close(epfd, wfd) {
+    if (epfd >= 0) { file_close(epfd); }
+    if (wfd >= 0)  { tty_close_signalfd(wfd, TTY_SIGMASK_WINCH); }
+    return 0;
+}
+#endif
+#endif
 
 # Print `cyim X.Y.Z` to stdout. The literal comes from the auto-generated
 # `src/version_str.cyr` — never hardcode it here; see CLAUDE.md § Work Loop.
@@ -191,6 +281,7 @@ fn run_headless(file_path) {
     bl_init(s, b);
     window_init(s);
 
+    # No resize watch here, deliberately: `--headless` has no TTY to resize.
     var quit = 0;
     while (quit == 0) {
         # 8-byte read buffer accommodates the longest interactive
@@ -260,18 +351,23 @@ fn run_editor(file_path) {
     #endif
     tty_alt_enter();
 
-    # Screen grid: agnos reports the live framebuffer console via winsize#60;
-    # other targets keep cyim's fixed 24x80 (unchanged behaviour).
-    var scr_rows = DEFAULT_ROWS;
-    var scr_cols = DEFAULT_COLS;
-    #ifdef CYRIUS_TARGET_AGNOS
-    var wr = 0;
-    var wc = 0;
-    if (tty_winsize(0, &wr, &wc) == 0) {
-        if (wr > 0) { scr_rows = wr; }
-        if (wc > 0) { scr_cols = wc; }
-    }
-    #endif
+    # Screen grid, from the terminal itself (v1.10.0). Before this, only agnos
+    # asked — every other target drew a fixed 24x80 no matter how big the
+    # terminal actually was, which on a modern wide terminal meant using a
+    # quarter of it. darshana has shipped `tty_winsize` since 0.4.0; cyim
+    # simply never called it.
+    var rows_slot[8];
+    var cols_slot[8];
+    _query_winsize(&rows_slot, &cols_slot);
+    var scr_rows = load64(&rows_slot);
+    var scr_cols = load64(&cols_slot);
+
+    # Optional live-resize watch. -1 for either fd simply means the loop
+    # below takes the plain blocking read and picks up a resize on the next
+    # keystroke via the per-frame `_query_winsize`.
+    var wfd_slot[8];
+    var epfd = _resize_watch_open(&wfd_slot);
+    var wfd = load64(&wfd_slot);
 
     var quit = 0;
     while (quit == 0) {
@@ -279,6 +375,13 @@ fn run_editor(file_path) {
         # M2 per the roadmap; an incremental retokenize lands when the
         # M5 perf pass surfaces a real workload that complains.
         var tb = highlight_buf(b, lang);
+        # Re-ask every frame. A resize between keystrokes is picked up on the
+        # next one at no meaningful cost — one ioctl per frame against a
+        # full-buffer retokenize — and it keeps the grid correct even when the
+        # SIGWINCH path below is unavailable.
+        _query_winsize(&rows_slot, &cols_slot);
+        scr_rows = load64(&rows_slot);
+        scr_cols = load64(&cols_slot);
         render_frame(s, scr_rows, scr_cols, tb);
         # 8-byte read buffer accommodates the longest interactive
         # sequences cyim cares about (CSI arrow = 3 bytes; CSI
@@ -287,21 +390,57 @@ fn run_editor(file_path) {
         # editor_step byte-by-byte.
         var key_buf[8];
         var n = 0;
+        # `have_keys` separates "read returned nothing because the input ended"
+        # from "we woke for a resize and there are no keys to feed". Both leave
+        # `n` at 0, and conflating them would make every terminal resize quit
+        # the editor.
+        var have_keys = 1;
         #ifdef CYRIUS_TARGET_AGNOS
         n = _agnos_kbd_read(&key_buf, 8);   # blocks until a real key (kbscan#42)
         #endif
         #ifndef CYRIUS_TARGET_AGNOS
-        n = file_read(0, &key_buf, 8);
+        if (epfd >= 0) {
+            var evbuf[16];
+            var nr = sys_epoll_wait(epfd, &evbuf, 1, 0 - 1);
+            if (nr <= 0) {
+                # EINTR or a spurious wake — no keys, no EOF. Loop and redraw.
+                have_keys = 0;
+            }
+            if (nr > 0) {
+                #ifdef CYRIUS_ARCH_AARCH64
+                var ready = load64(&evbuf + 8);
+                #endif
+                #ifndef CYRIUS_ARCH_AARCH64
+                var ready = load64(&evbuf + 4);
+                #endif
+                if (ready == wfd) {
+                    # A resize. Drain the signalfd_siginfo record so the fd
+                    # stops reporting readable, then fall through to the top of
+                    # the loop, where `_query_winsize` picks up the new grid.
+                    var sink[128];
+                    file_read(wfd, &sink, 128);
+                    have_keys = 0;
+                } else {
+                    n = file_read(0, &key_buf, 8);
+                }
+            }
+        }
+        if (epfd < 0) {
+            n = file_read(0, &key_buf, 8);
+        }
         #endif
-        if (n <= 0) {
-            quit = 1;
+        if (have_keys == 1) {
+            if (n <= 0) { quit = 1; }
         }
         if (quit == 0) {
-            editor_feed(s, &key_buf, n);
-            if (editor_quit(s) == 1) { quit = 1; }
+            if (have_keys == 1) {
+                editor_feed(s, &key_buf, n);
+                if (editor_quit(s) == 1) { quit = 1; }
+            }
         }
     }
 
+    _resize_watch_close(epfd, wfd);
     tty_alt_leave();
     tty_cooked();
     return 0;

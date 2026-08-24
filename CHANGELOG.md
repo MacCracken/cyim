@@ -4,6 +4,99 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-08-23
+
+**cyim uses your whole terminal, and repaints when you resize it.**
+
+Until now every target except agnos drew a **fixed 24×80** no matter how big
+the terminal actually was — on a modern wide terminal, a quarter of it.
+darshana has shipped `tty_winsize` since 0.4.0; cyim simply never called it.
+
+### Added — real terminal geometry
+
+`_query_winsize` (`src/tty.cyr`) asks the terminal at start-up **and on every
+frame**, so a resize is reflected at the next keystroke even where the live
+path below is unavailable. One ioctl per frame, against a full-buffer
+retokenize — not a measurable cost.
+
+Falls back to 24×80 when the terminal will not answer (not a TTY, ioctl
+fails), and **reports which it gave**, so a caller can tell "the terminal says
+24×80" from "the terminal said nothing".
+
+**Clamped, and the clamp is the point.** `ws_row` / `ws_col` are u16, so a
+terminal may claim 65535 of either — and the value becomes render loop bounds
+and buffer budgets. The **1.8.3 audit (F-3) fixed those buffers to be bounded
+by their own size rather than by `cols` specifically because this feature
+would make terminal geometry live input**; clamping at the source is the other
+half, so the absurd value never enters the system rather than being caught at
+each sink. Floor matters too: a 0- or 1-row grid makes `render_frame`'s
+`rows - 1` status arithmetic degenerate.
+
+### Added — live repaint on SIGWINCH
+
+Redrawing *when* the terminal resizes, rather than at the next keystroke,
+needs the blocking `read(stdin)` woken by something other than a keypress.
+Three mechanisms were considered:
+
+- **A signal handler** — refused upstream. darshana's ADR 0002 declines to
+  ship a `sigaction`-shaped install API because of the `sa_restorer`
+  trampoline trap, and cyim is not going to hand-roll one.
+- **A read timeout** (termios `VMIN=0`/`VTIME=N`) — would make an idle editor
+  wake several times a second forever, and means reaching into the termios
+  state darshana owns, explicitly outside its state-restore model.
+- **signalfd + epoll** — SIGWINCH becomes a readable fd and the loop waits on
+  `{stdin, that fd}`. No handler, no polling, no termios meddling. **Chosen.**
+
+`tty_open_signalfd(TTY_SIGMASK_WINCH)` blocks the signal and returns the fd;
+`tty_close_signalfd` unblocks it on the way out. The `epoll_event` layout
+follows the stdlib reactor's own ABI split — data at offset 4 on x86_64
+(packed), offset 8 on aarch64 (aligned).
+
+**Entirely optional.** Every failure — no signalfd, no epoll, a failed
+register — falls back to the plain blocking read, and the per-frame query
+still keeps the grid correct. A resize watch that could not be established
+must not stop the editor from starting. macOS (kqueue, no epoll) and agnos get
+matched stub definitions rather than an `#ifdef` around the call site.
+
+⚠ **One subtlety worth naming**: waking for a resize and reaching EOF both
+leave the read count at 0. Conflating them would make **every terminal resize
+quit the editor**. A `have_keys` flag separates them.
+
+### Changed
+
+- `src/main.cyr`'s geometry moved to **`src/tty.cyr`**, which is where TTY
+  concerns belong and — not incidentally — the only way a `.tcyr` can reach
+  them, since `main.cyr` runs its entry point at include time. It sits
+  **outside** the per-target gates: darshana ships `tty_winsize` for Linux and
+  agnos both, and putting it inside the Linux arm broke the agnos build once
+  during this cut.
+- `--headless` deliberately opens no resize watch — there is no TTY to resize.
+
+### Tests
+
+- `tests/render.tcyr` **+9**: `_query_winsize` always yields a drawable grid
+  inside `[MIN, MAX]`; the no-TTY fallback is exactly the documented default
+  **and is reported as a fallback** (mutation: making it claim success fails
+  that assertion); and render honours `out_max` at the clamp ceiling.
+- `tests/integration_smoke.py` **+4**, driven through a real pty because
+  `_query_winsize` reads fd 0 and the unit suite has no terminal:
+  - a taller terminal draws more lines (10 → 48)
+  - a wider terminal draws wider lines (36 → 95)
+  - **65535×65535 is clamped and renders** rather than crashing or hanging
+  - **repaints on SIGWINCH with no keystroke** (22 → 48 lines)
+
+### Verification
+
+- `cyrius tests` — 21 suites, **1226 assertions**, 0 failures · `cyrius fuzz`
+  4/4 · `cyrius smoke` 13/13 · `tests/cli_smoke.sh` 128 · PTY integration
+  smoke all PASS, including the four new geometry cases.
+- `cyrius lint` 0 warnings / 0 untracked deferrals · `cyrfmt --check` clean ·
+  0 undocumented public fns · all three targets build.
+
+### Binary
+
+**1,201,776 B** (+32 B vs 1.9.3).
+
 ## [1.9.3] — 2026-08-23
 
 **Closeout cut for the 1.9.x cycle — all 11 `CLAUDE.md` steps, run at P(-1)

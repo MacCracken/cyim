@@ -652,6 +652,110 @@ def main():
         print("  FAIL: active-leaf reverse video missing")
         ok = False
 
+    # ── v1.10.0 — terminal geometry and live resize ──────────────────────
+    #
+    # Both halves need a REAL pty with a settable window size, which is why
+    # they live here rather than in a .tcyr: `_query_winsize` reads fd 0, and
+    # under `cyrius test` fd 0 is not a terminal, so the unit suite can only
+    # assert the fallback contract.
+    print()
+    print("=== v1.10.0 terminal geometry ===")
+    import fcntl, termios, struct, signal, re, subprocess
+
+    geom_fixture = "".join("L%02d " % i + "x" * 95 + "\n" for i in range(60))
+
+    def run_sized(rows, cols, resize_to=None):
+        """Launch cyim on a pty of the given size. If resize_to is set,
+        resize + SIGWINCH partway through WITHOUT sending a keystroke and
+        return the bytes emitted after that point."""
+        path = "/tmp/cyim-geom-smoke.txt"
+        with open(path, "w") as fh:
+            fh.write(geom_fixture)
+        m, sl = pty.openpty()
+        fcntl.ioctl(sl, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        pid = os.fork()
+        if pid == 0:
+            os.setsid()
+            fcntl.ioctl(sl, termios.TIOCSCTTY, 0)
+            os.dup2(sl, 0); os.dup2(sl, 1); os.dup2(sl, 2)
+            os.close(m); os.close(sl)
+            os.execv(CYIM, [CYIM, path])
+        os.close(sl)
+        fcntl.fcntl(m, fcntl.F_SETFL, os.O_NONBLOCK)
+
+        def drain(sec):
+            buf = b""; t0 = time.time()
+            while time.time() - t0 < sec:
+                try:
+                    buf += os.read(m, 65536)
+                except BlockingIOError:
+                    time.sleep(0.02)
+                except OSError:
+                    break
+            return buf
+
+        first = drain(0.6)
+        after = b""
+        if resize_to is not None:
+            fcntl.ioctl(m, termios.TIOCSWINSZ,
+                        struct.pack("HHHH", resize_to[0], resize_to[1], 0, 0))
+            os.kill(pid, signal.SIGWINCH)
+            after = drain(0.8)
+        try:
+            os.write(m, b"\x1b:q!\r")
+        except OSError:
+            pass
+        drain(0.4)
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+        os.close(m)
+        return first, after
+
+    def n_lines(b):
+        return len(set(re.findall(rb"L(\d\d) ", b)))
+
+    # Geometry is honoured, not hardcoded to 24x80.
+    small, _ = run_sized(12, 40)
+    large, _ = run_sized(50, 200)
+    if n_lines(large) > n_lines(small):
+        print(f"  PASS: taller terminal draws more lines ({n_lines(small)} -> {n_lines(large)})")
+    else:
+        print(f"  FAIL: geometry ignored ({n_lines(small)} vs {n_lines(large)} lines)")
+        ok = False
+
+    widest = lambda b: max((len(x) for x in re.findall(rb"x+", b)), default=0)
+    if widest(small) < widest(large):
+        print(f"  PASS: wider terminal draws wider lines ({widest(small)} -> {widest(large)})")
+    else:
+        print(f"  FAIL: width ignored ({widest(small)} vs {widest(large)})")
+        ok = False
+
+    # An absurd u16 geometry must be clamped, not crash or hang. ws_col is
+    # u16, so a terminal is free to claim this.
+    huge, _ = run_sized(65535, 65535)
+    if len(huge) > 0 and n_lines(huge) > 0:
+        print(f"  PASS: 65535x65535 clamped and rendered ({n_lines(huge)} lines)")
+    else:
+        print("  FAIL: absurd geometry produced no render")
+        ok = False
+
+    # Live resize: repaint on SIGWINCH with NO keystroke.
+    before, after = run_sized(24, 80, resize_to=(50, 200))
+    if n_lines(after) > n_lines(before):
+        print(f"  PASS: repaints on SIGWINCH without a keystroke "
+              f"({n_lines(before)} -> {n_lines(after)} lines)")
+    else:
+        print(f"  FAIL: no live repaint ({n_lines(before)} -> {n_lines(after)}, "
+              f"{len(after)} bytes after resize)")
+        ok = False
+
+    try:
+        os.unlink("/tmp/cyim-geom-smoke.txt")
+    except OSError:
+        pass
+
     print()
     if ok:
         print("integration smoke: all checks passed")

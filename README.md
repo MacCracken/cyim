@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.9.0 — released.** The 1.x series shipped:
+**1.10.0 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -80,6 +80,15 @@ for humanity. Consumers:
   *before* the character on a one-character line — a bug present since
   `A` landed, surfaced only when `o` copied the same idiom.
 
+- **v1.9.1–v1.9.3** — BUG-002 closed (the LSP client works for the first time
+  since the 1.4.0 fold-in, via a cyim-lsp tag bump), `.cyimrc` moved to
+  `$XDG_CONFIG_HOME` with project-local override
+  ([ADR 0005](docs/adr/0005-cyimrc-cwd-trust-boundary.md)), and the 1.9.x
+  closeout.
+- **v1.10.0** — **resize-aware rendering.** cyim uses your terminal's real
+  size and repaints when you resize it; before this it drew a fixed 24×80 on
+  every target but agnos.
+
 Current pins: cyrius `6.5.35`, vyakarana `2.4.0`, cyim-lsp `1.5.2`,
 darshana `1.0.0`.
 
@@ -98,7 +107,7 @@ A name in the tradition, written in the language of the library.
 cyrius deps                              # resolve deps (vyakarana, cyim-lsp, darshana)
 cyrius build src/main.cyr build/cyim     # compile
 CYRIUS_DCE=1 cyrius build ...            # dead-code-eliminated release build
-cyrius tests                             # 21 .tcyr suites (1200 assertions)
+cyrius tests                             # 21 .tcyr suites (1226 assertions)
 cyrius fuzz                              # 4 .fcyr harnesses
 sh tests/cli_smoke.sh                    # 128 agent-CLI assertions
 cyrius smoke                             # tests/smcyr/lsp_fold.smcyr (real cyrius-lsp)

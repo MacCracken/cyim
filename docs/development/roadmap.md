@@ -34,7 +34,7 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.9.3** (see [`state.md`](state.md)). The 1.6.x
+cyim is at **1.10.0** (see [`state.md`](state.md)). The 1.6.x
 catch-up cycle closed at 1.6.8; 1.7.0 opened the post-catch-up
 era with the darshana TUI dep pickup, and **1.8.0 is the one
 feature cut since** — cyim runs on AGNOS, full-screen on the
@@ -153,6 +153,7 @@ this is a sequencing index.
 | **v1.9.1** — **BUG-002 closed; LSP works.** `[deps.cyim-lsp]` `1.5.2 → 1.5.3` with **no cyim source change** — the defect was upstream (`var argv[4]`, four bytes for four 64-bit pointers, so every spawn with an argument overran and `execve` failed silently). `cyrius smoke` 4 passed / 9 failed → **13 / 0**. Everything the LSP surface shipped since 1.4.0 was correct code that never got to run. **`cyrius smoke` is now a CI gate** — the structural half, held back at 1.8.2 because a gate that fails on day one gets ignored, landed here green | Shipped 2026-08-23 |
 | **v1.9.2** — **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md) decided and implemented.** Config lives in `$XDG_CONFIG_HOME/cyim/cyimrc` (else `$HOME/.config/cyim/cyimrc`); `./.cyimrc` overrides it **key by key**. Before this, cyim read config from only the cwd, so nothing followed a user between projects. Local override accepted with no gate — the trade is sized by what `.cyimrc` can express, and the worst a hostile directory achieves is a wrong colour. Held honest by a rule rather than machinery: every new key gets classified local-overridable or home-only. Backward compatible; `tests/cyimrc.tcyr` 50 → 59 assertions including a reversed-order control | Shipped 2026-08-23 |
 | **v1.9.3** — **Closeout cut for the 1.9.x cycle**, all 11 CLAUDE.md steps at P(-1) depth ([audit](../audit/2026-08-23-1.9x-closeout.md)). 2 findings, both fixed: the config read cap **fabricated a value** — a line cut mid-value applied a truncated number that landed back inside the valid range (`palette.keyword = 199999` → `19`, painted silently), now dropped rather than misread, with `cyimrc_truncated()` reporting it; and 1.9.2's two precedence accessors had **no caller anywhere**, which [architecture note 004](../architecture/004-reading-the-dce-report.md) classifies as a coverage hole rather than dead code — closed with an invariant test, the second time that note's check has earned its keep. Four itoa implementations counted and **deliberately not merged** (their bound policies are exactly what differs). **First closeout with no known-red gate** and no open bugs | Shipped 2026-08-23 |
+| **v1.10.0** — **Resize-aware rendering.** cyim used a fixed 24×80 on every target but agnos; darshana had shipped `tty_winsize` since 0.4.0 and cyim never called it. Geometry is now queried at start-up **and per frame**, clamped at both ends (`ws_col` is u16, and the 1.8.3 audit's F-3 hardened the render buffers *because* this feature would make geometry live input), with a reported 24×80 fallback. **Live repaint on SIGWINCH via signalfd + epoll** — a signal handler is refused by darshana's ADR 0002 and a read timeout would spin an idle editor forever; the watch is entirely optional and falls back to the plain blocking read on any failure. Geometry moved to `src/tty.cyr`, outside the per-target gates. `--headless` opens no watch. +10 unit assertions, +4 pty cases including a 65535×65535 clamp and a keystroke-free repaint | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -292,7 +293,7 @@ Ordered by what it would cost a user, not by when it was filed.
 | **R-1a** | Extended attributes and ACLs are not carried across the atomic save path | `fchmod` preserves permission bits; xattrs, POSIX ACLs and SELinux labels are not copied, and cyim cannot *detect* a non-trivial ACL without an `xattr` surface the stdlib does not expose. Narrow: needs an ACL'd file, owned by the invoking user, not a symlink, not hardlinked | A stdlib `listxattr`/`getxattr` surface — then the detection becomes a sixth in-place condition in [ADR 0006](../adr/0006-atomic-save.md) |
 | **`lang.cyr` refactor** | Two if-chains (`lang_name` / `hl_grammar_name`) that must stay in lockstep | Trigger fired at 1.8.2 (third growth). Their silent divergence is what cost 34 languages their highlighting for six minor versions. The drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt | An ADR choosing between parallel global string arrays and a **vyakarana metadata query** — `grammar_count()` / `grammar_name_at(i)` would let the load list be *derived* rather than restated, which is the real end state |
 | **F-7 / arch 003** | The renderer is byte-oriented: C1 pass-through, no double-width or combining-character handling | [Accepted and documented](../architecture/003-render-is-byte-oriented.md), not a defect queue. The obvious "fix" breaks every non-ASCII file, because `0x80`–`0x9F` overlaps UTF-8 continuation bytes | A consumer editing CJK or RTL text in earnest — `aethersafha` hosting cyim is the likeliest. It needs a codepoint coordinate system threaded through cursor / undo / marks / search, not a render patch |
-| **Resize-aware rendering** | `scr_cols` is a hardcoded 80 on Linux/macOS; `tty_winsize` is consulted only under agnos | Named since 1.7.4. darshana has shipped the primitives (`tty_winsize`, `tty_open_signalfd`, `TTY_SIGMASK_WINCH`) since 0.4.0 — cyim simply does not call them | Whoever wants a resizable editor. ⚠ The render scratch buffers were bounded by terminal geometry until 1.8.3 fixed them precisely *because* this feature would have made that live — the guards are already in place |
+| ~~**Resize-aware rendering**~~ | ~~`scr_cols` is a hardcoded 80~~ | ✅ **Shipped at v1.10.0.** Real geometry, clamped, queried at start-up and per frame, plus live repaint on SIGWINCH via signalfd + epoll. The note below was right that the primitives were ready and the render guards already in place — both turned out to be exactly what made this a clean cut rather than a risky one |
 | **F-CO-2** | Extract `_cyim_lsp_jump_to_uri_lc` | Informational since 1.5.2. Still 2 instances; CLAUDE.md's "wait for the third" applies | `:lsp-implementation` or `:lsp-type-definition` would be the third |
 
 Closed from this list recently: **ADR 0005** at 1.9.2 (decided *and* implemented — see the live obligation it leaves above); **BUG-002** and the **`cyrius smoke` CI gate**
@@ -412,6 +413,20 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-08-23 (v1.10.0 — **resize-aware
+rendering**, the roadmap's longest-standing actionable gap. cyim
+drew a fixed 24×80 on every target but agnos; darshana had
+shipped `tty_winsize` since 0.4.0 and cyim never called it.
+Geometry is now real, clamped at both ends, queried per frame,
+with live repaint on SIGWINCH via signalfd + epoll — chosen
+because a signal handler is refused by darshana's ADR 0002 and a
+read timeout would wake an idle editor forever. The watch is
+optional: any failure falls back to the plain blocking read.
+Two things made this a clean cut rather than a risky one, both
+laid down earlier on purpose — darshana's primitives, and the
+1.8.3 audit hardening the render bounds *because* this feature
+would make terminal geometry live input.)*
 
 *Last updated: 2026-08-23 (v1.9.3 — **closeout for the 1.9.x
 cycle at P(-1) depth**. 2 findings, both fixed and both
