@@ -54,6 +54,11 @@ var ACT_TO_INSERT_AFTER   = 12;
 var ACT_TO_INSERT_LINE_END = 13;
 var ACT_TO_VISUAL         = 14;
 var ACT_TO_VISUAL_LINE    = 15;
+# v1.9.0 — `o` / `O`: open a line below / above and enter INSERT on it.
+# Additive per ADR 0004's freeze envelope: new ids, no existing id changes
+# shape. Numbered next-free rather than renumbering the insert family.
+var ACT_OPEN_BELOW        = 16;
+var ACT_OPEN_ABOVE        = 17;
 var ACT_TO_COMMAND        = 20;
 var ACT_CMDLINE_EXECUTE   = 21;
 var ACT_CMDLINE_CANCEL    = 22;
@@ -372,6 +377,8 @@ fn _seed_normal_keymap(m) {
     map_u64_set(m, 105, ACT_TO_INSERT);        # i
     map_u64_set(m, 97,  ACT_TO_INSERT_AFTER);  # a
     map_u64_set(m, 65,  ACT_TO_INSERT_LINE_END); # A
+    map_u64_set(m, 111, ACT_OPEN_BELOW);       # o
+    map_u64_set(m, 79,  ACT_OPEN_ABOVE);       # O
     map_u64_set(m, 58,  ACT_TO_COMMAND);       # :
     map_u64_set(m, 47,  ACT_TO_SEARCH);        # /
     map_u64_set(m, 63,  ACT_TO_SEARCH_BACK);   # ?
@@ -565,6 +572,8 @@ fn editor_dispatch(s, key) {
         if (act == ACT_TO_INSERT)         { store64(s, MODE_INSERT);  return act; }
         if (act == ACT_TO_INSERT_AFTER)   { store64(s, MODE_INSERT);  return act; }
         if (act == ACT_TO_INSERT_LINE_END) { store64(s, MODE_INSERT); return act; }
+        if (act == ACT_OPEN_BELOW)        { store64(s, MODE_INSERT);  return act; }
+        if (act == ACT_OPEN_ABOVE)        { store64(s, MODE_INSERT);  return act; }
         if (act == ACT_TO_COMMAND)        { store64(s, MODE_COMMAND); return act; }
         if (act == ACT_TO_SEARCH)         { store64(s, MODE_SEARCH);      return act; }
         if (act == ACT_TO_SEARCH_BACK)    { store64(s, MODE_SEARCH_BACK); return act; }

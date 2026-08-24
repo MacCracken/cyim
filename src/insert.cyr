@@ -5,6 +5,8 @@
 #   ACT_DELETE_LEFT         — backspace
 #   ACT_TO_INSERT_AFTER     — `a`: pre-step cursor right by 1
 #   ACT_TO_INSERT_LINE_END  — `A`: jump cursor to the line's '\n' (or buf_len)
+#   ACT_OPEN_BELOW          — `o`: open a fresh line below, cursor on it
+#   ACT_OPEN_ABOVE          — `O`: open a fresh line above, cursor on it
 #   ACT_TO_NORMAL           — leaving INSERT: vim-style step-back within line
 #
 # The mode change itself happens inside `editor_dispatch`; this module owns
@@ -58,20 +60,82 @@ fn insert_to_after(s) {
     return buf_cursor(b);
 }
 
-# `A` — jump cursor to the insert-position at end of line. For non-empty
-# lines that's the byte just after the last printable char (the '\n', or
-# buf_len if no terminator). For empty lines (line_start == line_end) the
-# cursor stays put — there is no after-the-last-char to land on.
+# The INSERT position at the end of `pos`'s line: the index of the line's
+# '\n' (or `buf_len` when the last line is unterminated). Typing there appends
+# to the line. For an empty line that is the line start itself.
+#
+# ⭐ v1.9.0 bug fix. `A` and `o` both used `buf_line_end(b, pos) == line_start`
+# as the "is this line empty" test, and **that test cannot tell an empty line
+# from a ONE-CHARACTER line**: `buf_line_end` returns the index of the last
+# printable byte, which for a one-char line IS the line start. So on `a\n`,
+# `A` computed an insert position of 0 and typing produced `Xa\n` — appending
+# BEFORE the character. Shipped broken since `A` landed; found at 1.9.0 when
+# `o` copied the idiom and an end-to-end pty run disagreed with the unit test.
+#
+# The correct test reads the byte: a line is empty iff its start is past the
+# buffer or holds the terminator. `src/render.cyr` has always done it this way
+# (`le == ls` followed by a `buf_get(b, ls) == 10` confirmation) — the two
+# modules disagreed, and render was right.
+fn _insert_eol_pos(b, pos) {
+    var ls = buf_line_start(b, pos);
+    if (ls >= buf_len(b))    { return ls; }   # unterminated tail / empty buffer
+    if (buf_get(b, ls) == 10) { return ls; }  # empty line: the '\n' sits at ls
+    return buf_line_end(b, pos) + 1;          # non-empty: one past the last byte
+}
+
+# `A` — jump cursor to the insert position at end of line, so the next typed
+# byte appends to the line. On an empty line the cursor stays put; there is no
+# after-the-last-char to land on.
 fn insert_to_line_end(s) {
     var b = editor_buf(s);
     if (b == 0) { return 0; }
-    var pos = buf_cursor(b);
-    var ls = buf_line_start(b, pos);
-    var le = buf_line_end(b, pos);
-    var new_pos = le;
-    if (le != ls) { new_pos = le + 1; }
+    var new_pos = _insert_eol_pos(b, buf_cursor(b));
     buf_move(b, new_pos);
     return new_pos;
+}
+
+# `o` — open a fresh line BELOW the cursor's line and land on it.
+#
+# Mechanically `A` followed by Enter: move to the end-of-line insert position,
+# then split there. The split leaves the cursor immediately after the new '\n',
+# which IS the first position of the new empty line — no adjustment needed.
+#
+# All the edge handling lives in `_insert_eol_pos`, which is the point: an
+# unterminated last line, an empty line, a one-character line and an empty
+# buffer are one problem, not four, and solving it in one place is what stopped
+# `o` from shipping with the same defect `A` had.
+#
+# Marks the buffer modified. Returns the new cursor position.
+fn insert_open_below(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    buf_move(b, _insert_eol_pos(b, buf_cursor(b)));
+    buf_insert_byte(b, 10);
+    editor_set_modified(s, 1);
+    return buf_cursor(b);
+}
+
+# `O` — open a fresh line ABOVE the cursor's line and land on it.
+#
+# Split at the line START, which pushes the whole current line down and leaves
+# the cursor on the first byte of that pushed-down text. The new empty line is
+# the one byte behind, so step back onto it.
+#
+# The step-back is unconditional and safe: `buf_insert_byte` always advances
+# the cursor by 1, so after the split the cursor is at `ls + 1` and `ls` is the
+# new line — including at `ls == 0` (first line of the buffer), where the new
+# line becomes line 0 and the cursor lands on position 0.
+#
+# Marks the buffer modified. Returns the new cursor position.
+fn insert_open_above(s) {
+    var b = editor_buf(s);
+    if (b == 0) { return 0; }
+    var ls = buf_line_start(b, buf_cursor(b));
+    buf_move(b, ls);
+    buf_insert_byte(b, 10);
+    buf_move(b, buf_cursor(b) - 1);
+    editor_set_modified(s, 1);
+    return buf_cursor(b);
 }
 
 # Esc from INSERT — step cursor back by 1 within line bounds (vim's
@@ -96,6 +160,8 @@ fn insert_apply(s, action, key) {
     if (action == ACT_DELETE_LEFT)         { insert_delete_left(s); return 1; }
     if (action == ACT_TO_INSERT_AFTER)     { insert_to_after(s); return 1; }
     if (action == ACT_TO_INSERT_LINE_END)  { insert_to_line_end(s); return 1; }
+    if (action == ACT_OPEN_BELOW)          { insert_open_below(s); return 1; }
+    if (action == ACT_OPEN_ABOVE)          { insert_open_above(s); return 1; }
     if (action == ACT_TO_NORMAL)           { insert_to_normal(s); return 1; }
     return 0;
 }

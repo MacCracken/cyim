@@ -47,6 +47,8 @@ VISUAL.
 | `i`      | 105  | INSERT at cursor      | `ACT_TO_INSERT`        | =   |
 | `a`      | 97   | INSERT after cursor   | `ACT_TO_INSERT_AFTER`  | =   |
 | `A`      | 65   | INSERT at line end    | `ACT_TO_INSERT_LINE_END`| =  |
+| `o`      | 111  | Open line below, INSERT | `ACT_OPEN_BELOW`     | =   |
+| `O`      | 79   | Open line above, INSERT | `ACT_OPEN_ABOVE`     | =   |
 | `u`      | 117  | Undo                  | `ACT_UNDO`             | =   |
 | `Ctrl-r` | 18   | Redo                  | `ACT_REDO`             | =   |
 | `p`      | 112  | Paste after cursor    | `ACT_PASTE_AFTER`      | =   |
@@ -313,7 +315,7 @@ renumbering:
 |---------|------------------------|
 | 0       | `ACT_NONE` (no-op)     |
 | 1–4     | Mode-default actions (literal-insert, cmdline-append, backspace) |
-| 10–22   | Mode transitions       |
+| 10–22   | Mode transitions (incl. `ACT_OPEN_BELOW` = 16 / `ACT_OPEN_ABOVE` = 17, added v1.9.0) |
 | 25–32   | Search subsystem       |
 | 100–109 | Motions (incl. `ACT_MOVE_FILE_START` = 109, added v1.4.2) |
 | 200     | NORMAL-mode edit (`x`) |

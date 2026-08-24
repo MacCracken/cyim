@@ -34,7 +34,7 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.8.7** (see [`state.md`](state.md)). The 1.6.x
+cyim is at **1.9.0** (see [`state.md`](state.md)). The 1.6.x
 catch-up cycle closed at 1.6.8; 1.7.0 opened the post-catch-up
 era with the darshana TUI dep pickup, and **1.8.0 is the one
 feature cut since** — cyim runs on AGNOS, full-screen on the
@@ -70,8 +70,18 @@ public function is documented, and every remaining deferral is
 in one table below. **1.8.7 is the closeout** — all 11 CLAUDE.md
 steps, 2 code-review findings fixed, and the 94%-duplicated
 `render_build_line` / `_naked` pair collapsed to a wrapper with
-byte-identical output. **The 1.8.x cycle is closed; 1.9.0 opens
-clean, and nothing on the deferred list blocks it.**
+byte-identical output. **The 1.8.x cycle is closed.**
+
+**1.9.0 opens the 1.9.x line with `o` / `O`** — open a line
+below / above and enter INSERT on it. The roadmap had marked it
+*"Ready to implement"* since the agnos bring-up at 1.8.0
+surfaced the gap, and it queue-jumped as promised. Implementing
+it uncovered a bug in `A` that had shipped since `A` landed:
+`A` on a **one-character line** appended *before* the character,
+because `buf_line_end(pos) == line_start` was used as the
+"empty line" test and cannot tell an empty line from a one-char
+one. Both now share `_insert_eol_pos`, which asks the buffer
+rather than inferring.
 
 The full LSP user-visible surface — diagnostics, `gd` goto-def
 same-file + cross-file, `gr` references quickfix, `:lsp-*`
@@ -139,6 +149,7 @@ this is a sequencing index.
 | **v1.8.5** — **Dead-code + cleanliness cut**, closing audit residual R-2 — with the honest answer that there was nothing to delete: all 24 cyim-side unreachable functions are frozen ABI, test-only introspection, or documented-deferred config, and the one symbol with no caller anywhere (`diag_msg`) was a coverage hole closed with a test. Real dead code sat one level down: **five named constants the code was not using** (`BUFFER_REC_SIZE`, `RENDER_LINE_BUF`, `KEY_CTRL_R`, the `REPLACE_*` pair, `_CYIMRC_PALETTE_SLOTS`) — the same size-expressed-twice shape the last two audits kept finding. Four wired up, one deleted as unusable by construction. **Five stale comments** corrected, describing states that had stopped being true up to five minors earlier. **20 untracked lint deferrals → 0**: 8 cross-referenced to a new roadmap § Deferred in-source notes, 5 stale ones corrected, 7 false positives given `#skip-lint` with a reason. Ten over-length test lines wrapped. Suite 1174 → 1177; whole tree now lint-clean | Shipped 2026-08-23 |
 | **v1.8.6** — **Documentation sweep.** `cyrius audit`'s "101 undocumented public fns" advisory → **0**: every public function in `src/` and `src/plugins/` now carries a docstring saying what it *means* rather than what it loads — the 40-accessor editor-state block in `mode.cyr` and the 20-accessor window record are the bulk, and both now read as self-describing tables instead of requiring a scroll to the layout comment. Doc-tree sweep alongside: README's status was four minors stale (still "1.7.5 — released", old pins, "3 fuzz harnesses"), SECURITY.md's most recent state was "v1.6.0: 0 CRITICAL / 0 HIGH" when the 1.8.3 audit had since found a HIGH, and BENCHMARKS.md had not been re-run since v1.6.0. All three current. Roadmap gains a single **Everything Still Deferred** table — the 1.8.x line had left open items in four separate places | Shipped 2026-08-23 |
 | **v1.8.7** — **Closeout cut for the 1.8.x cycle**, all 11 CLAUDE.md steps ([audit](../audit/2026-08-23-1.8x-closeout.md)). 2 code-review findings, both fixed: `sys_fchmod`'s return was discarded in the atomic save path, so a failure would have let the rename proceed at 0644 — a mode-600 file coming back world-readable with no error (now a pre-write fallback to in-place, which is what "cannot preserve the mode" means, plus a duplicate `stat` dropped); and `_hl_load_one` wrote into a 1024-byte scratch whose bound was distributed across three functions with nowhere stating it. **Refactor:** `render_build_line` and `render_build_line_naked` were **94.4% identical** — and the 1.8.3 audit had to apply the same bounds fixes to both copies — collapsed to a wrapper, verified byte-identical across 46 cases, `render.cyr` 723 → 663 lines, binary −4,080 B. Dead-code floor 24 with every symbol having a caller; 0 unused globals; security re-scan clean; downstream `agnoshi` / `aethersafha` confirmed not yet integrated | Shipped 2026-08-23 |
+| **v1.9.0** — **`o` / `O`: open a line below / above and enter INSERT.** New action ids `ACT_OPEN_BELOW` (16) / `ACT_OPEN_ABOVE` (17), additive under ADR 0004. Undoable as one unit and dot-repeatable with no special-casing — `_dot_begin` and `undo_record_pre_op` already key off "enters INSERT", so adding the two actions to those lists is the whole integration. **Fixed alongside: `A` appended BEFORE the character on a one-character line** — `buf_line_end(pos) == line_start` cannot distinguish an empty line from a one-char line, and `A` had shipped that way since it landed. Surfaced only when `o` copied the idiom and an end-to-end pty run disagreed with the unit suite; both call sites now share `_insert_eol_pos`. `tests/insert.tcyr` 37 → 62 assertions, mutation-tested in three directions | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
 era; trimmed at v1.5.x cycle cleanup. The full record is in
@@ -252,7 +263,6 @@ not slated.
 
 | Feature | Trigger | Notes |
 |---|---|---|
-| **`o` / `O` — open line below/above** (open a fresh line and enter INSERT) | **Ready to implement** — surfaced 2026-07-08 during agnos full-screen bring-up (`i` works; `o`/`O` have no handler — no `ACT_OPEN_*`). A core vim command, so it jumps the queue when normal-mode editing next earns a bite (unlike the deliberately-deferred rows below). | `src/mode.cyr`: map `o` → `ACT_OPEN_BELOW`, `O` → `ACT_OPEN_ABOVE`; handler (near the `i`/`a`/`A` insert-entry paths in `insert.cyr`) inserts a `\n` below/above the cursor's line, moves the cursor onto the new blank line, and switches to INSERT mode. Add coverage to `tests/`. |
 | **System clipboard** | Wayland integration via `aethersafha` | Belongs in compositor layer, not editor. cyim's yank/paste single-register stays the in-editor primitive. |
 | **Terminal emulator embed** | Third user asks for `:term` | Until then, `Ctrl-z` + shell is fine. |
 | **Macros** (`q<reg>` recording) | Recurring user need surfaces | Vim's macro DSL is a sequence-replay primitive, not a scripting language — fits the no-embedded-scripting refusal. |
@@ -422,6 +432,19 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-08-23 (v1.9.0 — **`o` / `O` open line
+below / above**, the first feature of the 1.9.x line and the
+roadmap's "Ready to implement" item since 1.8.0. Undoable as one
+unit and dot-repeatable, both falling out of the existing
+insert-entry machinery rather than needing special cases.
+**Fixed alongside: `A` on a ONE-CHARACTER line appended before
+the character**, not after — a bug that shipped from the day `A`
+landed and survived three audits, because two-character lines
+always worked. Found when `o` copied the same idiom and an
+end-to-end pty run disagreed with the unit suite; the fixture
+that caught it was one byte shorter than the ones that did not.
+Suite 1177 → 1200 assertions.)*
 
 *Last updated: 2026-08-23 (v1.8.7 — **closeout cut for the
 1.8.x cycle**; all 11 CLAUDE.md steps green. 2 code-review

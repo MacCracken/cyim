@@ -317,9 +317,20 @@ convention). `Backspace` and `DEL` both delete the byte left of cursor.
 want to add to the end of a word. `A` jumps the cursor to the end of
 the line first, then enters INSERT.
 
+`o` opens a fresh line **below** the current one and enters INSERT on
+it; `O` opens one **above**. Both work from anywhere on the line — you
+do not need to move to the end first — and both work on an empty
+buffer, on an empty line, and on a last line with no trailing newline.
+(Added v1.9.0.)
+
 `.` repeats the last insert session at the current cursor. So
 `iEDIT<Esc>` followed later by `.` will insert "EDIT" again wherever
-the cursor is now.
+the cursor is now. This covers `o` and `O` too: `oTODO<Esc>` then `.`
+opens a *second* line holding "TODO", the way vim does.
+
+Undo treats an insert session as one unit, `o` and `O` included — a
+single `u` after `oabc<Esc>` removes the opened line *and* the text
+typed into it.
 
 ---
 

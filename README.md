@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.8.6 — released.** The 1.x series shipped:
+**1.9.0 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -72,6 +72,14 @@ for humanity. Consumers:
   [ADR 0006](docs/adr/0006-atomic-save.md)). 1.8.5 swept dead code and
   cleanliness; 1.8.6 closed the last documentation gap.
 
+- **v1.8.7** — closeout for the 1.8.x cycle: all 11 `CLAUDE.md` steps, 2
+  code-review findings fixed, and a 94%-duplicated render pair collapsed
+  with byte-identical output.
+- **v1.9.0** — **`o` / `O`** open a line below / above and enter INSERT.
+  Undoable as one unit, dot-repeatable. Fixed alongside: `A` appended
+  *before* the character on a one-character line — a bug present since
+  `A` landed, surfaced only when `o` copied the same idiom.
+
 Current pins: cyrius `6.5.35`, vyakarana `2.4.0`, cyim-lsp `1.5.2`,
 darshana `1.0.0`.
 
@@ -90,7 +98,7 @@ A name in the tradition, written in the language of the library.
 cyrius deps                              # resolve deps (vyakarana, cyim-lsp, darshana)
 cyrius build src/main.cyr build/cyim     # compile
 CYRIUS_DCE=1 cyrius build ...            # dead-code-eliminated release build
-cyrius tests                             # 21 .tcyr suites (1177 assertions)
+cyrius tests                             # 21 .tcyr suites (1200 assertions)
 cyrius fuzz                              # 4 .fcyr harnesses
 sh tests/cli_smoke.sh                    # 128 agent-CLI assertions
 cyrius smoke                             # tests/smcyr/lsp_fold.smcyr (real cyrius-lsp)

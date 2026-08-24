@@ -233,6 +233,160 @@ fn main() {
     assert_eq(buf_eq(b15, "hello world", 11), 1, "prepended 'hello '");
     assert_eq(editor_mode(s15), MODE_NORMAL, "ends in NORMAL");
 
+    # ── v1.9.0 — `A` on a ONE-CHARACTER line ─────────
+    #
+    # Regression for a bug that shipped from the day `A` landed:
+    # `buf_line_end(b, pos) == line_start` was used as the "empty line" test,
+    # and it cannot tell an empty line from a one-character one — for both,
+    # line_end IS line_start. So `A` on `a\n` computed an insert position of 0
+    # and appended BEFORE the character.
+    #
+    # Two-character lines always worked, which is why every existing test
+    # missed it. Found only when `o` copied the idiom and an end-to-end pty run
+    # disagreed with the unit suite.
+    test_group("`A` appends after the last byte on lines of EVERY length");
+    var ba1 = buf_new();
+    buf_insert(ba1, "ab\n", 3);
+    buf_move(ba1, 0);
+    var sa1 = editor_new(ba1);
+    editor_run(sa1, "AX", 2);
+    assert_eq(buf_eq(ba1, "abX\n", 4), 1, "2-char line: appends after 'b'");
+
+    var ba2 = buf_new();
+    buf_insert(ba2, "a\n", 2);
+    buf_move(ba2, 0);
+    var sa2 = editor_new(ba2);
+    editor_run(sa2, "AX", 2);
+    assert_eq(buf_eq(ba2, "aX\n", 3), 1, "1-char line: appends AFTER 'a', not before");
+
+    var ba3 = buf_new();
+    buf_insert(ba3, "\n", 1);
+    buf_move(ba3, 0);
+    var sa3 = editor_new(ba3);
+    editor_run(sa3, "AX", 2);
+    assert_eq(buf_eq(ba3, "X\n", 2), 1, "empty line: types at the line start");
+
+    var ba4 = buf_new();
+    buf_insert(ba4, "q", 1);                 # 1-char, unterminated
+    buf_move(ba4, 0);
+    var sa4 = editor_new(ba4);
+    editor_run(sa4, "AX", 2);
+    assert_eq(buf_eq(ba4, "qX", 2), 1, "1-char unterminated line: appends after 'q'");
+
+    test_group("`o` on a ONE-CHARACTER line opens below, not above");
+    var bo1 = buf_new();
+    buf_insert(bo1, "a\n", 2);
+    buf_move(bo1, 0);
+    var so1 = editor_new(bo1);
+    editor_run(so1, "oX", 2);
+    assert_eq(buf_eq(bo1, "a\nX\n", 4), 1, "1-char line: new line lands BELOW 'a'");
+
+    # ── v1.9.0 — `o` / `O` open line below / above ───
+    #
+    # The handlers claim their edge cases fall out "by construction" rather
+    # than by special-casing, so the edges are what these assert: last line
+    # with no trailing newline, an empty line, an empty buffer, and the first
+    # line (where `O` must land on position 0).
+
+    test_group("`o` opens a line below and enters INSERT");
+    var b16 = buf_new();
+    buf_insert(b16, "abc\ndef\n", 8);
+    buf_move(b16, 0);                        # on 'a', line 0
+    var s16 = editor_new(b16);
+    editor_run(s16, "oXY", 3);
+    assert_eq(buf_eq(b16, "abc\nXY\ndef\n", 11), 1, "new line below line 0 holds XY");
+    assert_eq(editor_mode(s16), MODE_INSERT, "still in INSERT");
+    assert_eq(editor_modified(s16), 1, "buffer marked modified");
+
+    test_group("`O` opens a line above and enters INSERT");
+    var b17 = buf_new();
+    buf_insert(b17, "abc\ndef\n", 8);
+    buf_move(b17, 4);                        # on 'd', line 1
+    var s17 = editor_new(b17);
+    editor_run(s17, "OZ", 2);
+    assert_eq(buf_eq(b17, "abc\nZ\ndef\n", 10), 1, "new line above line 1 holds Z");
+    assert_eq(editor_mode(s17), MODE_INSERT, "still in INSERT");
+
+    test_group("`O` on the FIRST line lands on position 0");
+    var b18 = buf_new();
+    buf_insert(b18, "abc\n", 4);
+    buf_move(b18, 1);                        # on 'b', still line 0
+    var s18 = editor_new(b18);
+    editor_run(s18, "O!", 2);
+    assert_eq(buf_eq(b18, "!\nabc\n", 6), 1, "new first line holds !");
+
+    test_group("`o` on the LAST line with no trailing newline");
+    var b19 = buf_new();
+    buf_insert(b19, "abc", 3);               # no terminator
+    buf_move(b19, 1);
+    var s19 = editor_new(b19);
+    editor_run(s19, "oQ", 2);
+    assert_eq(buf_eq(b19, "abc\nQ", 5), 1, "appended a line after unterminated last line");
+
+    test_group("`o` / `O` on an EMPTY buffer");
+    var b20 = buf_new();
+    var s20 = editor_new(b20);
+    editor_run(s20, "oA", 2);
+    assert_eq(buf_eq(b20, "\nA", 2), 1, "`o` on empty buffer opens one line");
+    var b21 = buf_new();
+    var s21 = editor_new(b21);
+    editor_run(s21, "OB", 2);
+    assert_eq(buf_eq(b21, "B\n", 2), 1, "`O` on empty buffer opens one line above");
+
+    test_group("`o` from an EMPTY line inserts below it, not inside it");
+    var b22 = buf_new();
+    buf_insert(b22, "a\n\nb\n", 5);
+    buf_move(b22, 2);                        # on the empty line's terminator
+    var s22 = editor_new(b22);
+    editor_run(s22, "oX", 2);
+    assert_eq(buf_eq(b22, "a\n\nX\nb\n", 7), 1, "empty line preserved, new line below it");
+
+    test_group("`o` then Esc leaves the cursor on the new line in NORMAL");
+    var b23 = buf_new();
+    buf_insert(b23, "abc\n", 4);
+    buf_move(b23, 0);
+    var s23 = editor_new(b23);
+    editor_run(s23, "oQR", 3);
+    editor_step(s23, KEY_ESC);
+    assert_eq(editor_mode(s23), MODE_NORMAL, "back in NORMAL");
+    assert_eq(buf_eq(b23, "abc\nQR\n", 7), 1, "content intact after Esc");
+    # Esc steps back one within the line: after typing QR the cursor sat at 6,
+    # so NORMAL leaves it on the 'R' at 5.
+    assert_eq(buf_cursor(b23), 5, "cursor on the last typed byte of the new line");
+
+    test_group("`u` undoes `o` + typed text as ONE unit");
+    var b24 = buf_new();
+    buf_insert(b24, "abc\n", 4);
+    buf_move(b24, 0);
+    var s24 = editor_new(b24);
+    bl_init(s24, b24);                       # undo stacks live on the buflist record
+    editor_run(s24, "oXYZ", 4);
+    editor_step(s24, KEY_ESC);
+    assert_eq(buf_eq(b24, "abc\nXYZ\n", 8), 1, "line opened and filled");
+    editor_step(s24, 117);                   # u
+    assert_eq(buf_eq(b24, "abc\n", 4), 1, "one `u` removes the line AND its text");
+
+    test_group("`.` repeats `o` — opens ANOTHER line with the same text");
+    var b25 = buf_new();
+    buf_insert(b25, "abc\n", 4);
+    buf_move(b25, 0);
+    var s25 = editor_new(b25);
+    editor_run(s25, "oHI", 3);
+    editor_step(s25, KEY_ESC);
+    assert_eq(buf_eq(b25, "abc\nHI\n", 7), 1, "first open");
+    editor_step(s25, 46);                    # .
+    assert_eq(buf_eq(b25, "abc\nHI\nHI\n", 10), 1, "`.` opened a second line with HI");
+
+    test_group("`O` is dot-repeatable too");
+    var b26 = buf_new();
+    buf_insert(b26, "z\n", 2);
+    buf_move(b26, 0);
+    var s26 = editor_new(b26);
+    editor_run(s26, "Oq", 2);
+    editor_step(s26, KEY_ESC);
+    editor_step(s26, 46);                    # .
+    assert_eq(buf_eq(b26, "q\nq\nz\n", 6), 1, "two lines opened above by o + .");
+
     return assert_summary();
 }
 

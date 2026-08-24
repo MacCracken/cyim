@@ -111,6 +111,12 @@ fn editor_step(s, key) {
     if (action == ACT_TO_INSERT)         { _dot_begin(s, key); }
     if (action == ACT_TO_INSERT_AFTER)   { _dot_begin(s, key); }
     if (action == ACT_TO_INSERT_LINE_END) { _dot_begin(s, key); }
+    # `o` / `O` record like any other insert entry: `_dot_replay` re-fires the
+    # entry key, so `.` after `oabc<Esc>` opens ANOTHER line and types `abc` —
+    # which is what vim does, and it falls out of the existing machinery
+    # without a special case.
+    if (action == ACT_OPEN_BELOW)        { _dot_begin(s, key); }
+    if (action == ACT_OPEN_ABOVE)        { _dot_begin(s, key); }
     if (action == ACT_INSERT_LITERAL) {
         if (editor_dot_recording(s) == 1) { _dot_record_byte(s, key); }
     }
@@ -128,6 +134,11 @@ fn editor_step(s, key) {
     if (action == ACT_TO_INSERT)         { undo_record_pre_op(s); }
     if (action == ACT_TO_INSERT_AFTER)   { undo_record_pre_op(s); }
     if (action == ACT_TO_INSERT_LINE_END) { undo_record_pre_op(s); }
+    # One undo unit covers the opened line AND everything typed into it —
+    # the snapshot is taken before the '\n' goes in, so a single `u` after
+    # `oabc<Esc>` removes the whole thing, as vim does.
+    if (action == ACT_OPEN_BELOW)        { undo_record_pre_op(s); }
+    if (action == ACT_OPEN_ABOVE)        { undo_record_pre_op(s); }
     if (action == ACT_DELETE_RIGHT)      { undo_record_pre_op(s); }
     if (action == ACT_VISUAL_DELETE)     { undo_record_pre_op(s); }
     if (action == ACT_PASTE_AFTER)       { undo_record_pre_op(s); }

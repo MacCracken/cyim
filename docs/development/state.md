@@ -2,27 +2,27 @@
 
 > **Volatile.** This file is the **live state** of the project — current version, sizes, test counts, in-flight slot, consumer build status. Refreshed every release. Don't put durable rules here (those live in [`CLAUDE.md`](../../CLAUDE.md)); don't put release history here (that lives in [`CHANGELOG.md`](../../CHANGELOG.md)); don't put sequencing here (that lives in [`roadmap.md`](roadmap.md)).
 
-*Last bumped: 2026-08-23 (v1.8.7 — **closeout cut for the 1.8.x cycle**, all 11 CLAUDE.md steps: [`docs/audit/2026-08-23-1.8x-closeout.md`](../audit/2026-08-23-1.8x-closeout.md). 2 code-review findings, both fixed — a discarded `sys_fchmod` return that would have let a rename silently proceed at 0644 (now a pre-write fallback to in-place, which is what "cannot preserve the mode" means), and a grammar-path bound that spanned three functions with nowhere stating it. One refactor: `render_build_line` and `render_build_line_naked` were **94.4% identical**, and the 1.8.3 audit had to fix the same bounds logic in both — collapsed to a wrapper, verified byte-identical across 46 cases. **1.8.x is closed; 1.9.0 opens clean**, with nothing on the deferred list blocking it.)*
+*Last bumped: 2026-08-23 (v1.9.0 — **`o` / `O`: open a line below / above and enter INSERT on it.** First feature of the 1.9.x line; the roadmap had it marked "Ready to implement" since the agnos bring-up at 1.8.0 found `i` working and `o`/`O` with no handler. Undoable as one unit and dot-repeatable, both falling out of the existing insert-entry machinery. **Fixed alongside: `A` on a ONE-CHARACTER line appended BEFORE the character** — `buf_line_end(pos) == line_start` cannot tell an empty line from a one-char line, and `A` had shipped that way since it landed. Surfaced only because `o` copied the idiom and an end-to-end pty run disagreed with the unit suite.)*
 
 ---
 
 ## Version
 
-- **VERSION**: `1.8.7`
+- **VERSION**: `1.9.0`
 - **Cyrius toolchain pin**: `6.5.35`
-- **Last release**: `1.8.7` — Patch; **1.8.x closeout**. All 11 closeout steps pass. 2 code-review findings fixed (unchecked `sys_fchmod`; unbounded grammar-path write); the 94%-duplicated render pair collapsed to a wrapper with byte-identical output. 2026-08-23. Full entry in CHANGELOG; audit at [`docs/audit/2026-08-23-1.8x-closeout.md`](../audit/2026-08-23-1.8x-closeout.md).
+- **Last release**: `1.9.0` — **Minor; `o` / `O` open line below / above.** New action ids `ACT_OPEN_BELOW` (16) / `ACT_OPEN_ABOVE` (17), additive under ADR 0004. Undoable as one unit, dot-repeatable. Fixed alongside: `A` appended before the character on a one-character line, a bug present since `A` landed. `tests/insert.tcyr` 37 → 62 assertions. 2026-08-23. Full entry in CHANGELOG.
 
 ## Binary
 
-- **`build/cyim`** (CYRIUS_DCE=1): **1,197,552 B**
-  - Last delta: **−4,080 B** at 1.8.7 (the render deduplication). Prior: 0 B at 1.8.6 (documentation only — comments do not survive compilation). Prior: +4,096 B at 1.8.5 (comment volume shifting DCE alignment; the constants-wiring itself is size-neutral). Prior: +32 B at 1.8.4 (the atomic-save path largely replaces code DCE was already keeping). Prior: +4,120 B at 1.8.3, +17,528 B at 1.8.2 (cyrius `6.5.18→6.5.35` codegen + `vyakarana 2.2.3→2.4.0` scanner additions + a wholly replaced stdlib snapshot). Not attributed further — three independent movers in one cut.
-  - **`build/cyim_agnos`**: 1,205,768 B — static x86-64 ELF64, passes `stage_one`'s file-type gate in agnos's `scripts/burn/stage-tools.sh`.
-  - **`build/cyim_aarch64`**: 1,615,280 B — ARM aarch64 ELF64. Re-verified at 1.8.2 because darshana 0.9.2 fixed an aarch64-only ioctl misdirection on the five termios callsites cyim uses.
+- **`build/cyim`** (CYRIUS_DCE=1): **1,201,664 B**
+  - Last delta: **+4,112 B** at 1.9.0 (`o` / `O` handlers + dispatch). Prior: −4,080 B at 1.8.7 (the render deduplication). Prior: 0 B at 1.8.6 (documentation only — comments do not survive compilation). Prior: +4,096 B at 1.8.5 (comment volume shifting DCE alignment; the constants-wiring itself is size-neutral). Prior: +32 B at 1.8.4 (the atomic-save path largely replaces code DCE was already keeping). Prior: +4,120 B at 1.8.3, +17,528 B at 1.8.2 (cyrius `6.5.18→6.5.35` codegen + `vyakarana 2.2.3→2.4.0` scanner additions + a wholly replaced stdlib snapshot). Not attributed further — three independent movers in one cut.
+  - **`build/cyim_agnos`**: 1,209,880 B — static x86-64 ELF64, passes `stage_one`'s file-type gate in agnos's `scripts/burn/stage-tools.sh`.
+  - **`build/cyim_aarch64`**: 1,615,296 B — ARM aarch64 ELF64. Re-verified at 1.8.2 because darshana 0.9.2 fixed an aarch64-only ioctl misdirection on the five termios callsites cyim uses.
   - Per-release size history is in CHANGELOG's per-version Binary sections.
 
 ## Tests
 
-- **`cyrius tests`**: 21 suites, **1177 assertions** PASS, 0 failures *(measured at 1.8.5; +3 closing the `diag_msg` coverage hole. At 1.8.4: +13 for ADR 0006's save-path selection tests, which assert WHICH path ran rather than only the outcome. At 1.8.3: +25 from the hardening audit's regressions, every one mutation-tested against the pre-fix source. At 1.8.2: +4 openqasm routing, +3 the routing↔loading drift guard. The pre-1.8.1 "22 suites / 1150" counted `src/test.cyr`, an empty stub returning 0 — it asserts nothing)*
+- **`cyrius tests`**: 21 suites, **1200 assertions** PASS, 0 failures *(measured at 1.9.0; +23 for `o` / `O` plus the `A` one-character-line regression, mutation-tested in three directions. At 1.8.5: +3 closing the `diag_msg` coverage hole. At 1.8.4: +13 for ADR 0006's save-path selection tests, which assert WHICH path ran rather than only the outcome. At 1.8.3: +25 from the hardening audit's regressions, every one mutation-tested against the pre-fix source. At 1.8.2: +4 openqasm routing, +3 the routing↔loading drift guard. The pre-1.8.1 "22 suites / 1150" counted `src/test.cyr`, an empty stub returning 0 — it asserts nothing)*
 - **`cyrius fuzz`**: 4 harnesses, all PASS — `fuzz/{buffer,driver,tokenizer}.fcyr` + `tests/cyim.fcyr` (10K random buffer ops, 5K keystrokes, 100×1KB tokenizer buffers). **This is the gate that matters after a toolchain bump**: cyrius 6.3.13 moved function-local `var X[N]` onto a guard-paged stack, so latent undersized buffers that were benign before now segfault.
 - **CLI smoke** (`tests/cli_smoke.sh`): **128 PASS** — +6 at 1.8.4 (ADR 0006: a failed write leaves the original byte-identical and no `.cyimtmp.` behind; symlink survives; hardlink stays linked; mode 600 stays 600; a writable file in a 0555 directory still saves). +4 at 1.8.3 (audit F-1).
 - **Integration smoke** (`tests/integration_smoke.py`): all PASS (PTY-driven + headless-subprocess sections covering `--headless`, `--write`, `--replace[-all]`, `--grep[files]`, `--batch`, `--replace-files[-all]`, `--regex=`, `--expect[/-not/-N/-1]`, multi-window cascade). DCE parity build re-runs it green.
@@ -43,7 +43,11 @@
 
 ## Cycle in flight
 
-**The 1.8.x cycle is CLOSED at 1.8.7** — closeout pass complete, all 11 CLAUDE.md steps green ([audit](../audit/2026-08-23-1.8x-closeout.md)). The cycle ran: 1.8.0 AGNOS support (the one feature cut) → 1.8.1 the `--agnos` build → 1.8.2 dependency catch-up + the 34-language highlighting regression + CI repair → 1.8.3 P(-1) hardening → 1.8.4 atomic save → 1.8.5 dead code + cleanliness → 1.8.6 documentation → 1.8.7 closeout.
+**Current cycle: 1.9.x — open.** The 1.8.x cycle closed cleanly at 1.8.7 ([closeout audit](../audit/2026-08-23-1.8x-closeout.md)); **1.9.0 opens the new line with `o` / `O`**, the roadmap's "Ready to implement" item since 1.8.0.
+
+No next feature is claimed — subsequent cuts open as triggers surface (per [`roadmap.md`](roadmap.md)'s Post-1.5.x — Demand-Gated table). The two items worth settling early are unchanged: **BUG-002** (LSP dead on Linux; the fix is a `cyim-lsp` release, and the `cyrius smoke` CI gate lands green in the same cut) and **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)** (should `.cyimrc` load from the cwd at all — cheap now, expensive once the config surface widens to keymaps). Everything deferred is in one table: [`roadmap.md` § Everything Still Deferred](roadmap.md).
+
+⚠ A closeout pass is owed as the last patch of the 1.9.x line, before 1.10.0.
 
 **1.9.0 opens next, and nothing deferred blocks it.** No feature bite is claimed; the next cuts open as triggers surface (per [`roadmap.md`](roadmap.md)'s Post-1.5.x — Demand-Gated table). The two items worth knowing before starting: **BUG-002** (LSP dead on Linux; the fix is a `cyim-lsp` release, and the `cyrius smoke` CI gate lands green in the same cut) and **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)** (should `.cyimrc` load from the cwd at all — cheap to settle now, expensive once the config surface widens to keymaps). Everything deferred is in one table: [`roadmap.md` § Everything Still Deferred](roadmap.md).
 
@@ -73,7 +77,7 @@
 ## Verification Hosts
 
 - **x86_64 Linux** — primary dev host; verified continuously.
-- **aarch64 Linux (Pi)** — out-of-band; not blocking. Cross-build re-verified at 1.8.2 (`build/cyim_aarch64`, 1,615,280 B) because darshana 0.9.2 fixed an aarch64-only ioctl misdirection cyim was exposed to on all five termios callsites. Not run on real hardware this cut — the build is proof the symbol resolves, not that the Pi works.
+- **aarch64 Linux (Pi)** — out-of-band; not blocking. Cross-build re-verified at 1.8.2 (`build/cyim_aarch64`, 1,615,296 B) because darshana 0.9.2 fixed an aarch64-only ioctl misdirection cyim was exposed to on all five termios callsites. Not run on real hardware this cut — the build is proof the symbol resolves, not that the Pi works.
 - **Apple Silicon Mach-O** — out-of-band; not blocking.
 - **Windows PE32+** — out of scope (TTY editor; Linux/macOS/BSD targets only).
 

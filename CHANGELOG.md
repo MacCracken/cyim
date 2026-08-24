@@ -4,6 +4,91 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-08-23
+
+**`o` and `O` — open a line below / above and enter INSERT.** The first
+feature cut of the 1.9.x line, and the item the roadmap had marked *"Ready to
+implement"* since the agnos bring-up at 1.8.0 surfaced it: `i` worked, `o` and
+`O` had no handler at all.
+
+Implementing them uncovered a bug in `A` that has shipped since `A` landed.
+
+### Added
+
+- **`o` — open a fresh line below the cursor's line and enter INSERT on it.**
+- **`O` — open a fresh line above the cursor's line and enter INSERT on it.**
+
+  Both are **undoable as one unit** (a single `u` after `oabc<Esc>` removes the
+  line *and* its text) and **dot-repeatable** (`.` opens *another* line with
+  the same text). Neither needed special-casing to get there: `_dot_begin` and
+  `undo_record_pre_op` already key off "an action that enters INSERT", so
+  adding `o`/`O` to those two lists is the whole integration. `_dot_replay`
+  re-fires the entry key, which is exactly vim's semantics.
+
+  New action ids `ACT_OPEN_BELOW` (16) and `ACT_OPEN_ABOVE` (17) — additive
+  under [ADR 0004](docs/adr/0004-plugin-abi-freeze.md)'s freeze envelope; no
+  existing id changed shape.
+
+### Fixed — `A` appended BEFORE the character on a one-character line
+
+`insert_to_line_end` used `buf_line_end(b, pos) == line_start` as its "is this
+line empty" test. **That test cannot tell an empty line from a one-character
+line** — `buf_line_end` returns the index of the last printable byte, which on
+a one-character line *is* the line start. So `A` computed an insert position of
+`0` and typing produced `Xa\n` instead of `aX\n`.
+
+```
+  before          after
+  a\n  --A X-->   Xa\n        a\n  --A X-->   aX\n
+  ab\n --A X-->   abX\n       ab\n --A X-->   abX\n
+```
+
+Two-character lines always worked, which is why every existing test missed it —
+and why it survived from the day `A` shipped through three audits.
+
+**How it surfaced is the part worth recording.** `o` copied the same idiom, its
+unit tests passed, and then an end-to-end run through the real binary under a
+pty disagreed with them: `o` on `a\n` produced `\nXa\n`. The unit suite and the
+editor were exercising the same code and only one of them was asking about a
+one-character line. Neither the code review at 1.8.7 nor the fuzz harnesses
+would have caught it; a fixture that happened to be one byte shorter did.
+
+Both call sites now share `_insert_eol_pos`, which asks the buffer instead of
+inferring: a line is empty iff its start is past the buffer or holds the
+terminator. `src/render.cyr` has always tested it that way — the two modules
+disagreed, and render was right.
+
+### Tests
+
+`tests/insert.tcyr` **37 → 62 assertions**, mutation-tested in three
+directions:
+
+- **`A` across every line length** — 2-char, 1-char, empty, and 1-char
+  unterminated. Restoring the old `le == ls` test fails 3 of them.
+- **`o` / `O` edges** — last line with no trailing newline, an empty line, an
+  empty buffer, the first line (where `O` must land on position 0), and an
+  empty line in the middle (where `o` must open *below* it, not inside it).
+  Dropping `O`'s step-back fails 4; making `o` split mid-line fails 7.
+- **Undo and dot** — one `u` removes an `o` plus its text; `.` after
+  `oHI<Esc>` opens a second line holding `HI`; `O` repeats too.
+
+Plus a 10-case end-to-end matrix driven through the real binary under a pty —
+which is what caught the `A` bug in the first place, and is now the reason the
+unit suite covers one-character lines at all.
+
+### Verification
+
+- `cyrius tests` — 21 suites, **1200 assertions** PASS (was 1177), 0 failures.
+- `cyrius fuzz` 4/4 · `tests/cli_smoke.sh` 128 · PTY integration smoke all
+  PASS · `cyrius lint` 0 warnings / 0 untracked deferrals · `cyrfmt --check`
+  clean · 0 undocumented public fns.
+- `cyrius smoke` — 4 passed / 9 failed, unchanged: BUG-002, owned upstream.
+
+### Binary
+
+**1,201,664 B** (+4,112 B vs 1.8.7). `build/cyim_agnos` 1,209,880 B ·
+`build/cyim_aarch64` 1,615,296 B.
+
 ## [1.8.7] — 2026-08-23
 
 **Closeout cut for the 1.8.x cycle — all 11 `CLAUDE.md` steps.** Full audit:
