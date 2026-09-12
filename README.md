@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.10.0 — released.** The 1.x series shipped:
+**1.10.1 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
