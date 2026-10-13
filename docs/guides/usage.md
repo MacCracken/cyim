@@ -50,6 +50,11 @@ Encoding notes:
 
 - `\x1b` is Esc, `\r` is Enter. Bash's `$''` form (e.g. `$'\x1b'`) and
   `printf` both emit raw bytes; plain double-quoted strings won't.
+- Terminal key sequences work too — `\x1b[A`..`\x1b[D` (arrows),
+  `\x1b[3~` (Delete) — and since 1.11.0 they decode the same however
+  stdin's reads happen to cut them. A `\x1b` followed by anything but `[`
+  is Esc; a CSI still unfinished at end of input is dropped (1.10.1 ran its
+  bytes as keys). Other CSI keys (`\x1b[5~` …) are swallowed whole.
 - `:w` is what persists changes to disk. Without `:wq` (or some `:w`),
   edits stay only in the (now exited) process.
 - Exit code: 0 on graceful exit (either `:q`/`:q!` fired or stdin
@@ -302,8 +307,10 @@ N             repeat last search (opposite direction)
 Ctrl-w h/j/k/l    switch focus to neighbor window
 ```
 
-Arrow keys also move the cursor (terminal CSI sequences are parsed
-at the driver layer). They work in NORMAL, INSERT, and VISUAL.
+Arrow keys also move the cursor (terminal CSI sequences are decoded
+at the driver layer, modifiers ignored). They work in NORMAL, INSERT, and
+VISUAL. `Delete` deletes the byte under the cursor — `x` in NORMAL, a
+forward delete in INSERT, `d` in VISUAL (1.11.0).
 
 ---
 
@@ -505,9 +512,8 @@ Esc / q   dismiss without selecting
 ```
 
 Every other keystroke is swallowed while the picker is up — the
-buffer stays untouched. Arrow keys are NOT bound in list mode as
-of v1.6.0 (they route to motion actions via the driver-level CSI
-parser); use j/k.
+buffer stays untouched. Up / Down arrows move the selection too
+(since 1.6.7); Left / Right are swallowed.
 
 The picker is bottom-anchored, full-width, and shows up to 10
 items at a time. The current item is reverse-highlighted; if the
@@ -561,9 +567,17 @@ draws as one column. Render integration is deferred, as
 display" through 1.8.2, which it never has. Literal Tab insertion stays.
 (Auto-indent / spaces-as-Tab is post-v1.0 if asked.)
 
-**Arrow keys put me in NORMAL.** Terminals send arrow keys as `\x1b[A`
-etc.; the leading `\x1b` is Esc, which exits INSERT. Use `h j k l`
-instead — they're faster anyway.
+**F1 opened a line and typed a letter.** xterm-style terminals send
+F1–F4 as `\x1b O P` .. `S`, which cyim does not decode (arrows, Delete
+and the other CSI keys are decoded, and swallowed when unbound): Esc,
+then `O` opens a line above, then the letter is typed — you are left
+in INSERT. `Esc u` undoes it.
+Tracked as BUG-007 in the roadmap.
+
+**I see `<9b>` (or `<85>`, …) in a file.** That is a C1 control byte —
+an 8-bit terminal control — shown instead of being sent to your terminal
+(1.11.0). Ordinary UTF-8 text is never shown this way. File names,
+messages and picker rows show control bytes as `?`.
 
 **`:q!` quits, but my edits weren't saved.** That's intentional — `:q!`
 is "discard and quit". Use `:wq` to save before quitting.

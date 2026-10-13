@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.10.1 — released.** The 1.x series shipped:
+**1.11.0 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -88,9 +88,13 @@ for humanity. Consumers:
 - **v1.10.0** — **resize-aware rendering.** cyim uses your terminal's real
   size and repaints when you resize it; before this it drew a fixed 24×80 on
   every target but agnos.
+- **v1.11.0** — cyrius `6.7.9` and darshana `1.3.0`. Terminal keys decode
+  whole (Delete deletes; PgUp / Home / F5 no longer type their tails), C1
+  control bytes are shown rather than sent, the editor survives its language
+  server dying, and escapes in file names no longer reach the terminal.
 
-Current pins: cyrius `6.5.35`, vyakarana `2.4.0`, cyim-lsp `1.5.2`,
-darshana `1.0.0`.
+Current pins: cyrius `6.7.9`, vyakarana `2.4.0`, cyim-lsp `1.5.3`,
+darshana `1.3.0`.
 
 Live state in [`docs/development/state.md`](docs/development/state.md);
 sequencing + deferred LSP polish in

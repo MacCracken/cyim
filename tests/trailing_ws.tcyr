@@ -12,6 +12,9 @@ include "src/highlight.cyr"
 include "src/lang.cyr"
 include "src/cyimrc.cyr"
 include "src/plugin.cyr"
+# v1.11.0: marks before mode — mode.cyr's m / ' prefixes call it; without it
+# the suite printed four "undefined function" warnings on every run.
+include "src/marks.cyr"
 include "src/mode.cyr"
 include "src/buflist.cyr"
 include "src/window.cyr"

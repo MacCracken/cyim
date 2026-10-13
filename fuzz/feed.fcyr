@@ -1,0 +1,148 @@
+# fuzz/feed.fcyr — editor_feed's key-sequence decoder (v1.11.0, BUG-003)
+#
+# The decoder is a parser over untrusted input — every byte a terminal or an
+# agent sends goes through it — and it keeps state across calls. Two
+# properties, over 300 random streams of 64 bytes drawn from an alphabet
+# dense in ESC, `[`, digits, `;`, `~`, final bytes and editing keys:
+#
+#   1. SPLIT INDEPENDENCE. Feeding a stream in one call must leave the
+#      editor exactly where feeding it in random chunks does — every chunk
+#      but the last through `editor_feed_cont` (the read filled its buffer),
+#      the last through `editor_feed`, both followed by `editor_feed_flush`.
+#      Compared: the buffer's bytes, the cursor and the mode. This is the
+#      property 1.10.1 lacked: a sequence a read cut in two decoded
+#      differently from the same sequence arriving whole.
+#   2. After `editor_feed_flush`, nothing is pending; the mode is valid and
+#      the cursor inside the buffer, after every step.
+#
+# The alphabet has no `:` `/` `?`, so no stream can reach an ex-command that
+# writes a file.
+
+include "lib/syscalls.cyr"
+include "lib/alloc.cyr"
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/vec.cyr"
+include "lib/io.cyr"
+include "lib/hashmap.cyr"
+include "src/buffer.cyr"
+include "src/marks.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/plugin.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+
+var _rng = 0;
+# Seed the generator, so a failing run reproduces.
+fn rng_seed(s)  { _rng = s; return 0; }
+# Next 64-bit LCG state (Knuth MMIX constants).
+fn rng_next()   { _rng = _rng * 6364136223846793005 + 1442695040888963407; return _rng; }
+# A non-negative draw from the generator.
+fn rng_pos() {
+    var v = rng_next() >> 1;
+    if (v < 0) { return 0 - v - 1; }
+    return v;
+}
+
+# The fuzz alphabet. Heavy on what drives the decoder.
+var ALPHA = "\x1b\x1b\x1b[[[[0123456789;;~~ABCDHFMZ~<hjklixauvVdpo \r\x7f";
+
+# One byte from ALPHA.
+fn rand_key() {
+    var n = strlen(ALPHA);
+    return load8(ALPHA + (rng_pos() % n));
+}
+
+# An editor over the same three-line fixture every stream starts from.
+fn fresh_editor() {
+    var b = buf_new();
+    buf_insert(b, "alpha beta\ngamma delta\nepsilon\n", 31);
+    buf_move(b, 0);
+    var s = editor_new(b);
+    bl_init(s, b);
+    return s;
+}
+
+# 1 if editors `a` and `b` agree on mode, cursor and every buffer byte.
+fn same_state(a, b) {
+    var ba = editor_buf(a);
+    var bb = editor_buf(b);
+    if (editor_mode(a) != editor_mode(b)) { return 0; }
+    if (buf_len(ba) != buf_len(bb)) { return 0; }
+    if (buf_cursor(ba) != buf_cursor(bb)) { return 0; }
+    var i = 0;
+    var n = buf_len(ba);
+    while (i < n) {
+        if (buf_get(ba, i) != buf_get(bb, i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# 1 if the mode is one of the seven and the cursor lies inside the buffer.
+fn valid(s) {
+    var mode = editor_mode(s);
+    if (mode < 0) { return 0; }
+    if (mode > 6) { return 0; }
+    var b = editor_buf(s);
+    if (b == 0) { return 1; }
+    if (buf_cursor(b) < 0) { return 0; }
+    if (buf_cursor(b) > buf_len(b)) { return 0; }
+    return 1;
+}
+
+# The harness body: 300 streams, both properties. 0 = pass, 1 = a failure (named on stderr).
+fn fuzz_main(data, len) {
+    rng_seed(0xFEEDC0DE);
+    var stream = alloc(64);
+    var iter = 0;
+    while (iter < 300) {
+        var k = 0;
+        while (k < 64) { store8(stream + k, rand_key()); k = k + 1; }
+
+        var whole = fresh_editor();
+        editor_feed(whole, stream, 64);
+        editor_feed_flush(whole);
+
+        var split = fresh_editor();
+        var off = 0;
+        while (off < 64) {
+            var take = 1 + (rng_pos() % 9);          # 1..9-byte reads
+            if (off + take > 64) { take = 64 - off; }
+            if (off + take < 64) { editor_feed_cont(split, stream + off, take); }
+            else { editor_feed(split, stream + off, take); }
+            if (valid(split) == 0) { syscall(1, 2, "fuzz/feed: invalid state mid-stream\n", 36); return 1; }
+            off = off + take;
+        }
+        editor_feed_flush(split);
+
+        if (editor_feed_pending(whole) != 0) { syscall(1, 2, "fuzz/feed: pending after flush\n", 31); return 1; }
+        if (editor_feed_pending(split) != 0) { syscall(1, 2, "fuzz/feed: pending after flush\n", 31); return 1; }
+        if (valid(whole) == 0) { syscall(1, 2, "fuzz/feed: invalid final state\n", 31); return 1; }
+        if (same_state(whole, split) == 0) {
+            syscall(1, 2, "fuzz/feed: split feed diverged from whole feed\n", 47);
+            return 1;
+        }
+        iter = iter + 1;
+    }
+    return 0;
+}
+
+# Entry: run the harness and report.
+fn main() {
+    alloc_init();
+    var rc = fuzz_main("seed", 4);
+    if (rc == 0) { syscall(1, 1, "fuzz/feed: ok (300 streams x 64 B; split feed == whole feed)\n", 61); }
+    return rc;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

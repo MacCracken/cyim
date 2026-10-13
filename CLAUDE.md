@@ -91,7 +91,7 @@ CYRIUS_DCE=1 cyrius build ...            # dead-code-eliminated release build
 - Do not use `break` in while loops with `var` declarations — use flag + `continue`
 - Do not add Cyrius stdlib includes in individual src files — the manifest resolves them
 - Do not hardcode toolchain versions in CI YAML — `cyrius = "X.Y.Z"` in `cyrius.cyml` is the only source of truth
-- Do not edit anything in `lib/` (vendored stdlib)
+- Do not edit anything in `lib/` (vendored stdlib). It is **generated output**: after any toolchain-pin or `[deps.*]` tag move, regenerate it with `rm -rf lib/ && cyrius deps` (which also rewrites `cyrius.lock`), and check it with `cyrius deps --locked`. Never hand-prune it, and do not go back to a `cyrius lib sync --full` mirror — that is how 1.10.1 compiled twelve stale folded libs. `lib/niyama.cyr` is deliberately absent: the explicit include resolves to the pinned snapshot
 
 ## Process
 

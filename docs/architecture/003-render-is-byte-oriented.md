@@ -16,8 +16,10 @@ var kind = highlight_kind_at(tb, i);
 col = col + 1;
 ```
 
-There is no UTF-8 decode step anywhere in the render path. `cols` counts
-bytes emitted, not characters displayed.
+There is no UTF-8 decode step for WIDTH anywhere in the render path. `cols`
+counts bytes emitted, not characters displayed. (Since 1.11.0 the path does
+decode, but only to classify bytes >= 0x80 for control safety — see below.
+Every byte still counts as one column.)
 
 ## What follows from it
 
@@ -31,14 +33,18 @@ together:
   arithmetic knows neither number.
 - **Combining characters count as columns of their own**, though they
   render as zero-width.
-- **C1 control bytes (`0x80`–`0x9F`) pass through unsubstituted.**
+- ~~**C1 control bytes (`0x80`–`0x9F`) pass through unsubstituted.**~~
+  **Closed at 1.11.0 (BUG-005), on the terms this note set.**
   `render_ctrl_substitute` handles C0 (`0x00`–`0x1F`, Tab excepted) and
-  DEL, which closes the escape-injection finding from the M6 audit. It
-  cannot extend to C1 **because `0x80`–`0x9F` overlaps the UTF-8
-  continuation-byte range `0x80`–`0xBF`**: substituting them blind would
-  mangle every non-ASCII character in every file. Telling a continuation
-  byte from a lone C1 byte requires decoding, which is the thing this
-  note is about.
+  DEL — the M6 audit's escape-injection fix — and it still cannot extend
+  to C1 **because `0x80`–`0x9F` overlaps the UTF-8 continuation-byte range
+  `0x80`–`0xBF`**. So C1 is decided by `render_c1_at`, which DECODES: a byte
+  that is part of a well-formed RFC 3629 sequence passes byte for byte; a C1
+  control — a raw 0x80–0x9F byte outside any valid sequence, or the encoded
+  form `C2 80`–`C2 9F` — is shown as `<xx>` (four columns, vim's display);
+  a malformed byte 0xA0–0xFF keeps its verbatim pre-1.11 form. Telling a
+  continuation byte from a lone C1 byte required decoding, and decoding is
+  what it got — for classification only, not for width.
 
 ## Why this is the right trade today, and where it stops being one
 
@@ -62,11 +68,13 @@ being an implementation detail and starts being a visible defect.
 
 ## What NOT to do
 
-Do not "fix" C1 pass-through by adding `0x80`–`0x9F` to
+Do not "simplify" C1 handling by moving `0x80`–`0x9F` into
 `render_ctrl_substitute`. It looks like a two-line hardening patch and it
-breaks every non-ASCII file cyim can open. The audit considered exactly
-this and rejected it; if you are reading this note because you had the
-same idea, that is what it is here for.
+breaks every non-ASCII file cyim can open — the 1.8.3 audit considered
+exactly this and rejected it, and 1.11.0 closed C1 the other way, by
+decoding. `tests/render.tcyr`'s "well-formed UTF-8 passes byte for byte"
+group (U+1F600 has three bytes in that range) is the guard; if a change
+makes it fail, the change is wrong.
 
 ## See also
 

@@ -1,0 +1,218 @@
+# tests/feed.tcyr — `editor_feed`'s key-sequence decoder (v1.11.0, BUG-003)
+#
+# Through 1.10.1 `editor_feed` assumed every CSI escape was exactly three
+# bytes (`ESC [ <final>`) and recognized one only when it arrived whole in a
+# single read. Longer sequences leaked their tails as keystrokes — Delete
+# (`ESC [ 3 ~`) typed a literal `~` in INSERT — and a sequence a read cut in
+# two ran its ESC as a mode exit and its final byte as a command.
+#
+# These drive `editor_feed` / `editor_feed_cont` / `editor_feed_flush`
+# directly, the way src/main.cyr's two loops do. Mutation-tested against the
+# 1.10.1 `editor_feed`: every group from "Delete in INSERT" on fails there.
+
+include "src/buffer.cyr"
+# marks.cyr must precede mode.cyr (single-pass; see tests/dot.tcyr).
+include "src/marks.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/plugin.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+
+# 1 if gap buffer `b` holds exactly the `n` bytes at `expected`, else 0.
+fn buf_eq(b, expected, n) {
+    if (buf_len(b) != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (buf_get(b, i) != load8(expected + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# A fresh editor over `text`, cursor at `cur`.
+fn ed_with(text, cur) {
+    var b = buf_new();
+    buf_insert(b, text, strlen(text));
+    buf_move(b, cur);
+    var s = editor_new(b);
+    bl_init(s, b);
+    return s;
+}
+
+# Feed a NUL-terminated byte string as one read that did not fill its buffer.
+fn feed(s, str) {
+    return editor_feed(s, str, strlen(str));
+}
+
+# Feed it as a read that FILLED its buffer (more input is waiting).
+fn feed_cont(s, str) {
+    return editor_feed_cont(s, str, strlen(str));
+}
+
+# Run every group; the exit code is the number of failed assertions.
+fn main() {
+    alloc_init();
+
+    test_group("Delete in INSERT deletes under the cursor and stays in INSERT");
+    var s1 = ed_with("abc", 0);
+    editor_step(s1, 105);                       # i
+    assert_eq(feed(s1, "\x1b[3~"), 4, "all 4 bytes consumed");
+    assert_eq(buf_eq(editor_buf(s1), "bc", 2), 1, "'a' deleted — no literal '~' inserted (1.10.1: '~abc')");
+    assert_eq(editor_mode(s1), MODE_INSERT, "still INSERT");
+    assert_eq(editor_modified(s1), 1, "buffer marked modified");
+    assert_eq(editor_feed_pending(s1), 0, "nothing held");
+
+    test_group("Delete in NORMAL is `x`, and undoes as one step");
+    var s2 = ed_with("abc", 1);
+    feed(s2, "\x1b[3~");
+    assert_eq(buf_eq(editor_buf(s2), "ac", 2), 1, "'b' deleted");
+    assert_eq(editor_mode(s2), MODE_NORMAL, "still NORMAL");
+    editor_step(s2, 117);                       # u
+    assert_eq(buf_eq(editor_buf(s2), "abc", 3), 1, "u restores 'abc'");
+
+    test_group("Delete inside an insert session is part of that session's undo");
+    var s3 = ed_with("abc", 0);
+    editor_step(s3, 105);                       # i
+    feed(s3, "X\x1b[3~Y");
+    editor_step(s3, KEY_ESC);
+    assert_eq(buf_eq(editor_buf(s3), "XYbc", 4), 1, "iX<Del>Y<Esc> -> 'XYbc'");
+    editor_step(s3, 117);                       # u
+    assert_eq(buf_eq(editor_buf(s3), "abc", 3), 1, "ONE u restores 'abc' (no second snapshot)");
+
+    test_group("Delete with a modifier (`ESC [ 3 ; 2 ~`) is still Delete");
+    var s4 = ed_with("abc", 0);
+    feed(s4, "\x1b[3;2~");
+    assert_eq(buf_eq(editor_buf(s4), "bc", 2), 1, "Shift-Delete deletes too");
+
+    test_group("Delete in VISUAL deletes the selection");
+    var s5 = ed_with("abcdef", 0);
+    editor_step(s5, 118);                       # v
+    editor_step(s5, 108);                       # l
+    feed(s5, "\x1b[3~");
+    assert_eq(buf_eq(editor_buf(s5), "cdef", 4), 1, "v l <Del> removes 'ab'");
+    assert_eq(editor_mode(s5), MODE_NORMAL, "back to NORMAL");
+
+    test_group("Delete on the command line is swallowed — no NUL appended");
+    var s6 = ed_with("abc", 0);
+    editor_step(s6, 58);                        # :
+    feed(s6, "\x1b[3~");
+    assert_eq(editor_mode(s6), MODE_COMMAND, "still COMMAND");
+    assert_eq(buf_len(editor_cmdbuf(s6)), 0, "cmdbuf empty");
+    assert_eq(buf_eq(editor_buf(s6), "abc", 3), 1, "text untouched");
+
+    test_group("Other multi-byte CSI keys are swallowed whole in INSERT");
+    var s7 = ed_with("abc", 1);
+    editor_step(s7, 105);                       # i
+    feed(s7, "\x1b[5~");                        # PgUp
+    feed(s7, "\x1b[6~");                        # PgDn
+    feed(s7, "\x1b[2~");                        # Insert
+    feed(s7, "\x1b[1~");                        # Home (vt / rxvt)
+    feed(s7, "\x1b[4~");                        # End
+    feed(s7, "\x1b[15~");                       # F5
+    feed(s7, "\x1b[200~");                      # bracketed-paste start marker
+    feed(s7, "\x1b[<0;10;5M");                  # SGR mouse report
+    assert_eq(buf_eq(editor_buf(s7), "abc", 3), 1, "no tail inserted (1.10.1 typed '~~~~~5~00~0;10;5M')");
+    assert_eq(buf_cursor(editor_buf(s7)), 1, "cursor unmoved");
+    assert_eq(editor_mode(s7), MODE_INSERT, "still INSERT");
+
+    test_group("The Linux console's F1 (`ESC [ [ A`) is not an arrow and leaks nothing");
+    var s8 = ed_with("ab\ncd\n", 3);
+    editor_step(s8, 105);                       # i
+    feed(s8, "\x1b[[A");
+    assert_eq(buf_eq(editor_buf(s8), "ab\ncd\n", 6), 1, "nothing inserted (1.10.1 inserted 'A')");
+    assert_eq(buf_cursor(editor_buf(s8)), 3, "cursor did not move up");
+
+    test_group("A modified arrow moves like the plain arrow");
+    var s9 = ed_with("abc", 0);
+    editor_step(s9, 105);                       # i
+    feed(s9, "\x1b[1;5C");                      # Ctrl-Right
+    assert_eq(buf_cursor(editor_buf(s9)), 1, "cursor +1");
+    assert_eq(buf_eq(editor_buf(s9), "abc", 3), 1, "nothing inserted (1.10.1 typed ';5C')");
+    assert_eq(editor_mode(s9), MODE_INSERT, "still INSERT");
+
+    test_group("A CSI split across reads decodes as if it arrived whole");
+    var s10 = ed_with("abcd", 0);
+    editor_step(s10, 105);                      # i
+    feed_cont(s10, "\x1b[");                    # the read stopped after `ESC [`
+    assert_eq(editor_feed_pending(s10), 1, "half a sequence held");
+    assert_eq(editor_mode(s10), MODE_INSERT, "the ESC did NOT exit INSERT");
+    feed(s10, "3~");
+    assert_eq(buf_eq(editor_buf(s10), "bcd", 3), 1, "ESC [ | 3 ~ is one Delete");
+    assert_eq(editor_feed_pending(s10), 0, "nothing held after the final byte");
+    feed(s10, "\x1b[3");                        # split inside the parameters
+    feed(s10, "~");
+    assert_eq(buf_eq(editor_buf(s10), "cd", 2), 1, "ESC [ 3 | ~ is one Delete");
+    feed_cont(s10, "\x1b");                     # split straight after the ESC
+    feed(s10, "[C");
+    assert_eq(buf_cursor(editor_buf(s10)), 1, "ESC | [ C is one Right");
+    assert_eq(editor_mode(s10), MODE_INSERT, "and still INSERT");
+
+    test_group("A held arrow key: three arrows through an 8-byte read");
+    var s11 = ed_with("abcdef", 0);
+    var arrows = "\x1b[C\x1b[C\x1b[C";          # 9 bytes
+    editor_feed_cont(s11, arrows, 8);           # a full 8-byte read
+    editor_feed(s11, arrows + 8, 1);            # the 9th byte
+    assert_eq(buf_cursor(editor_buf(s11)), 3, "cursor moved exactly 3");
+    assert_eq(editor_mode(s11), MODE_NORMAL, "no stray mode change");
+    assert_eq(buf_eq(editor_buf(s11), "abcdef", 6), 1, "buffer untouched");
+
+    test_group("Lone ESC: immediate at the end of input, carried only by editor_feed_cont");
+    var s12 = ed_with("abc", 0);
+    editor_step(s12, 105);                      # i
+    feed(s12, "\x1b");
+    assert_eq(editor_mode(s12), MODE_NORMAL, "editor_feed: a trailing ESC is the Esc key, now");
+    editor_step(s12, 105);                      # i
+    feed_cont(s12, "\x1b");
+    assert_eq(editor_mode(s12), MODE_INSERT, "editor_feed_cont: carried; the Esc is still to come");
+    assert_eq(editor_feed_pending(s12), 1, "reported pending");
+    editor_feed_flush(s12);
+    assert_eq(editor_mode(s12), MODE_NORMAL, "flush: the carried ESC was the Esc key");
+    assert_eq(editor_feed_pending(s12), 0, "nothing held after flush");
+    feed_cont(s12, "\x1b");
+    feed(s12, ":");
+    assert_eq(editor_mode(s12), MODE_COMMAND, "a carried ESC + ':' is Esc then ':'");
+
+    test_group("flush drops an unfinished CSI — its bytes were never keys");
+    var s13 = ed_with("abc", 0);
+    editor_step(s13, 105);                      # i
+    feed(s13, "\x1b[1;");
+    assert_eq(editor_feed_pending(s13), 1, "unfinished CSI held");
+    editor_feed_flush(s13);
+    assert_eq(editor_feed_pending(s13), 0, "released");
+    assert_eq(editor_mode(s13), MODE_INSERT, "no Esc dispatched for it");
+    assert_eq(buf_eq(editor_buf(s13), "abc", 3), 1, "nothing inserted");
+    editor_feed_flush(s13);
+    assert_eq(editor_mode(s13), MODE_INSERT, "flush with nothing held is a no-op");
+
+    test_group("A byte that cannot continue a CSI abandons it and is fed normally");
+    var s14 = ed_with("abc", 0);
+    editor_step(s14, 105);                      # i
+    feed(s14, "\x1b[1\r");
+    assert_eq(buf_eq(editor_buf(s14), "\nabc", 4), 1, "CR still splits the line");
+    assert_eq(editor_mode(s14), MODE_INSERT, "still INSERT");
+    # Cursor is now 1 (line 2, on 'a'). An ESC inside a CSI starts over:
+    feed(s14, "\x1b[1\x1b[C");
+    assert_eq(buf_cursor(editor_buf(s14)), 2, "the restarted ESC [ C moved right once");
+    assert_eq(editor_feed_pending(s14), 0, "nothing held");
+
+    test_group("Over-long parameters are consumed to the final byte");
+    var s15 = ed_with("abc", 0);
+    editor_step(s15, 105);                      # i
+    feed(s15, "\x1b[1111111111222222222233333333334~");
+    assert_eq(buf_eq(editor_buf(s15), "abc", 3), 1, "nothing leaked");
+    assert_eq(editor_feed_pending(s15), 0, "back to ground");
+    assert_lte(_editor_feed_plen(s15), FEED_PBUF_MAX, "count reset after dispatch");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

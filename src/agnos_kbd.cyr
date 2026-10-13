@@ -7,16 +7,27 @@
 # primitive cyrius-doom's input_poll uses). This module turns that scancode
 # stream into the exact byte stream a raw terminal would deliver — printable
 # ASCII (shift/caps aware), ESC for Escape, CR for Enter, DEL for Backspace, TAB,
-# Ctrl-letter control bytes, and ESC[A/B/C/D for the arrows — so cyim's existing
-# editor_feed (src/mode.cyr) drives full-screen on agnos with no changes.
+# Ctrl-letter control bytes, ESC[A/B/C/D for the arrows and ESC[3~ for Delete
+# — so cyim's existing editor_feed (src/driver.cyr) drives full-screen on agnos
+# with no changes.
 #
 # The kernel keeps NO key-state (kbscan is a pure byte pipe), so modifier state
 # (shift / ctrl / caps) is maintained HERE from make/break codes. Output bytes
 # are produced only on make (key-down), matching a terminal's edge behaviour.
 #
-# WHOLE file is guarded by CYRIUS_TARGET_AGNOS — compiles to nothing elsewhere.
+# Two gates (v1.11.0). The scancode DECODER — the tables, the make / break
+# translation, `_kbd_decode_batch` — is pure: no syscall, nothing agnos-only.
+# It compiles under CYIM_AGNOS_KBD_DECODER, which the agnos target defines
+# below and tests/agnos_kbd.tcyr defines for itself, so the decoder is unit-
+# tested on every host rather than only on agnos (BUG-004 shipped because
+# nothing exercised it anywhere). The kbscan#42 READ stays CYRIUS_TARGET_AGNOS
+# only. On other targets nothing in this file compiles.
 
 #ifdef CYRIUS_TARGET_AGNOS
+#define CYIM_AGNOS_KBD_DECODER
+#endif
+
+#ifdef CYIM_AGNOS_KBD_DECODER
 
 # US-QWERTY Set-1 make-code → ASCII tables (index = scancode, 0 = unmapped),
 # built once on first read. `_kbd_normal` is the unmodified glyph, `_kbd_shift`
@@ -30,6 +41,14 @@ var _kbd_inited = 0;
 var _kbd_shift_down = 0;
 var _kbd_ctrl_down = 0;
 var _kbd_caps = 0;
+# The 0xE0 extended-key prefix, carried BETWEEN batches (v1.11.0, BUG-004 —
+# chakshu's audit AG2). It was a local of the read loop, reset every batch,
+# but kbscan#42 batches arbitrarily: a batch can END on the prefix, and the
+# key it introduced then decoded through the BASE table in the next batch. A
+# split arrow or Delete (`E0` | `48`) was silently lost — its base code is an
+# unmapped keypad key — and a split media key (`E0` | `10`, previous-track)
+# typed `q`.
+var _kbd_ext = 0;
 var _kbd_out = 0;         # heap carry buffer for translated bytes
 var _kbd_out_cap = 256;
 var _kbd_out_len = 0;
@@ -95,7 +114,10 @@ fn _kbd_translate_make(sc, ext) {
         if (sc == 0x50) { _kbd_emit(27); _kbd_emit(91); _kbd_emit(66); return 0; }  # down  -> ESC[B
         if (sc == 0x4D) { _kbd_emit(27); _kbd_emit(91); _kbd_emit(67); return 0; }  # right -> ESC[C
         if (sc == 0x4B) { _kbd_emit(27); _kbd_emit(91); _kbd_emit(68); return 0; }  # left  -> ESC[D
-        if (sc == 0x53) { _kbd_emit(127); return 0; }        # Delete -> DEL
+        # Delete -> ESC [ 3 ~, the sequence a terminal sends (v1.11.0). It
+        # emitted DEL (127) through 1.10.1 — Backspace's byte — so Delete
+        # deleted to the LEFT on agnos.
+        if (sc == 0x53) { _kbd_emit(27); _kbd_emit(91); _kbd_emit(51); _kbd_emit(126); return 0; }
         return 0;
     }
     if (sc == 0x2A || sc == 0x36) { _kbd_shift_down = 1; return 0; }   # Shift
@@ -139,6 +161,71 @@ fn _kbd_translate_break(sc, ext) {
     return 0;
 }
 
+# Size of the scancode buffer `_agnos_kbd_read` hands kbscan#42, and so the
+# most a batch can hold. `var scbuf[N]` needs a literal; this is the bound.
+var _KBD_SCBUF = 64;
+
+# Decode one kbscan batch — `n` raw Set-1 scancodes at `scbuf` — into the
+# carry buffer. Returns the number of output bytes now carried.
+#
+# ⭐ `n` is CLAMPED to _KBD_SCBUF (v1.11.0, BUG-004 — chakshu's audit AG1).
+# It is the count the kernel returned, and through 1.10.1 the loop trusted
+# it: `scbuf` is a 64-byte stack buffer, so an `n` above 64 (a buggy or
+# hostile kernel) decoded whatever lay past it as keystrokes. A length handed
+# back across a syscall boundary is input like any other.
+fn _kbd_decode_batch(scbuf, n) {
+    _kbd_init();
+    if (n > _KBD_SCBUF) { n = _KBD_SCBUF; }
+    _kbd_out_len = 0;
+    _kbd_out_pos = 0;
+    var i = 0;
+    while (i < n) {
+        var sc = load8(scbuf + i);
+        i = i + 1;
+        if (sc == 0xE0) { _kbd_ext = 1; } else {
+            if (sc > 0x7F) { _kbd_translate_break(sc & 0x7F, _kbd_ext); }
+            else { _kbd_translate_make(sc, _kbd_ext); }
+            _kbd_ext = 0;
+        }
+    }
+    return _kbd_out_len;
+}
+
+# Translated bytes still carried — decoded, but still to be handed out by
+# `_agnos_kbd_read`. Non-zero means the next read returns at once, so the
+# editor loop treats what it just read as continuing (editor_feed_cont).
+fn _agnos_kbd_pending() {
+    return _kbd_out_len - _kbd_out_pos;
+}
+
+# Reset the decoder's sticky state — modifiers, the extended prefix, the
+# carry. For tests; a process starts with all of it zeroed.
+fn _kbd_reset() {
+    _kbd_shift_down = 0;
+    _kbd_ctrl_down = 0;
+    _kbd_caps = 0;
+    _kbd_ext = 0;
+    _kbd_out_len = 0;
+    _kbd_out_pos = 0;
+    return 0;
+}
+
+# Hand out up to `max` carried bytes into `out`. Returns how many.
+fn _kbd_take(out, max) {
+    var avail = _kbd_out_len - _kbd_out_pos;
+    var take = avail;
+    if (take > max) { take = max; }
+    var k = 0;
+    while (k < take) { store8(out + k, load8(_kbd_out + _kbd_out_pos + k)); k = k + 1; }
+    _kbd_out_pos = _kbd_out_pos + take;
+    if (_kbd_out_pos >= _kbd_out_len) { _kbd_out_len = 0; _kbd_out_pos = 0; }
+    return take;
+}
+
+#endif
+
+#ifdef CYRIUS_TARGET_AGNOS
+
 # Blocking per-key read, drop-in for `file_read(0, out, max)` in the editor loop.
 # Drains kbscan#42, decodes make/break + modifiers into the carry buffer, and
 # returns up to `max` translated bytes. Blocks (yielding a tick between empty
@@ -148,34 +235,15 @@ fn _agnos_kbd_read(out, max) {
     # Drain any bytes still carried from the previous batch first.
     while (1 == 1) {
         if (_kbd_out_pos < _kbd_out_len) {
-            var avail = _kbd_out_len - _kbd_out_pos;
-            var take = avail;
-            if (take > max) { take = max; }
-            var k = 0;
-            while (k < take) { store8(out + k, load8(_kbd_out + _kbd_out_pos + k)); k = k + 1; }
-            _kbd_out_pos = _kbd_out_pos + take;
-            if (_kbd_out_pos >= _kbd_out_len) { _kbd_out_len = 0; _kbd_out_pos = 0; }
-            return take;
+            return _kbd_take(out, max);
         }
         # Carry empty — poll the scancode ring.
-        var scbuf[64];
-        var n = syscall(42, &scbuf, 64);               # kbscan#42 (non-blocking)
+        var scbuf[64];                                 # must equal _KBD_SCBUF
+        var n = syscall(42, &scbuf, _KBD_SCBUF);       # kbscan#42 (non-blocking)
         if (n <= 0) {
             syscall(41, 10);                           # sleep_ms#41 ~1 tick, then retry
         } else {
-            _kbd_out_len = 0;
-            _kbd_out_pos = 0;
-            var i = 0;
-            var ext = 0;
-            while (i < n) {
-                var sc = load8(&scbuf + i);
-                i = i + 1;
-                if (sc == 0xE0) { ext = 1; } else {
-                    if (sc > 0x7F) { _kbd_translate_break(sc & 0x7F, ext); }
-                    else { _kbd_translate_make(sc, ext); }
-                    ext = 0;
-                }
-            }
+            _kbd_decode_batch(&scbuf, n);
             # If the whole batch was modifiers/breaks (no bytes), loop and poll again.
         }
     }

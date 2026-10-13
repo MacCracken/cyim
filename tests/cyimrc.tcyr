@@ -9,10 +9,22 @@ include "src/buffer.cyr"
 include "src/highlight.cyr"
 include "src/lang.cyr"
 include "src/cyimrc.cyr"
+# v1.11.0: the full chain mode.cyr's and plugin.cyr's calls resolve
+# against (marks before mode; command and its dependencies after window),
+# so the suite compiles with ZERO "undefined function" warnings — through
+# 1.10.1 it printed one per unresolved callee on every run.
 include "src/plugin.cyr"
+include "src/marks.cyr"
 include "src/mode.cyr"
 include "src/buflist.cyr"
 include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
 include "src/tty.cyr"
 include "src/render.cyr"
 
@@ -138,42 +150,45 @@ fn main() {
     cyimrc_load_path(FIXTURE_BASIC);
     assert_eq(cyimrc_cfg_tabstop(), 4, "23-digit tabstop rejected");
 
-    # ── 1.8.3 audit F-2, sink side ─────────────────────
-    # Asserted at `_render_u16_ascii` rather than through render_build_line:
+    # ── 1.8.3 audit F-2, sink side — and BUG-006 (v1.11.0) ──────────────
+    # Asserted at `_render_emit_fg` rather than through render_build_line:
     # this is the function whose contract was violated, and whose 12-byte
-    # reservation in the caller depends on the return being <= 3. Driving it
-    # through the full render pipeline instead makes the assertion depend on
-    # where token boundaries happen to fall relative to `byte_cap`, which is
+    # reservation in the caller depends on what it writes. Driving it through
+    # the full render pipeline instead makes the assertion depend on where
+    # token boundaries happen to fall relative to `byte_cap`, which is
     # incidental — a fixture that merely *usually* overflows is a test that
     # merely usually catches the regression.
-    test_group("F-2 — _render_u16_ascii never writes more than 3 digits");
+    #
+    # Through 1.10.1 the digits came from `_render_u16_ascii`, which clamped
+    # to 999 — enough for F-2's byte budget, not for the domain: 256..999
+    # went out as `\e[38;5;999m` (BUG-006). The composer is now darshana's
+    # `tty_fg_256_buf`, which validates [0, 255] and writes NOTHING on a
+    # refusal, so `_render_emit_fg` returns 0 there. Mutation: restoring the
+    # clamp-to-999 composer fails the five "refused" assertions below.
+    test_group("F-2 / BUG-006 — _render_emit_fg writes exact escapes for 0..255");
     var CANARY = 170;                       # 0xAA
     var ubuf = alloc(64);
     var ui = 0;
     while (ui < 64) { store8(ubuf + ui, CANARY); ui = ui + 1; }
+    assert_eq(_render_emit_fg(ubuf, 0, 0), 9, "0 -> 9 bytes");
+    assert_eq(memeq(ubuf, "\x1b[38;5;0m", 9), 1, "0 -> ESC[38;5;0m");
+    assert_eq(_render_emit_fg(ubuf, 0, 42), 10, "42 -> 10 bytes");
+    assert_eq(memeq(ubuf, "\x1b[38;5;42m", 10), 1, "42 -> ESC[38;5;42m");
+    assert_eq(_render_emit_fg(ubuf, 0, 141), 11, "141 -> 11 bytes");
+    assert_eq(memeq(ubuf, "\x1b[38;5;141m", 11), 1, "141 -> ESC[38;5;141m (bytes unchanged from 1.10.1)");
+    assert_eq(_render_emit_fg(ubuf, 0, 255), 11, "255 -> 11 bytes (palette ceiling)");
+    assert_eq(memeq(ubuf, "\x1b[38;5;255m", 11), 1, "255 -> ESC[38;5;255m");
+    assert_eq(load8(ubuf + 11), CANARY, "byte 11 untouched — the escape fits the 12-byte reservation");
 
-    assert_eq(_render_u16_ascii(ubuf, 0, 0),   1, "0   -> 1 digit");
-    assert_eq(_render_u16_ascii(ubuf, 0, 7),   1, "7   -> 1 digit");
-    assert_eq(_render_u16_ascii(ubuf, 0, 42),  2, "42  -> 2 digits");
-    assert_eq(_render_u16_ascii(ubuf, 0, 255), 3, "255 -> 3 digits (palette ceiling)");
-    assert_eq(_render_u16_ascii(ubuf, 0, 999), 3, "999 -> 3 digits (domain ceiling)");
-
-    # Out-of-domain input must still write at most 3 bytes. Against the
-    # 1.8.2 source these return 15 and 19 and scribble past index 3.
-    assert_eq(_render_u16_ascii(ubuf, 0, 1000),            3, "1000 clamped to 3 digits");
-    assert_eq(_render_u16_ascii(ubuf, 0, 999999999999999), 3, "15-digit clamped to 3 digits");
-    assert_eq(_render_u16_ascii(ubuf, 0, 0 - 5),           1, "negative clamped to 0 -> 1 digit");
-    assert_eq(load8(ubuf + 3), CANARY, "byte 3 untouched — nothing wrote past 3 digits");
-    assert_eq(load8(ubuf + 4), CANARY, "byte 4 untouched");
-
-    # And the whole-escape composer stays inside the 12 bytes
-    # render_build_line reserves for it (\e[38;5; = 8, digits <= 3, m = 1).
-    test_group("F-2 — _render_emit_fg fits the 12-byte reservation");
-    var ei = 0;
-    while (ei < 64) { store8(ubuf + ei, CANARY); ei = ei + 1; }
-    assert_eq(_render_emit_fg(ubuf, 0, 141) <= 12, 1, "in-range code fits in 12");
-    assert_eq(_render_emit_fg(ubuf, 0, 999999999999999) <= 12, 1, "out-of-range code still fits in 12");
-    assert_eq(load8(ubuf + 12), CANARY, "byte 12 untouched by the escape writer");
+    test_group("BUG-006 — an index outside 0..255 is refused and writes nothing");
+    ui = 0;
+    while (ui < 64) { store8(ubuf + ui, CANARY); ui = ui + 1; }
+    assert_eq(_render_emit_fg(ubuf, 0, 256), 0, "256 refused (1.10.1 emitted ESC[38;5;256m)");
+    assert_eq(_render_emit_fg(ubuf, 0, 999), 0, "999 refused");
+    assert_eq(_render_emit_fg(ubuf, 0, 1000), 0, "1000 refused (1.10.1 clamped it to 999)");
+    assert_eq(_render_emit_fg(ubuf, 0, 999999999999999), 0, "15-digit refused");
+    assert_eq(_render_emit_fg(ubuf, 0, 0 - 5), 0, "negative refused");
+    assert_eq(load8(ubuf), CANARY, "byte 0 untouched — a refusal writes nothing at all");
 
     # Pipeline-level invariant, kept as a coarse backstop: whatever the
     # palette says, render must not report a position past the caller's cap.
@@ -193,6 +208,33 @@ fn main() {
       "render_build_line <= out_max");
     assert_eq(render_build_line_naked(rb, 0, 400, rtb, rout, rcap) <= rcap, 1,
       "render_build_line_naked <= out_max");
+    # BUG-006 at the pipeline: with `keyword` (and two more kinds) forced past
+    # 255 — the slots written directly, below `_cyimrc_palette_valid` — no
+    # `ESC[38;5;N` escape in the line carries N > 255, and `var` is drawn
+    # uncoloured. 1.10.1 opened the line with `ESC[38;5;999m`.
+    var rn = render_build_line_naked(rb, 0, 400, rtb, rout, rcap);
+    var max_idx = 0;
+    var ri = 0;
+    while (ri + 8 <= rn) {
+        if (memeq(rout + ri, "\x1b[38;5;", 7) == 1) {
+            var v = 0;
+            var d = ri + 7;
+            var more = 1;
+            while (more == 1) {
+                more = 0;
+                if (d < rn) {
+                    var ch = load8(rout + d);
+                    if (ch >= 48) {
+                        if (ch <= 57) { v = v * 10 + (ch - 48); d = d + 1; more = 1; }
+                    }
+                }
+            }
+            if (v > max_idx) { max_idx = v; }
+        }
+        ri = ri + 1;
+    }
+    assert_lte(max_idx, 255, "every ESC[38;5;N in the line has N <= 255");
+    assert_eq(memeq(rout, "var", 3), 1, "the refused keyword is drawn uncoloured, first bytes plain");
     # Restore the slots so nothing after this group inherits them.
     store64(&_cyimrc_palette + 1 * 8, 0 - 1);
     store64(&_cyimrc_palette + 5 * 8, 0 - 1);

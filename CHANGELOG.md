@@ -4,6 +4,232 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-10-12
+
+**Toolchain `6.6.2` → `6.7.9`, darshana `1.0.0` → `1.3.0`, and the four
+darshana-survey bugs (BUG-003 … BUG-006) closed.** Moving the pin surfaced an
+aarch64 defect that had broken `:e` there; adopting darshana 1.3.0 surfaced a
+SIGPIPE crash that killed the editor whenever its language server died, and
+an escape-injection gap outside the buffer. All fixed, each with a regression
+test that fails against 1.10.1.
+
+### Fixed — BUG-003: Delete typed `~`; long key sequences leaked as keystrokes
+
+`editor_feed` assumed every CSI escape was exactly three bytes
+(`ESC [ <final>`) and recognized one only when it arrived whole in one read.
+Measured against 1.10.1, in INSERT: Delete (`ESC [ 3 ~`) produced `~abc`;
+PgUp / PgDn / Insert / Home / End / F5 / a bracketed-paste marker / an SGR
+mouse report typed `~~~~~5~00~0;10;5M`; Ctrl-Right typed `;5C`; the Linux
+console's F1 (`ESC [ [ A`) typed `A`. And a sequence an 8-byte read cut in
+two — a burst of held-arrow 3-byte sequences does not divide 8 — ran its ESC
+as a mode exit and its final byte as a command.
+
+The decoder (`src/driver.cyr`) now runs every CSI to its final byte, however
+long, and keeps its state in the editor record, so a sequence split across
+reads decodes exactly as if it had arrived whole:
+
+- **Arrows** — any parameters (a modifier) are ignored, so Ctrl-Right moves
+  like Right.
+- **Delete** (`ESC [ 3 ~`, with or without `;<mod>`) is the new `KEY_DELETE`
+  (256 — deliberately not a byte): `x` in NORMAL, a forward delete that stays
+  in INSERT (inside the session's undo unit — one `u` undoes the whole
+  insert), the selection in VISUAL, swallowed on the command line.
+- **Everything else is swallowed whole.** A byte that cannot continue a CSI
+  abandons it and is fed normally; an ESC inside a CSI starts over.
+- **Split reads.** A read that FILLS its buffer is fed with the new
+  `editor_feed_cont`, which carries a trailing ESC rather than taking it as
+  the Esc key; the interactive loop waits at most `ESC_SEQ_TIMEOUT_MS` (50 ms)
+  for the rest before `editor_feed_flush` resolves it (a held ESC becomes
+  Esc; a partial CSI is dropped). A lone ESC that ends a short read — a real
+  Esc keypress — still takes effect at once, exactly as before. `--headless`
+  flushes at end of input. `editor_feed_pending` reports a held sequence.
+
+**Not decoded, deliberately: SS3** (`ESC O <final>` — F1–F4 on xterm-style
+terminals). `O` is "open line above", and `<Esc>O` typed quickly lands in one
+read, so decoding it would eat a real command. Filed as BUG-007.
+
+### Fixed — BUG-004: the agnos keyboard decoder (chakshu's AG1 / AG2)
+
+- **AG2** — the `0xE0` extended-key prefix was a per-batch local, but kbscan#42
+  batches arbitrarily: a prefix that ended one batch was lost, so a split
+  arrow or Delete vanished and a split media key (`E0 10`) typed `q`. It is
+  module state now.
+- **AG1** — the count kbscan#42 returns was trusted against the 64-byte scan
+  buffer; `n = 200` decoded 136 phantom keys from past its end. Clamped.
+- **Delete** now emits `ESC [ 3 ~`. It emitted DEL (127) — Backspace's byte —
+  so on agnos Delete deleted to the LEFT. Measured on the real agnos kernel
+  under QEMU (`i ZED ← ← Delete Esc :wq`): 1.10.1 saved `EDalpha line one`,
+  1.11.0 saves `ZDalpha line one`.
+
+The decoder's pure half now compiles under `CYIM_AGNOS_KBD_DECODER` (defined
+by the agnos target, and by `tests/agnos_kbd.tcyr` for itself), so it is
+unit-tested on every host; only the kbscan read stays agnos-only.
+
+### Fixed — BUG-005: C1 control bytes reached the terminal
+
+`render_ctrl_substitute` caught C0 and DEL (audit F-1) but every byte
+>= 0x80 went out verbatim — including the 8-bit C1 controls CSI (0x9B), OSC
+(0x9D), DCS (0x90) and ST (0x9C), raw or UTF-8-encoded (`C2 80`–`C2 9F`).
+Architecture note 003 explains why it had been left open: 0x80–0x9F are also
+UTF-8 continuation bytes, so a byte-at-a-time check would break every
+non-ASCII file. The new `render_c1_at` decides it by **decoding** (RFC 3629,
+the rule darshana's `tty_sanitize_buf` applies in UTF-8 mode): a C1 control
+is shown as **`<xx>`** (vim's display for these code points), well-formed
+UTF-8 is untouched byte for byte, and malformed bytes outside 0x80–0x9F keep
+their pre-1.11 verbatim form. Caret notation (`^X`) for C0 is unchanged.
+
+### Fixed — BUG-006: an invalid 256-colour index could be emitted
+
+`_render_emit_fg` composed `\e[38;5;Nm` by hand with `_render_u16_ascii`,
+which clamped to 999 — enough for the 1.8.3 F-2 byte budget, not for the
+domain: 256–999 went out as `\e[38;5;999m`. It now delegates to darshana's
+`tty_fg_256_buf`, which validates [0, 255] and writes nothing on a refusal; a
+refused index draws its token uncoloured. Bytes for every valid index are
+unchanged. `_render_u16_ascii` is deleted (the itoa sprawl is three now).
+
+### Fixed — found during this cut
+
+- **The editor died when its language server did.** A write to the LSP
+  server's stdin after the server exits raises SIGPIPE, whose default action
+  kills the process. Reproduced against 1.10.1: kill `cyrius-lsp`
+  mid-session, type one key — cyim died (signal 13) with unsaved changes and
+  the terminal raw on the alternate screen. The editor loop and `--headless`
+  now hold a **SIGPIPE guard** — a darshana `TTY_SIGMASK_PIPE` signalfd — so
+  the write fails with EPIPE, which the LSP client already treats as "server
+  gone". The guard is **drained before it is closed**: closing unblocks the
+  mask, which would otherwise deliver a SIGPIPE taken on the last keystroke
+  and kill a clean exit with status 141 (mutation-tested). The same guard
+  keeps `cyim file | head -c1`-style dead stdout from killing the editor.
+- **Escape injection outside the buffer.** The file path (argv, `:e`, LSP
+  URIs), status messages, plugin status segments, the command line, and the
+  `:lsp-find-refs` picker — whose rows carry a preview of a line from another
+  file — were written raw. A file named `$'x\e]0;PWNED\a'` retitled the
+  terminal. They now go through darshana's `tty_sanitize_buf` (UTF-8 mode:
+  C0, DEL, C1 and malformed UTF-8 each become one `?`). Plugin segments were
+  also written one `write(2)` per byte, every frame; now one per 256 bytes.
+- **`:e` was broken on aarch64.** `_cmd_file_size` issued `syscall(8, …)` —
+  lseek on x86_64 only; aarch64's 8 is `getxattr`, which answered -EFAULT, so
+  every `:e <existing file>` (and every LSP cross-file jump) failed as "file
+  not found". `cyrius test --aarch64` failed 16 `command.tcyr` assertions and
+  `plugin.tcyr` crashed. The aarch64 build had warned about the line since at
+  least 6.6.2. Now `xlseek` (each target's own lseek). On agnos 8 is `dup`
+  (per the stdlib's agnos table — a stub returning the fd), so the size cap
+  could not have applied there; not measured on agnos.
+- Two more literal syscall numbers made target-correct: the grammar-dir
+  `readlink` (89 — `gpu_caps` on agnos, with the path literal as its output
+  buffer) is now `sys_readlink` per target, and `--probe`'s nanosleep (35 —
+  `unlinkat` on aarch64, rescued only by the backend's rewrite) is
+  `sys_nanosleep`.
+
+### Changed — teardown order (darshana 1.1.4)
+
+The exit path closed the resize watch first and restored termios last — the
+order darshana 1.1.4 retired. Now `tty_cooked()` → `tty_alt_leave()` →
+`tty_sgr_reset()` → signalfds last (resize watch, then the drained SIGPIPE
+guard). Against 1.10.1 with stdout a pipe whose reader had gone, cyim died on
+its first write and left the terminal raw; it now exits 0 with the terminal
+cooked.
+
+### Changed — toolchain and dependencies
+
+- **cyrius `6.6.2` → `6.7.9`.** Every target builds with no warning; the one
+  the move surfaced (aarch64 raw `lseek`) is fixed above. No 6.7 language
+  feature is adopted. 6.7.9's lint flagged two comments whose roadmap
+  cross-reference wrapped onto the previous line — re-wrapped.
+- **darshana `1.0.0` → `1.3.0`** (1.3.0 needs cyrius ≥ 6.7.2). Adopted:
+  the amended teardown order, `TTY_SIGMASK_PIPE`, `tty_read_signal` (the
+  resize drain cyim read by hand), `tty_sanitize_buf`, `tty_fg_256_buf`, and
+  `tty_sgr_buf` / `tty_sgr_reset_buf` / `tty_sgr` / `tty_sgr_reset` in place
+  of hand-built SGR bytes (identical bytes). Not adopted, with reasons in
+  `cyrius.cyml`: `tty_winsize_or`, `tty_raw_nonblock`, `tty_paste_enable`
+  (bracketed paste needs designed paste semantics — roadmap), and the frame
+  composers.
+- vyakarana `2.4.0` and cyim-lsp `1.5.3` unchanged — both build clean at 6.7.9.
+- **`lib/` is regenerated, not mirrored.** `rm -rf lib/ && cyrius deps`:
+  112 vendored files → 46 (the declared closure), `cyrius.lock` 112 → 46
+  rows. The old full mirror had gone stale silently — the 1.10.1 build
+  warned that twelve folded libs in it were older than the 6.6.2 snapshot
+  (niyama 1.0.7 against 1.0.10, …) and compiled the stale copies.
+  `lib/niyama.cyr` is no longer vendored; it is read from the pinned snapshot.
+- Four test suites and the bench harness lacked includes their callees need
+  (`marks.cyr`, `command.cyr`'s chain) and printed 40 "undefined function"
+  warnings between them on every run; now zero.
+
+### Behaviour changes, deliberate
+
+- Delete deletes (all modes, both targets); on agnos it no longer acts as
+  Backspace. Modified arrows move; other multi-byte keys do nothing.
+- A C1 control in a file shows as `<xx>` (4 columns) instead of reaching the
+  terminal. Controls in paths, messages, segments, picker rows and the
+  command line show as `?`.
+- `--headless`: escape sequences decode the same wherever stdin's reads cut
+  them; an unfinished CSI at end of input is dropped (1.10.1 dispatched its
+  bytes as keys). A trailing lone ESC is still the Esc key.
+- A read ending in ESC that filled the 8-byte buffer waits up to 50 ms for
+  the rest of a possible sequence before Esc takes effect.
+
+### Known residual — the LSP server inherits two blocked signals
+
+The SIGWINCH watch (since 1.10.0) and the SIGPIPE guard block their signals,
+and a block survives `fork` + `execve`. The LSP server is spawned lazily,
+mid-session, by the cyim-lsp bundle's own `fork` / `execve` with no hook
+between them, so it starts with SIGWINCH and SIGPIPE blocked. cyim cannot
+unblock in the child, and closing the guard around the spawn would re-expose
+the editor during the handshake write that races a server dying at start-up.
+The fix belongs in the bundle (reset the child's mask before `execve`, as the
+cyrius 6.7.9 stdlib exec family now does) — recorded in roadmap.md
+§ Dependency notes.
+
+### Tests
+
+- `cyrius test`: **23 suites, 1329 assertions, 0 failures, 0 warnings**
+  (1.10.1: 21 / 1226). New: `tests/feed.tcyr` (52 — every group from "Delete
+  in INSERT" on fails against the 1.10.1 decoder; 25 failures measured),
+  `tests/agnos_kbd.tcyr` (23 — mutation-tested for AG1, AG2). `render.tcyr`
+  60 → 84 (BUG-005; with the C1 check disabled, 20 fail and the
+  well-formed-UTF-8 group still passes). `cyimrc.tcyr` 66 → 70 (BUG-006: the
+  `_render_u16_ascii` group became exact-byte and refusal checks on
+  `_render_emit_fg`, plus a pipeline check that a forced out-of-range palette
+  emits no index > 255).
+- `cyrius test --aarch64` (qemu): the same 1329 / 0.
+- `cyrius fuzz`: **5 / 5** — new `fuzz/feed.fcyr`, 300 random 64-byte streams
+  dense in escape bytes: feeding a stream in random 1–9-byte chunks must
+  leave the editor exactly where feeding it whole does. The 1.10.1 decoder
+  fails it.
+- `tests/integration_smoke.py`: **+9** checks (49 → 58 PASS lines), every one
+  but the ESC-timeout pair failing against the 1.10.1 binary: file-name
+  escape, C1 in content, Delete in INSERT, ESC timeout, the language server
+  dying mid-session (`:wq` must still exit 0 — proves the drain), stdout to a
+  dead pipe (exit 0, terminal cooked), and two `--headless` inputs that
+  differ only in where the 8-byte reads cut a sequence. Its child resets
+  SIGPIPE to SIG_DFL: Python starts with it ignored, which is how a SIGPIPE
+  death hides from `drive()`.
+- `cyrius smoke` 13 / 13; `tests/cli_smoke.sh` 128; DCE parity re-runs the
+  integration smoke green; agnos full-screen QEMU test PASS.
+
+### Benchmarks
+
+`cyrius bench tests/perf.bcyr` runs clean, but the host was shared (load
+average 8–18 on 16 cores), so **BENCHMARKS.md is not re-baselined** and no
+speed claim is made. Measured as interleaved runs of 1.10.1 and 1.11.0 in the
+same window: `render_build_line_80c_x1000` 275–309 µs → 307–377 µs; a 1.11.0
+build with the BUG-005 decode check removed measured 298–328 µs, so of the
+≈ 10 % about 3 % is that check and the rest the toolchain move.
+`buf_fill_10MB` and `buf_move_10K_cycles_10MB` were inside run-to-run spread.
+
+### Binary
+
+`CYRIUS_DCE=1`, against 1.10.1 built the same way at its own pin:
+
+| Target | 1.10.1 (6.6.2) | 1.11.0 (6.7.9) |
+|---|---:|---:|
+| x86_64 Linux | 1,062,544 B | **1,098,280 B** (+35,736) |
+| agnos | 1,038,064 B | **1,074,016 B** (+35,952) |
+| aarch64 Linux | 1,615,440 B | **1,487,280 B** (−128,160) |
+
+Not attributed further: a toolchain minor, a regenerated `lib/`, darshana
+1.3.0 and this cut's code all moved at once.
+
 ## [1.10.1] - 2026-09-11
 
 ### Changed

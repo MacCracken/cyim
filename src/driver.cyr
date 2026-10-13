@@ -139,7 +139,11 @@ fn editor_step(s, key) {
     # `oabc<Esc>` removes the whole thing, as vim does.
     if (action == ACT_OPEN_BELOW)        { undo_record_pre_op(s); }
     if (action == ACT_OPEN_ABOVE)        { undo_record_pre_op(s); }
-    if (action == ACT_DELETE_RIGHT)      { undo_record_pre_op(s); }
+    # In INSERT (the Delete key, v1.11.0) the session's own entry snapshot
+    # already covers it — a second one would split one insert into two undos.
+    if (action == ACT_DELETE_RIGHT) {
+        if (editor_mode(s) != MODE_INSERT) { undo_record_pre_op(s); }
+    }
     if (action == ACT_VISUAL_DELETE)     { undo_record_pre_op(s); }
     if (action == ACT_PASTE_AFTER)       { undo_record_pre_op(s); }
     if (action == ACT_PASTE_BEFORE)      { undo_record_pre_op(s); }
@@ -174,73 +178,214 @@ fn editor_run(s, keys, n) {
     return n;
 }
 
-# Driver-side multi-byte input feeder. Modern terminals send the
-# entire CSI escape sequence (e.g. arrow up = ESC [ A = 3 bytes)
-# in a single TTY frame; a single read on stdin gets all 3 bytes
-# at once. We scan the buffer for ESC [ <final> at the head and
-# dispatch the corresponding ACT_MOVE_* directly via motion_apply,
-# consuming 3 bytes per CSI hit. Anything else routes through
-# editor_step unchanged so dispatch stays byte-token-clean.
+# ── Key-sequence decoding (v1.11.0 — BUG-003) ────────────
 #
-# Limitation: if a CSI sequence is split across reads (rare on
-# modern terminals; can happen on slow serial), the leading ESC
-# would dispatch a mode-exit on its own and the [ + final would
-# arrive as separate bytes the next iteration. A 1-iteration look-ahead
-# buffer would close that hole; see roadmap.md
-# § Deferred in-source notes.
-fn editor_feed(s, buf, len) {
-    var i = 0;
-    while (i < len) {
-        # CSI head: ESC [ <final>. We need at least 3 bytes
-        # remaining for a complete sequence.
-        var consumed = 0;
-        if (i + 2 < len) {
-            if (load8(buf + i) == 27) {
-                if (load8(buf + i + 1) == 91) {
-                    var final = load8(buf + i + 2);
-                    # v1.6.7: route arrow keys to list-mode
-                    # navigation when the picker is active.
-                    # Mirrors mode.cyr's j/k routing for the same
-                    # state — arrow-key users get the same surface
-                    # as vim-key users, no second-class citizenship.
-                    # Up/Down move the selection; Left/Right are
-                    # swallowed (no horizontal navigation in a
-                    # single-column picker — they'd land on
-                    # h/l-equivalent NORMAL motions if dispatched).
-                    if (_plugin_list_active == 1) {
-                        if (final == 65) { _plugin_list_prev(); } # Up
-                        if (final == 66) { _plugin_list_next(); } # Down
-                        # final == 67 (Right) / 68 (Left): no-op.
-                        consumed = 3;
-                    } else {
-                        var act = 0;
-                        if (final == 65) { act = ACT_MOVE_UP; }
-                        if (final == 66) { act = ACT_MOVE_DOWN; }
-                        if (final == 67) { act = ACT_MOVE_RIGHT; }
-                        if (final == 68) { act = ACT_MOVE_LEFT; }
-                        if (act != 0) {
-                            # Apply the motion in whatever mode the
-                            # editor is in (NORMAL, INSERT, VISUAL).
-                            # motion_apply guards by mode/state.
-                            motion_apply(s, act);
-                            consumed = 3;
-                        } else {
-                            # Unknown CSI final byte — swallow the
-                            # 3-byte sequence to avoid the destructive
-                            # fallback (ESC + [ + <byte> processed
-                            # individually would exit insert + dispatch
-                            # whatever <byte> means in NORMAL).
-                            consumed = 3;
-                        }
-                    }
+# Keys with no byte of their own arrive as escape sequences. A CSI key is
+# `ESC [`, then any parameter bytes (0x30–0x3F: digits, `;`, `<` …), then any
+# intermediate bytes (0x20–0x2F), then ONE final byte (0x40–0x7E): the arrows
+# are `ESC [ A`..`D`, Delete is `ESC [ 3 ~`, PgUp `ESC [ 5 ~`, Ctrl-Right
+# `ESC [ 1 ; 5 C`.
+#
+# Through 1.10.1 `editor_feed` assumed every CSI was exactly three bytes, so
+# the tail of a longer one was fed as KEYSTROKES: Delete typed a literal `~`
+# in INSERT, and Ctrl-Right ran `;`, a count and `C` (change to end of line)
+# in NORMAL. And it only recognized a CSI that arrived whole in one read, so a
+# burst of held-arrow sequences — 3 bytes each against an 8-byte read — could
+# split one, dispatching its ESC as a mode exit and its final byte as a command.
+#
+# The decoder below runs to the final byte however long the sequence is, and
+# keeps its state in the editor record (`feed_state` / `feed_plen` /
+# `feed_pbuf`), so a sequence split across reads decodes exactly as if it had
+# arrived in one. What it acts on:
+#   - final A / B / C / D — an arrow. Parameters (Shift / Ctrl / Alt
+#     modifiers) are ignored, so Ctrl-Right moves like Right.
+#   - `ESC [ 3 ~`, with or without a `;<modifier>` — the Delete key, fed to
+#     `editor_step` as KEY_DELETE (src/mode.cyr says what each mode does).
+#   - everything else is SWALLOWED whole: PgUp / PgDn / Home / End / Insert,
+#     F5 and up, the Linux console's `ESC [ [ A`-style F1–F5, focus and mouse
+#     reports, bracketed-paste markers. None reaches a mode as keystrokes.
+# A byte that cannot continue a CSI (a C0 control, DEL, any byte >= 0x80)
+# abandons it: the prefix is dropped and that byte is fed normally, so a
+# garbled sequence costs nothing but itself. An ESC inside a CSI starts over.
+#
+# ⚠ The lone-ESC rule. ESC is also the Esc KEY, and an Esc has to take effect
+# at once — so an ESC that ENDS the caller's input is dispatched immediately,
+# exactly as before. `editor_feed_cont` is the one exception: its caller's
+# read FILLED the buffer, so more bytes are already waiting and a trailing
+# ESC is the likely start of a split sequence; it is carried instead. Anything
+# carried that never completes is resolved by `editor_feed_flush` — the
+# interactive loop calls it after ESC_SEQ_TIMEOUT_MS of quiet, `--headless` at
+# end of input.
+#
+# SS3 keys (`ESC O <final>`: F1–F4, and arrows in application-cursor mode,
+# which cyim never enables) are deliberately NOT decoded. `O` is "open line
+# above", and `<Esc>O` typed quickly lands in one read — decoding it would eat
+# a real command. See roadmap.md § Open Bugs.
+
+# How long the interactive loop waits for the rest of a carried escape
+# sequence before `editor_feed_flush` resolves it. A terminal sends a whole
+# key sequence in one write, so the rest is normally already queued; 50 ms is
+# the conventional bound (neovim's `ttimeoutlen` default).
+var ESC_SEQ_TIMEOUT_MS = 50;
+
+# CSI parameter / intermediate bytes kept for dispatch. Must equal the
+# 16-byte `feed_pbuf` slot pair in the EditorState layout (src/mode.cyr).
+var FEED_PBUF_MAX = 16;
+
+# Act on a complete CSI ending in `final`, whose parameter bytes are in the
+# editor's `feed_pbuf`. Returns 0.
+fn _feed_csi_dispatch(s, final) {
+    var plen = _editor_feed_plen(s);
+    var pb = _editor_feed_pbuf(s);
+    # `ESC [ [ <x>` is the Linux console's F1–F5, not an arrow.
+    if (plen > 0) {
+        if (load8(pb) == 91) { return 0; }
+    }
+    if (final >= 65) {
+        if (final <= 68) {
+            # v1.6.7: arrows navigate the picker while it is up. Up / Down move
+            # the selection; Left / Right are swallowed (a single-column list
+            # has no horizontal motion, and dispatching them would land on the
+            # h / l-equivalent NORMAL motions underneath).
+            if (_plugin_list_active == 1) {
+                if (final == 65) { _plugin_list_prev(); }
+                if (final == 66) { _plugin_list_next(); }
+                return 0;
+            }
+            var act = ACT_MOVE_UP;
+            if (final == 66) { act = ACT_MOVE_DOWN; }
+            if (final == 67) { act = ACT_MOVE_RIGHT; }
+            if (final == 68) { act = ACT_MOVE_LEFT; }
+            # Applied in whatever mode the editor is in (NORMAL, INSERT,
+            # VISUAL); motion_apply guards by mode / state.
+            motion_apply(s, act);
+            return 0;
+        }
+    }
+    if (final == 126) {                        # `~`
+        if (plen > 0) {
+            if (load8(pb) == 51) {             # `3`
+                var is_del = 0;
+                if (plen == 1) { is_del = 1; }
+                if (plen > 1) {
+                    if (load8(pb + 1) == 59) { is_del = 1; }   # `3;<modifier>`
                 }
+                if (is_del == 1) { editor_step(s, KEY_DELETE); }
             }
         }
-        if (consumed == 0) {
-            editor_step(s, load8(buf + i));
-            consumed = 1;
-        }
-        i = i + consumed;
     }
-    return i;
+    return 0;
+}
+
+# Feed one byte through the decoder. `last` is 1 when this byte ends the
+# caller's input and nothing is known to follow it (the lone-ESC rule above).
+# Returns 0.
+fn _feed_byte(s, c, last) {
+    var st = _editor_feed_state(s);
+    if (st == 2) {
+        # The Linux console's F1–F5 are `ESC [ [ A`..`E`: a `[` straight after
+        # the CSI introducer is kept as a marker, not taken as the final byte —
+        # which would leave the trailing letter to run as a command.
+        if (c == 91) {
+            if (_editor_feed_plen(s) == 0) {
+                store8(_editor_feed_pbuf(s), c);
+                _editor_set_feed_plen(s, 1);
+                return 0;
+            }
+        }
+        if (c >= 64) {
+            if (c <= 126) {
+                _editor_set_feed_state(s, 0);
+                _feed_csi_dispatch(s, c);
+                _editor_set_feed_plen(s, 0);
+                return 0;
+            }
+        }
+        if (c >= 32) {
+            if (c <= 63) {
+                var n = _editor_feed_plen(s);
+                if (n < FEED_PBUF_MAX) { store8(_editor_feed_pbuf(s) + n, c); }
+                _editor_set_feed_plen(s, n + 1);
+                return 0;
+            }
+        }
+        # Cannot continue a CSI: abandon it and treat `c` as fresh input.
+        _editor_set_feed_state(s, 0);
+        _editor_set_feed_plen(s, 0);
+        st = 0;
+    }
+    if (st == 1) {
+        if (c == 91) {
+            _editor_set_feed_state(s, 2);
+            _editor_set_feed_plen(s, 0);
+            return 0;
+        }
+        # ESC followed by anything but `[` was the Esc key.
+        _editor_set_feed_state(s, 0);
+        editor_step(s, KEY_ESC);
+    }
+    if (c == KEY_ESC) {
+        if (last == 1) {
+            editor_step(s, KEY_ESC);
+            return 0;
+        }
+        _editor_set_feed_state(s, 1);
+        return 0;
+    }
+    editor_step(s, c);
+    return 0;
+}
+
+# Shared body of `editor_feed` / `editor_feed_cont`. `more` is 1 when the
+# input is known to continue past `len`.
+fn _editor_feed_n(s, buf, len, more) {
+    var i = 0;
+    while (i < len) {
+        var last = 0;
+        if (i == len - 1) {
+            if (more == 0) { last = 1; }
+        }
+        _feed_byte(s, load8(buf + i), last);
+        i = i + 1;
+    }
+    return len;
+}
+
+# Feed `len` input bytes at `buf` to the editor: decode escape sequences into
+# keys (above) and dispatch everything else through `editor_step`, byte by
+# byte. Returns `len` — every byte is consumed, either dispatched or held as
+# part of an unfinished sequence that the NEXT call continues. A lone ESC at
+# the end is the Esc key and takes effect now.
+#
+# This is the entry the interactive loop and `--headless` use; `editor_run`
+# is the raw byte-at-a-time wrapper the test suites script sessions with.
+fn editor_feed(s, buf, len) {
+    return _editor_feed_n(s, buf, len, 0);
+}
+
+# `editor_feed` for input known to continue — the read that produced it
+# filled its buffer. Identical except that a trailing ESC is carried to the
+# next call rather than dispatched, because it is more likely the first byte
+# of a sequence the read cut in two. Returns `len`.
+fn editor_feed_cont(s, buf, len) {
+    return _editor_feed_n(s, buf, len, 1);
+}
+
+# 1 if the decoder is holding an unfinished escape sequence (a carried ESC, or
+# a CSI still waiting for its final byte), else 0. The interactive loop uses
+# it to wait a bounded time for the rest instead of blocking.
+fn editor_feed_pending(s) {
+    if (_editor_feed_state(s) != 0) { return 1; }
+    return 0;
+}
+
+# Resolve whatever `editor_feed` is holding, because no more of it is coming:
+# a carried ESC was the Esc key and is dispatched; an unfinished CSI was never
+# a key and is dropped. Returns 0. A no-op when nothing is pending.
+fn editor_feed_flush(s) {
+    var st = _editor_feed_state(s);
+    _editor_set_feed_state(s, 0);
+    _editor_set_feed_plen(s, 0);
+    if (st == 1) { editor_step(s, KEY_ESC); }
+    return 0;
 }

@@ -35,15 +35,26 @@ other follow-up byte falls through to the plugin prefix-key lookup
 
 **Arrow keys** also route to the motion actions: terminals send
 `ESC [ A/B/C/D` for up/down/right/left; cyim's driver-side
-`editor_feed` parses the 3-byte CSI sequence and dispatches the
-matching `ACT_MOVE_*` directly. Available in NORMAL, INSERT, and
-VISUAL.
+`editor_feed` decodes the CSI sequence and dispatches the matching
+`ACT_MOVE_*` directly. Available in NORMAL, INSERT, and VISUAL. Since
+1.11.0 a modified arrow (`ESC [ 1 ; 5 C` — Ctrl-Right, Shift-Up, …)
+moves like the plain arrow, and a sequence decodes the same however the
+terminal's bytes are split across reads.
+
+**Other terminal keys** (1.11.0). `Delete` (`ESC [ 3 ~`) is below. Every
+other multi-byte key a terminal sends as a CSI sequence — PgUp / PgDn,
+Home / End, Insert, F5 and up, the Linux console's `ESC [ [ A`-style
+F1–F5, mouse and focus reports — is swallowed whole; through 1.10.1 their
+tails ran as keystrokes. ⚠ F1–F4 on xterm-style terminals are SS3
+sequences (`ESC O P` .. `S`), which cyim does NOT decode: they arrive as
+Esc, `O` (open line above) and a letter. Known — BUG-007 in the roadmap.
 
 ### Edits
 
 | Key      | Byte | Action                | Action ID              | Vim |
 |----------|------|-----------------------|------------------------|-----|
 | `x`      | 120  | Delete byte           | `ACT_DELETE_RIGHT`     | =   |
+| `Delete` | `ESC [ 3 ~` | Delete byte (same as `x`; since 1.11.0) | `ACT_DELETE_RIGHT` | = |
 | `i`      | 105  | INSERT at cursor      | `ACT_TO_INSERT`        | =   |
 | `a`      | 97   | INSERT after cursor   | `ACT_TO_INSERT_AFTER`  | =   |
 | `A`      | 65   | INSERT at line end    | `ACT_TO_INSERT_LINE_END`| =  |
@@ -172,11 +183,14 @@ the plugin is folded in.
 | `Esc`           | 27    | Back to NORMAL (cursor steps back one within line) |
 | `Backspace`     | 8     | Delete byte left of cursor |
 | `DEL`           | 127   | Same as Backspace          |
+| `Delete`        | `ESC [ 3 ~` | Delete byte UNDER the cursor; stay in INSERT (1.11.0). Part of the session's undo unit; not replayed by `.` |
+| arrows          | `ESC [ A`..`D` | Move without leaving INSERT |
 
-cyim's INSERT mode is intentionally narrow — most terminals send
-multi-byte escape sequences for arrow keys etc., and the leading `\x1b`
-will look like Esc. Use `Esc h j k l` to navigate; faster than the
-arrows anyway.
+An ESC that a terminal sends as the start of a key sequence is not
+mistaken for the Esc key: cyim decodes the whole sequence. A real Esc
+keypress still takes effect at once. (One exception: if a burst of input
+fills cyim's 8-byte read exactly on an ESC, it waits up to 50 ms to see
+whether a sequence follows.)
 
 ---
 
@@ -188,8 +202,12 @@ arrows anyway.
 |-----------------|--------|-----------------------------|
 | any printable   | 32–126 | Append to cmdbuf            |
 | `Backspace` / `DEL` | 8 / 127 | Delete byte from cmdbuf |
+| `Delete`        | `ESC [ 3 ~` | Ignored (the command line has no cursor) |
 | `Enter` / `LF`  | 13 / 10 | Execute, return to NORMAL |
 | `Esc`           | 27     | Cancel, return to NORMAL  |
+
+Control bytes on the command line display as `?` (1.11.0) — what was
+typed or pasted there is not trusted to reach the terminal raw.
 
 ### Ex commands
 
@@ -273,10 +291,11 @@ all keys return `ACT_NONE` so motion / edit pipelines stay no-ops.
 | `q`   | 113 | Dismiss without firing |
 | any other | — | Swallowed (no-op) |
 
-**Arrow keys are NOT bound** in list mode as of v1.6.0 — they
-route to motion actions via `editor_feed`'s CSI parser, bypassing
-the list-mode interception. Future hardening per the
-[deferred LSP polish items](../development/roadmap.md). Use j/k.
+**Arrow keys**: Up / Down move the selection (since 1.6.7, via
+`editor_feed`'s CSI decoder); Left / Right are swallowed. Every other key,
+Delete included, is swallowed while the picker is up. Picker rows are
+shown with control bytes as `?` (1.11.0): `:lsp-find-refs` rows carry a
+preview of a line from another file.
 
 `on_select` runs **after** dismiss so the callback can call
 `plugin_list_display` again for chained pickers without leaking
@@ -296,6 +315,7 @@ lines for VISUAL_LINE).
 | any motion | (NORMAL motion bytes) | Extend selection | (NORMAL motions) |
 | `y` | 121   | Yank selection            | `ACT_VISUAL_YANK`    |
 | `d` | 100   | Yank + delete selection   | `ACT_VISUAL_DELETE`  |
+| `Delete` | `ESC [ 3 ~` | Same as `d` (1.11.0) | `ACT_VISUAL_DELETE` |
 | `v` | 118   | Toggle off (NORMAL)       | `ACT_TO_NORMAL` (in VISUAL); swap to VISUAL (in VISUAL_LINE) |
 | `V` | 86    | Swap to VISUAL_LINE       | (or toggle off in VISUAL_LINE) |
 | `Esc` | 27  | Cancel; return to NORMAL  | `ACT_TO_NORMAL`      |

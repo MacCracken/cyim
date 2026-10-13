@@ -15,10 +15,23 @@
 # Line 1 is "foo bar"     (terminator at 19).
 # Line 2 is "  baz"       (terminator at 25; leading whitespace exercises 'b').
 
+# v1.11.0: the full chain mode.cyr's and plugin.cyr's calls resolve
+# against (marks before mode; command and its dependencies after window),
+# so the suite compiles with ZERO "undefined function" warnings — through
+# 1.10.1 it printed one per unresolved callee on every run.
 include "src/buffer.cyr"
 include "src/motion.cyr"
 include "src/plugin.cyr"
+include "src/marks.cyr"
 include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
 
 fn load_fixture(b) {
     buf_insert(b, "hello world\nfoo bar\n  baz\n", 26);

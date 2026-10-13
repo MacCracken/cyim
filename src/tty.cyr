@@ -77,11 +77,14 @@ fn tty_probe() {
     var rc = tty_raw(0);
     if (rc < 0) { return 0 - 1; }
     syscall(1, 1, "[cyim tty probe: raw mode active]\r\n", 35);
-    # nanosleep(&{tv_sec=0, tv_nsec=50_000_000}, NULL)
+    # nanosleep(&{tv_sec=0, tv_nsec=50_000_000}, NULL). The stdlib wrapper,
+    # not `syscall(35, …)`: 35 is nanosleep on x86_64 only (aarch64's is 101,
+    # and its 35 is `unlinkat`) — it worked there through 1.10.1 solely
+    # because the aarch64 backend rewrites that one number.
     var ts[16];
     store64(&ts, 0);
     store64(&ts + 8, 50000000);
-    syscall(35, &ts, 0);
+    sys_nanosleep(&ts, 0);
     tty_cooked();
     syscall(1, 1, "[cyim tty probe: restored]\n", 27);
     return 0;

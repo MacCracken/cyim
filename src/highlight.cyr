@@ -67,13 +67,23 @@ fn _hl_join_grammars(base, base_len) {
     return out;
 }
 
-# Resolve grammars/ via /proc/self/exe (Linux SYS_readlink = 89). Tries:
+# Resolve grammars/ via the /proc/self/exe symlink. Tries:
 #   1. <exe-dir>/grammars/                      (installed-adjacent)
 #   2. <exe-dir>/../grammars/                   (dev: build/cyim + ./grammars/)
 # Returns absolute path cstr or 0 if neither candidate has cyrius.cyml.
+#
+# ⚠ Through 1.10.1 the readlink was `syscall(89, …)` — x86_64 Linux's number,
+# reaching the right call on aarch64 only because the backend rewrites it, and
+# on agnos issuing `gpu_caps` (#89) with the path literal as its output buffer.
+# `sys_readlink` is each target's own call; agnos's takes the path length too.
 fn _hl_resolve_dir() {
     var link[512];
-    var n = syscall(89, "/proc/self/exe", &link, 511);
+    #ifdef CYRIUS_TARGET_AGNOS
+    var n = sys_readlink("/proc/self/exe", 14, &link, 511);
+    #endif
+    #ifndef CYRIUS_TARGET_AGNOS
+    var n = sys_readlink("/proc/self/exe", &link, 511);
+    #endif
     if (n <= 0) { return 0; }
     store8(&link + n, 0);
 

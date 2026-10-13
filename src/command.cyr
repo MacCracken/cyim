@@ -14,8 +14,8 @@
 #   e <path> — load <path> into the main buffer (last_error = ERR_DIRTY if modified)
 #
 # Multi-byte ranges (`:1,5d`), search-replace (`:%s/x/y/`), tab-completion,
-# and shell-out (`:!cmd`) have been out of scope since M1; see roadmap.md
-# § Deferred in-source notes. `:!cmd` is additionally constrained by
+# and shell-out (`:!cmd`): out of scope since M1 (roadmap.md § Deferred
+# in-source notes). `:!cmd` is additionally constrained by
 # Refusal §0 — it is a Non-Goal, not merely unbuilt.
 #
 # Requires: src/buffer.cyr, src/mode.cyr (and stdlib alloc / io / strlen).
@@ -355,12 +355,22 @@ fn _cmd_find_path(s, path) {
 
 # Stat a file's size by open + lseek(0, SEEK_END) + close. Returns
 # the byte size on success, -1 on open failure. Used by `:e` to
-# refuse over-cap files BEFORE allocating a buffer.
-# SYS_LSEEK = 8 on x86_64 Linux. SEEK_END = 2.
+# refuse over-cap files BEFORE allocating a buffer. SEEK_END = 2.
+#
+# ⚠ Through 1.10.1 this issued `syscall(8, …)` — lseek's number on x86_64
+# ONLY. On aarch64 Linux 8 is `getxattr`, which answered -EFAULT, so the size
+# came back negative and EVERY `:e <existing file>` (and every LSP cross-file
+# jump through `plugin_buf_load_file`) failed as "file not found"; on agnos 8
+# is `dup` (a stub returning the fd, per the stdlib's table), so the cap could
+# not apply there either.
+# The aarch64 cross-build had printed a warning naming this line since at
+# least cyrius 6.6.2; nothing ran the suites on aarch64 to show what it cost
+# (`cyrius test --aarch64` fails 16 command.tcyr assertions without the fix).
+# `xlseek` (lib/io.cyr) issues each target's own SYS_LSEEK.
 fn _cmd_file_size(path) {
     var fd = file_open(path, O_RDONLY, 0);
     if (fd < 0) { return 0 - 1; }
-    var size = syscall(8, fd, 0, 2);
+    var size = xlseek(fd, 0, 2);
     file_close(fd);
     return size;
 }

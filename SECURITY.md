@@ -26,10 +26,12 @@ In particular:
   path the user types, every `.cyimrc` it loads is trusted to
   the degree the invoking shell trusts the user.
 - File content from disk is treated as untrusted *for display*
-  but trusted to be data — control bytes are `^X`-substituted
-  in render (closes M5 audit F-1), but the buffer's bytes are
-  *not* parsed for commands, modelines, scripts, or anything
-  else.
+  but trusted to be data — C0 control bytes are `^X`-substituted
+  in render (closes M5 audit F-1), C1 controls are shown as `<xx>`
+  (1.11.0, BUG-005), and text cyim prints that is not the buffer —
+  file names, messages, plugin segments, picker rows — has its
+  controls shown as `?` (1.11.0). The buffer's bytes are *not*
+  parsed for commands, modelines, scripts, or anything else.
 - The binary is not setuid / setgid / setcap-wrapped. Running
   cyim under sudo gives cyim root's privileges; that's the
   user's choice.
@@ -89,6 +91,8 @@ requests instead)
   (post-LSP-fold-in; security re-scan included)
 - [2026-05-09 — 1.6.x closeout audit](docs/audit/2026-05-09-1.6x-closeout.md)
 - [2026-08-23 — 1.8.x P(-1) hardening audit](docs/audit/2026-08-23-1.8x-hardening.md)
+- [2026-08-23 — 1.9.x closeout audit](docs/audit/2026-08-23-1.9x-closeout.md)
+- [2026-10-12 — 1.11.0 release audit](docs/audit/2026-10-12-1.11.0-audit.md)
   (**most recent**)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
@@ -143,3 +147,21 @@ wrong colour — the reason to settle it is that the config surface is
 scheduled to widen to keymaps.
 
 F-CO-2 stays informational.
+
+State at v1.11.0: the four bugs darshana's consumer survey filed are
+closed (BUG-003 … BUG-006), and the cut found and fixed three more —
+from the [1.11.0 release audit](docs/audit/2026-10-12-1.11.0-audit.md):
+
+- **MEDIUM — the editor died with its language server.** A write to a
+  dead server's stdin raised SIGPIPE and killed cyim with unsaved edits,
+  the terminal left raw. Fixed with a drained SIGPIPE guard (darshana
+  `TTY_SIGMASK_PIPE`).
+- **LOW–MEDIUM — escape injection outside the buffer.** File names,
+  status messages, plugin segments, the command line and LSP picker rows
+  (which quote other files) were written raw; a crafted file name
+  retitled the terminal. Fixed with darshana's `tty_sanitize_buf`.
+- **LOW — `:e` broken on aarch64** by a raw x86_64 syscall number.
+
+Residual: the LSP server inherits cyim's blocked SIGWINCH / SIGPIPE
+through the cyim-lsp bundle's own fork + exec; the fix is upstream.
+R-1a is still open. ADR 0005 was decided at v1.9.2.

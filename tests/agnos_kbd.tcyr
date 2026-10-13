@@ -1,0 +1,101 @@
+# tests/agnos_kbd.tcyr — the agnos keyboard decoder (v1.11.0, BUG-004)
+#
+# src/agnos_kbd.cyr turns kbscan#42's raw Set-1 scancodes into the byte
+# stream a terminal would send. Its pure half (tables, make / break
+# translation, `_kbd_decode_batch`) compiles under CYIM_AGNOS_KBD_DECODER,
+# defined below, so it runs here on any host; only the kbscan read stays
+# agnos-only. Through 1.10.1 nothing exercised the decoder anywhere, which is
+# how it shipped without chakshu's AG1 / AG2 fixes.
+#
+# Mutation-tested: making `_kbd_ext` a per-batch local again fails the
+# "prefix ends a batch" group; dropping the clamp fails "count is clamped".
+
+#define CYIM_AGNOS_KBD_DECODER
+include "src/agnos_kbd.cyr"
+
+# Decode one batch of `n` scancodes from `codes` and copy the output into
+# `out` (up to `max`). Returns the number of output bytes.
+fn decode(codes, n, out, max) {
+    # Zero `out` first, so a byte-level check can never pass on the bytes an
+    # EARLIER decode left there.
+    var z = 0;
+    while (z < max) { store8(out + z, 0); z = z + 1; }
+    _kbd_decode_batch(codes, n);
+    return _kbd_take(out, max);
+}
+
+# Run every group; the exit code is the number of failed assertions.
+fn main() {
+    alloc_init();
+    var sc = alloc(256);
+    var out = alloc(512);
+
+    test_group("baseline: a plain make code and the extended arrows");
+    _kbd_reset();
+    store8(sc, 0x1E);                           # make 'a'
+    assert_eq(decode(sc, 1, out, 512), 1, "one byte");
+    assert_eq(load8(out), 97, "'a'");
+    store8(sc, 0xE0); store8(sc + 1, 0x48);     # E0 48 = Up
+    assert_eq(decode(sc, 2, out, 512), 3, "Up -> 3 bytes");
+    assert_eq(memeq(out, "\x1b[A", 3), 1, "Up -> ESC [ A");
+
+    test_group("AG2 — an 0xE0 prefix that ENDS a batch survives into the next");
+    _kbd_reset();
+    store8(sc, 0xE0);
+    assert_eq(decode(sc, 1, out, 512), 0, "the prefix alone produces nothing");
+    store8(sc, 0x48);
+    assert_eq(decode(sc, 1, out, 512), 3, "its companion, next batch, is still extended");
+    assert_eq(memeq(out, "\x1b[A", 3), 1, "E0 | 48 -> ESC [ A (1.10.1: nothing)");
+    store8(sc, 0xE0);
+    decode(sc, 1, out, 512);
+    store8(sc, 0x10);                           # E0 10 = media previous-track
+    assert_eq(decode(sc, 1, out, 512), 0, "E0 | 10 types nothing (1.10.1 typed 'q')");
+
+    test_group("AG2 — the prefix is consumed: it does not leak onto later keys");
+    _kbd_reset();
+    store8(sc, 0xE0); store8(sc + 1, 0xC8);     # E0 C8 = Up released
+    decode(sc, 2, out, 512);
+    store8(sc, 0x1E);
+    assert_eq(decode(sc, 1, out, 512), 1, "next key decodes on its own");
+    assert_eq(load8(out), 97, "plain 'a', not an extended code");
+    store8(sc, 0xE0); store8(sc + 1, 0x2A); store8(sc + 2, 0x1E);   # PS/2 fake shift
+    assert_eq(decode(sc, 3, out, 512), 1, "E0 2A latches nothing");
+    assert_eq(load8(out), 97, "still lower-case 'a' (chakshu AG3 shape)");
+
+    test_group("AG1 — the kernel's count is clamped to the 64-byte scan buffer");
+    _kbd_reset();
+    var i = 0;
+    while (i < 256) {
+        if (i < 64) { store8(sc + i, 0x9E); } else { store8(sc + i, 0x1E); }   # break 'a' | make 'a'
+        i = i + 1;
+    }
+    assert_eq(decode(sc, 200, out, 512), 0,
+      "n = 200 decodes only the first 64 (all breaks): nothing (1.10.1: 136 'a's)");
+    assert_eq(decode(sc + 64, 64, out, 512), 64, "control: the same make codes in range DO decode");
+
+    test_group("Delete sends ESC [ 3 ~; Backspace still sends DEL");
+    _kbd_reset();
+    store8(sc, 0xE0); store8(sc + 1, 0x53);     # E0 53 = Delete
+    assert_eq(decode(sc, 2, out, 512), 4, "Delete -> 4 bytes");
+    assert_eq(memeq(out, "\x1b[3~", 4), 1, "Delete -> ESC [ 3 ~ (1.10.1: DEL, a backspace)");
+    store8(sc, 0x0E);                           # Backspace
+    assert_eq(decode(sc, 1, out, 512), 1, "Backspace -> 1 byte");
+    assert_eq(load8(out), 127, "Backspace -> DEL");
+
+    test_group("_agnos_kbd_pending reports what a short read leaves carried");
+    _kbd_reset();
+    store8(sc, 0xE0); store8(sc + 1, 0x4D);     # Right
+    store8(sc + 2, 0xE0); store8(sc + 3, 0x4D); # Right
+    store8(sc + 4, 0xE0); store8(sc + 5, 0x4D); # Right
+    _kbd_decode_batch(sc, 6);
+    assert_eq(_agnos_kbd_pending(), 9, "three arrows carried: 9 bytes");
+    assert_eq(_kbd_take(out, 8), 8, "an 8-byte read takes 8");
+    assert_eq(_agnos_kbd_pending(), 1, "1 left — the loop feeds the 8 with editor_feed_cont");
+    assert_eq(_kbd_take(out, 8), 1, "the next read gets the last byte");
+    assert_eq(_agnos_kbd_pending(), 0, "drained");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

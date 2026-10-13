@@ -9,13 +9,14 @@
 #
 # Main loop:
 #   1. Render the frame (buffer + status + cursor).
-#   2. Block on read(stdin, 1) — VMIN=1 / VTIME=0 from tty_raw.
-#   3. editor_step(s, byte) dispatches + applies.
+#   2. Wait for stdin (or a resize) — VMIN=1 / VTIME=0 from tty_raw.
+#   3. editor_feed decodes key sequences and dispatches through editor_step.
 #   4. Exit when editor_quit(s) == 1 or stdin EOF.
 #
-# All TTY state changes wrap the loop: alt-screen on / raw on at start;
-# alt-screen off / cooked on at exit. EOF and quit both fall through to
-# the same teardown path.
+# All TTY state changes wrap the loop: raw on / alt-screen on at start; at
+# exit cooked FIRST, then alt-screen off, then the signal blocks released
+# last (darshana ADR 0002's order). EOF and quit both fall through to the
+# same teardown path.
 
 include "lib/vyakarana.cyr"
 # cyim-lsp 1.0.2 — first external sandhi-pattern plugin folded in.
@@ -116,6 +117,9 @@ fn _resize_watch_open(wfd_slot) {
     return 0 - 1;
 }
 fn _resize_watch_close(epfd, wfd) { return 0; }
+# agnos has no SIGPIPE (and no LSP child to lose), so there is nothing to guard.
+fn _pipe_guard_open() { return 0 - 1; }
+fn _pipe_guard_close(pfd) { return 0; }
 #endif
 #ifdef CYRIUS_TARGET_MACOS
 fn _resize_watch_open(wfd_slot) {
@@ -123,6 +127,8 @@ fn _resize_watch_open(wfd_slot) {
     return 0 - 1;
 }
 fn _resize_watch_close(epfd, wfd) { return 0; }
+fn _pipe_guard_open() { return 0 - 1; }
+fn _pipe_guard_close(pfd) { return 0; }
 #endif
 #ifndef CYRIUS_TARGET_AGNOS
 #ifndef CYRIUS_TARGET_MACOS
@@ -174,6 +180,62 @@ fn _resize_watch_open(wfd_slot) {
 fn _resize_watch_close(epfd, wfd) {
     if (epfd >= 0) { file_close(epfd); }
     if (wfd >= 0)  { tty_close_signalfd(wfd, TTY_SIGMASK_WINCH); }
+    return 0;
+}
+
+# ── SIGPIPE guard (v1.11.0) ──────────────────────────────
+#
+# A write to a pipe whose reader has gone raises SIGPIPE, whose default action
+# kills the process on the spot. cyim writes to one such pipe all the time:
+# the LSP server's stdin (src/plugins/lsp_glue.cyr). Through 1.10.1, a
+# language server that crashed or was killed took the EDITOR with it at the
+# next keystroke — the didChange write raised SIGPIPE, cyim died (signal 13)
+# with unsaved changes, and the terminal was left raw on the alternate
+# screen. Reproduced by killing `cyrius-lsp` mid-session.
+#
+# darshana's `TTY_SIGMASK_PIPE` (1.3.0) routes the signal through a signalfd
+# instead: SIGPIPE is blocked, so the write simply fails with EPIPE — which
+# the LSP client already handles as "server gone". The fd is never polled;
+# blocking is the whole job. Its own signalfd, not OR'd into the resize
+# watch's: the two masks are disjoint (darshana's rule for live signalfds),
+# and the guard must survive the resize watch failing to set up.
+#
+# ⚠ Inherited by children. A blocked mask survives fork + execve, and the LSP
+# server is spawned (lazily, mid-session) by the cyim-lsp bundle's own
+# fork / execve with no hook between the two — so it starts with SIGPIPE and
+# SIGWINCH blocked. cyim cannot unblock in the child, and closing the guard
+# around the spawn would re-expose the editor during the very handshake write
+# that races a server dying at start-up. Recorded in roadmap.md § Dependency
+# notes; the fix belongs in the bundle's spawn (reset the child's mask before
+# execve, as the cyrius 6.7.9 stdlib exec family now does).
+
+# Block SIGPIPE behind a signalfd. Returns the fd, or -1 when the guard could
+# not be set up — SIGPIPE then keeps its default action, as before 1.11.0.
+fn _pipe_guard_open() {
+    var pfd = tty_open_signalfd(TTY_SIGMASK_PIPE);
+    if (pfd < 0) { return 0 - 1; }
+    # Non-blocking, so `_pipe_guard_close` can drain it without waiting. A
+    # guard that cannot be drained would be unsafe to close, so refuse it.
+    if (fd_set_nonblocking(pfd) < 0) {
+        tty_close_signalfd(pfd, TTY_SIGMASK_PIPE);
+        return 0 - 1;
+    }
+    return pfd;
+}
+
+# Release the guard: DRAIN, then close and unblock. The drain is not
+# optional — `tty_close_signalfd`'s unblock delivers a signal that arrived and
+# was never read, with its default action, so a SIGPIPE taken on the last
+# keystroke (`:wq` saving to a dead server) would otherwise kill a clean exit
+# with status 141. Standard signals do not queue, so one read empties it; the
+# loop is bounded anyway. Safe with -1.
+fn _pipe_guard_close(pfd) {
+    if (pfd < 0) { return 0; }
+    var guard = 0;
+    while (guard < 8) {
+        if (tty_read_signal(pfd) > 0) { guard = guard + 1; } else { guard = 8; }
+    }
+    tty_close_signalfd(pfd, TTY_SIGMASK_PIPE);
     return 0;
 }
 #endif
@@ -282,23 +344,28 @@ fn run_headless(file_path) {
     window_init(s);
 
     # No resize watch here, deliberately: `--headless` has no TTY to resize.
+    # The SIGPIPE guard IS here: a language server dying mid-run would kill
+    # the run, and its unsaved edits, exactly as it would the editor.
+    var pfd = _pipe_guard_open();
     var quit = 0;
     while (quit == 0) {
-        # 8-byte read buffer accommodates the longest interactive
-        # sequences cyim cares about (CSI arrow = 3 bytes; CSI
-        # extended = up to ~7). editor_feed parses ESC [ <final>
-        # CSI codes as a unit; everything else routes through
-        # editor_step byte-by-byte.
+        # editor_feed decodes escape sequences as units and carries one that
+        # a read cuts in two (v1.11.0); everything else routes through
+        # editor_step byte by byte. A read that FILLS the buffer is fed with
+        # editor_feed_cont, because more input is already waiting.
         var key_buf[8];
         var n = file_read(0, &key_buf, 8);
         if (n <= 0) {
+            # End of input: a sequence still open will never complete.
+            editor_feed_flush(s);
             quit = 1;
         }
         if (quit == 0) {
-            editor_feed(s, &key_buf, n);
+            if (n == 8) { editor_feed_cont(s, &key_buf, n); } else { editor_feed(s, &key_buf, n); }
             if (editor_quit(s) == 1) { quit = 1; }
         }
     }
+    _pipe_guard_close(pfd);
     return 0;
 }
 
@@ -349,6 +416,8 @@ fn run_editor(file_path) {
         return 1;
     }
     #endif
+    # Before the first write to fd 1, so the whole session is covered.
+    var pfd = _pipe_guard_open();
     tty_alt_enter();
 
     # Screen grid, from the terminal itself (v1.10.0). Before this, only agnos
@@ -383,13 +452,16 @@ fn run_editor(file_path) {
         scr_rows = load64(&rows_slot);
         scr_cols = load64(&cols_slot);
         render_frame(s, scr_rows, scr_cols, tb);
-        # 8-byte read buffer accommodates the longest interactive
-        # sequences cyim cares about (CSI arrow = 3 bytes; CSI
-        # extended = up to ~7). editor_feed parses ESC [ <final>
-        # CSI codes as a unit; everything else routes through
-        # editor_step byte-by-byte.
+        # editor_feed decodes escape sequences as units and carries one that
+        # a read cuts in two (v1.11.0); everything else routes through
+        # editor_step byte by byte.
         var key_buf[8];
         var n = 0;
+        # 1 when the bytes read are known to continue — the read filled
+        # `key_buf` (or, on agnos, the decoder still holds more). They are
+        # then fed with editor_feed_cont, which carries a trailing ESC rather
+        # than taking it as the Esc key.
+        var more = 0;
         # `have_keys` separates "read returned nothing because the input ended"
         # from "we woke for a resize and there are no keys to feed". Both leave
         # `n` at 0, and conflating them would make every terminal resize quit
@@ -397,12 +469,23 @@ fn run_editor(file_path) {
         var have_keys = 1;
         #ifdef CYRIUS_TARGET_AGNOS
         n = _agnos_kbd_read(&key_buf, 8);   # blocks until a real key (kbscan#42)
+        if (_agnos_kbd_pending() > 0) { more = 1; }
         #endif
         #ifndef CYRIUS_TARGET_AGNOS
         if (epfd >= 0) {
             var evbuf[16];
-            var nr = sys_epoll_wait(epfd, &evbuf, 1, 0 - 1);
-            if (nr <= 0) {
+            # With half a key sequence held, wait only ESC_SEQ_TIMEOUT_MS for
+            # the rest; otherwise block until a key or a resize.
+            var tmo = 0 - 1;
+            if (editor_feed_pending(s) == 1) { tmo = ESC_SEQ_TIMEOUT_MS; }
+            var nr = sys_epoll_wait(epfd, &evbuf, 1, tmo);
+            if (nr == 0) {
+                # Timed out: what is held is not going to be completed. A lone
+                # ESC becomes the Esc key; a partial CSI is dropped.
+                editor_feed_flush(s);
+                have_keys = 0;
+            }
+            if (nr < 0) {
                 # EINTR or a spurious wake — no keys, no EOF. Loop and redraw.
                 have_keys = 0;
             }
@@ -414,19 +497,22 @@ fn run_editor(file_path) {
                 var ready = load64(&evbuf + 4);
                 #endif
                 if (ready == wfd) {
-                    # A resize. Drain the signalfd_siginfo record so the fd
-                    # stops reporting readable, then fall through to the top of
-                    # the loop, where `_query_winsize` picks up the new grid.
-                    var sink[128];
-                    file_read(wfd, &sink, 128);
+                    # A resize. Consume the signal (darshana's tty_read_signal
+                    # reads the signalfd_siginfo record cyim used to read by
+                    # hand) so the fd stops reporting readable, then fall
+                    # through to the top of the loop, where `_query_winsize`
+                    # picks up the new grid.
+                    tty_read_signal(wfd);
                     have_keys = 0;
                 } else {
                     n = file_read(0, &key_buf, 8);
+                    if (n == 8) { more = 1; }
                 }
             }
         }
         if (epfd < 0) {
             n = file_read(0, &key_buf, 8);
+            if (n == 8) { more = 1; }
         }
         #endif
         if (have_keys == 1) {
@@ -434,15 +520,27 @@ fn run_editor(file_path) {
         }
         if (quit == 0) {
             if (have_keys == 1) {
-                editor_feed(s, &key_buf, n);
+                if (more == 1) { editor_feed_cont(s, &key_buf, n); } else { editor_feed(s, &key_buf, n); }
                 if (editor_quit(s) == 1) { quit = 1; }
             }
         }
     }
 
-    _resize_watch_close(epfd, wfd);
-    tty_alt_leave();
-    tty_cooked();
+    # Teardown in darshana's ADR 0002 order (amended at darshana 1.1.4).
+    # Through 1.10.1 cyim closed the resize watch FIRST and restored termios
+    # LAST — the order 1.1.4 retired, for two reasons that both apply here:
+    #   - the screen restore writes to fd 1, and a write to a vanished reader
+    #     raises SIGPIPE; with termios restored last, dying there left the
+    #     terminal raw. So termios goes back first.
+    #   - closing a signalfd unblocks its mask, which DELIVERS any signal that
+    #     arrived and was never read. So the signalfds close last, once the
+    #     terminal is already restored.
+    # (Step 2 of the ADR, cursor show, does not apply: cyim never hides it.)
+    tty_cooked();                     # 1. termios first (a no-op on agnos)
+    tty_alt_leave();                  # 3. back to the main screen
+    tty_sgr_reset();                  # 4. cyim sets colours, so clear them
+    _resize_watch_close(epfd, wfd);   # 5. signalfds last — the resize watch,
+    _pipe_guard_close(pfd);           #    then the SIGPIPE guard (drained first)
     return 0;
 }
 

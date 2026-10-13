@@ -17,10 +17,22 @@ include "src/buffer.cyr"
 include "src/highlight.cyr"
 include "src/lang.cyr"
 include "src/cyimrc.cyr"
+# v1.11.0: the full chain mode.cyr's and plugin.cyr's calls resolve
+# against (marks before mode; command and its dependencies after window),
+# so the suite compiles with ZERO "undefined function" warnings — through
+# 1.10.1 it printed one per unresolved callee on every run.
 include "src/plugin.cyr"
+include "src/marks.cyr"
 include "src/mode.cyr"
 include "src/buflist.cyr"
 include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
 include "src/tty.cyr"
 include "src/render.cyr"
 
@@ -48,6 +60,29 @@ fn bytes_eq(a, b, n) {
         i = i + 1;
     }
     return 1;
+}
+
+# Append up to ten bytes to gap buffer `b` (a negative value ends the list)
+# and leave the cursor at 0. Builds the high-byte fixtures without spelling
+# a high byte in a string literal.
+fn put_bytes(b, v0, v1, v2, v3, v4, v5, v6, v7, v8, v9) {
+    var vs[80];
+    store64(&vs, v0);      store64(&vs + 8, v1);  store64(&vs + 16, v2);
+    store64(&vs + 24, v3); store64(&vs + 32, v4); store64(&vs + 40, v5);
+    store64(&vs + 48, v6); store64(&vs + 56, v7); store64(&vs + 64, v8);
+    store64(&vs + 72, v9);
+    buf_move(b, buf_len(b));
+    var k = 0;
+    var go = 1;
+    while (go == 1) {
+        if (k >= 10) { go = 0; }
+        if (go == 1) {
+            var v = load64(&vs + k * 8);
+            if (v < 0) { go = 0; } else { buf_insert_byte(b, v); k = k + 1; }
+        }
+    }
+    buf_move(b, 0);
+    return k;
 }
 
 # Append "ESC [ 3 8 ; 5 ; <code> m" to `buf` at `off`. Returns new offset.
@@ -241,6 +276,81 @@ fn main() {
     assert_eq(render_ctrl_substitute(32),   0,   "0x20 space kept (0)");
     assert_eq(render_ctrl_substitute(127),  63,  "0x7F DEL -> ^? (63)");
     assert_eq(render_ctrl_substitute(65),   0,   "'A' kept (0)");
+
+    # ── v1.11.0 — BUG-005: C1 controls, decided by decoding ─────────────
+    # Through 1.10.1 every byte >= 0x80 went out verbatim, C1 controls
+    # (0x80–0x9F — CSI 0x9B, OSC 0x9D, DCS 0x90, ST 0x9C) included, raw or
+    # UTF-8-encoded. They are now shown as `<xx>`; well-formed UTF-8 — whose
+    # continuation bytes overlap 0x80–0x9F — must come out byte for byte.
+    # Inputs are built byte by byte (`put_bytes`) so no test depends on how a
+    # string literal spells a high byte. Mutation: with `render_c1_at`
+    # answering 0 (the 1.10.1 behaviour) every `<xx>` assertion fails and
+    # every well-formed-UTF-8 one still passes.
+    test_group("BUG-005 — a raw C1 byte is shown as <xx>, never emitted");
+    var bc1 = buf_new();
+    put_bytes(bc1, 97, 0x9B, 98, 0x9D, 99, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    var nc1 = render_build_line_naked(bc1, 0, 80, 0, &out, 256);
+    assert_eq(nc1, 11, "a <9b> b <9d> c = 11 bytes");
+    assert_eq(out_eq(&out, "a<9b>b<9d>c", 11), 1, "raw CSI / OSC introducers shown as <9b> / <9d>");
+
+    test_group("BUG-005 — a UTF-8-encoded C1 (C2 80..C2 9F) is shown as <xx>");
+    var bc2 = buf_new();
+    put_bytes(bc2, 120, 0xC2, 0x9B, 121, 0xC2, 0x85, 122, 0 - 1, 0 - 1, 0 - 1);
+    var nc2 = render_build_line_naked(bc2, 0, 80, 0, &out, 256);
+    assert_eq(nc2, 11, "x <9b> y <85> z = 11 bytes");
+    assert_eq(out_eq(&out, "x<9b>y<85>z", 11), 1, "U+009B CSI and U+0085 NEL shown, both bytes consumed");
+
+    test_group("BUG-005 — well-formed UTF-8 passes byte for byte");
+    # e-acute C3 A9, NBSP C2 A0 (a C2 lead that is NOT C1), U+1F600
+    # F0 9F 98 80 (three of its bytes fall in 0x80–0x9F), U+FFFF EF BF BF.
+    var bu = buf_new();
+    put_bytes(bu, 0xC3, 0xA9, 0xC2, 0xA0, 0xF0, 0x9F, 0x98, 0x80, 0xEF, 0xBF);
+    put_bytes(bu, 0xBF, 0xE2, 0x82, 0xAC, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    buf_move(bu, 0);
+    var nu = render_build_line_naked(bu, 0, 80, 0, &out, 256);
+    assert_eq(nu, 14, "14 bytes in, 14 out");
+    var ui = 0;
+    var same = 1;
+    while (ui < 14) {
+        if (load8(&out + ui) != buf_get(bu, ui)) { same = 0; }
+        ui = ui + 1;
+    }
+    assert_eq(same, 1, "identical bytes (euro E2 82 AC included)");
+
+    test_group("BUG-005 — malformed bytes: C1-range ones shown, A0-FF ones as before");
+    # A stray continuation 85, an overlong lead C0 then 80, a Latin-1
+    # e-acute (E9), and E2 82 cut off by the end of the line.
+    var bm = buf_new();
+    put_bytes(bm, 0x85, 45, 0xC0, 0x80, 45, 0xE9, 45, 0xE2, 0x82, 0 - 1);
+    var nm = render_build_line_naked(bm, 0, 80, 0, &out, 256);
+    assert_eq(nm, 18, "<85> - C0 <80> - E9 - E2 <82> = 18 bytes");
+    assert_eq(out_eq(&out, "<85>-", 5), 1, "stray 85 shown");
+    assert_eq(load8(&out + 5), 0xC0, "overlong lead C0 verbatim (not a control)");
+    assert_eq(memeq(&out + 6, "<80>-", 5), 1, "its 80 shown");
+    assert_eq(load8(&out + 11), 0xE9, "Latin-1 E9 verbatim, as in 1.10.1");
+    assert_eq(load8(&out + 12), 45, "'-'");
+    assert_eq(load8(&out + 13), 0xE2, "cut-off lead E2 verbatim");
+    assert_eq(memeq(&out + 14, "<82>", 4), 1, "its stranded 82 shown");
+
+    test_group("BUG-005 — <xx> is four columns and is never drawn in part");
+    var bw = buf_new();
+    put_bytes(bw, 97, 98, 0x9B, 99, 100, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    var nw = render_build_line_naked(bw, 0, 6, 0, &out, 256);
+    assert_eq(nw, 6, "cols 6: a b <9b> fills exactly");
+    assert_eq(out_eq(&out, "ab<9b>", 6), 1, "then truncated");
+    var nw2 = render_build_line_naked(bw, 0, 5, 0, &out, 256);
+    assert_eq(nw2, 4, "cols 5: <9b> does not fit; skipped, like a ^X that does not fit");
+    assert_eq(out_eq(&out, "abcd", 4), 1, "never a partial <9b");
+
+    test_group("BUG-005 — render_c1_at classification");
+    var bk = buf_new();
+    put_bytes(bk, 0x9B, 0xC2, 0x9B, 0xC2, 0xA9, 0xE2, 0x82, 0xAC, 0xE9, 0 - 1);
+    assert_eq(render_c1_at(bk, 0, 8), 0 - 0x9B, "raw 9B -> -0x9B");
+    assert_eq(render_c1_at(bk, 1, 8), 0 - 0x9B, "C2 9B -> -0x9B");
+    assert_eq(render_c1_at(bk, 3, 8), 2,        "C2 A9 (copyright) -> 2-byte sequence");
+    assert_eq(render_c1_at(bk, 5, 8), 3,        "E2 82 AC (euro) -> 3-byte sequence");
+    assert_eq(render_c1_at(bk, 8, 8), 0,        "lone E9 -> 0 (malformed, not a control)");
+    assert_eq(render_c1_at(bk, 5, 6), 0,        "E2 82 cut off at le = 6 -> 0 (malformed lead)");
 
     test_group("render_build_line highlighted: empty line stays uncolored");
     var b5 = buf_new();

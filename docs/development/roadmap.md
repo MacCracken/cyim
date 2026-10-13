@@ -34,7 +34,12 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.10.0** (see [`state.md`](state.md)). The 1.6.x
+cyim is at **1.11.0** (see [`state.md`](state.md)). **1.11.0 moves the
+toolchain to cyrius 6.7.9 and darshana to 1.3.0, and closes the four bugs
+darshana's consumer survey filed** (BUG-003 … BUG-006) — plus three defects
+the move surfaced: the editor died (SIGPIPE) whenever its language server
+did, escapes in file names and LSP picker rows reached the terminal, and
+`:e` had been broken on aarch64 by a raw x86_64 syscall number. The 1.6.x
 catch-up cycle closed at 1.6.8; 1.7.0 opened the post-catch-up
 era with the darshana TUI dep pickup, and **1.8.0 is the one
 feature cut since** — cyim runs on AGNOS, full-screen on the
@@ -153,6 +158,8 @@ this is a sequencing index.
 | **v1.9.1** — **BUG-002 closed; LSP works.** `[deps.cyim-lsp]` `1.5.2 → 1.5.3` with **no cyim source change** — the defect was upstream (`var argv[4]`, four bytes for four 64-bit pointers, so every spawn with an argument overran and `execve` failed silently). `cyrius smoke` 4 passed / 9 failed → **13 / 0**. Everything the LSP surface shipped since 1.4.0 was correct code that never got to run. **`cyrius smoke` is now a CI gate** — the structural half, held back at 1.8.2 because a gate that fails on day one gets ignored, landed here green | Shipped 2026-08-23 |
 | **v1.9.2** — **[ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md) decided and implemented.** Config lives in `$XDG_CONFIG_HOME/cyim/cyimrc` (else `$HOME/.config/cyim/cyimrc`); `./.cyimrc` overrides it **key by key**. Before this, cyim read config from only the cwd, so nothing followed a user between projects. Local override accepted with no gate — the trade is sized by what `.cyimrc` can express, and the worst a hostile directory achieves is a wrong colour. Held honest by a rule rather than machinery: every new key gets classified local-overridable or home-only. Backward compatible; `tests/cyimrc.tcyr` 50 → 59 assertions including a reversed-order control | Shipped 2026-08-23 |
 | **v1.9.3** — **Closeout cut for the 1.9.x cycle**, all 11 CLAUDE.md steps at P(-1) depth ([audit](../audit/2026-08-23-1.9x-closeout.md)). 2 findings, both fixed: the config read cap **fabricated a value** — a line cut mid-value applied a truncated number that landed back inside the valid range (`palette.keyword = 199999` → `19`, painted silently), now dropped rather than misread, with `cyimrc_truncated()` reporting it; and 1.9.2's two precedence accessors had **no caller anywhere**, which [architecture note 004](../architecture/004-reading-the-dce-report.md) classifies as a coverage hole rather than dead code — closed with an invariant test, the second time that note's check has earned its keep. Four itoa implementations counted and **deliberately not merged** (their bound policies are exactly what differs). **First closeout with no known-red gate** and no open bugs | Shipped 2026-08-23 |
+| **v1.10.1** — cyrius 6.5.35 → 6.6.2 pin. No source change | Shipped 2026-09-11 |
+| **v1.11.0** — **cyrius 6.6.2 → 6.7.9 + darshana 1.0.0 → 1.3.0; BUG-003 … BUG-006 closed.** Full CSI decoding: sequences of any length, carried across reads (`editor_feed_cont` / `_pending` / `_flush`, a 50 ms bound in the interactive loop), so Delete deletes (`KEY_DELETE`) and PgUp / Home / F5 / mouse reports no longer type their tails (BUG-003). The agnos decoder's `0xE0` prefix survives batches and the kbscan count is clamped (BUG-004, chakshu AG1 / AG2); agnos Delete stops acting as Backspace. C1 controls shown as `<xx>`, decided by decoding so UTF-8 is untouched (BUG-005). `tty_fg_256_buf` refuses an index past 255 (BUG-006). **Found in the cut**: a SIGPIPE guard (`TTY_SIGMASK_PIPE`, drained before close) so a dying language server no longer kills the editor; `tty_sanitize_buf` on paths, messages, segments, picker rows and the command line; aarch64 `:e` fixed (`xlseek`). Teardown in darshana 1.1.4's order. `lib/` regenerated from the manifest (112 → 46 files). Suite 1226 → 1329; fuzz 4 → 5 harnesses; integration smoke +9 | Shipped 2026-10-12 |
 | **v1.10.0** — **Resize-aware rendering.** cyim used a fixed 24×80 on every target but agnos; darshana had shipped `tty_winsize` since 0.4.0 and cyim never called it. Geometry is now queried at start-up **and per frame**, clamped at both ends (`ws_col` is u16, and the 1.8.3 audit's F-3 hardened the render buffers *because* this feature would make geometry live input), with a reported 24×80 fallback. **Live repaint on SIGWINCH via signalfd + epoll** — a signal handler is refused by darshana's ADR 0002 and a read timeout would spin an idle editor forever; the watch is entirely optional and falls back to the plain blocking read on any failure. Geometry moved to `src/tty.cyr`, outside the per-target gates. `--headless` opens no watch. +10 unit assertions, +4 pty cases including a 65535×65535 clamp and a keystroke-free repaint | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
@@ -256,7 +263,7 @@ trigger.
 |---|---|
 | `lang.cyr` if-chain refactor | **Trigger fired at 1.8.2, and the shape of the refactor is now clearer.** 46 entries, and as of 1.8.2 there is a *second* if-chain that must stay in lockstep with it — `hl_grammar_name(i)` in `src/highlight.cyr`. Their silent divergence is precisely what cost 34 languages their highlighting for six minor versions. 1.6.2 (extension catch-up) was instance 1; 1.6.4 added a new parallel table rather than growing the existing one; 1.8.2's `openqasm` append is the third growth, satisfying CLAUDE.md's "wait for the third instance". `tests/lang.tcyr`'s drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt — but the right end state is one table, not three chains plus a guard. Owed: an ADR choosing between parallel global string arrays and a vyakarana metadata query (`grammar_count()` / `grammar_name_at(i)` would let the load list be derived rather than restated), then the refactor. |
 | `_cyim_lsp_*` shape duplication (cyim-lsp example glue ↔ cyim's `src/plugins/lsp_glue.cyr`) | The mirror pattern is instance-counting per CLAUDE.md "wait for the third": (1) `_cyim_lsp_label_for_ref` (1.6.5 — preview format), (2) `_cyim_lsp_ex_find_refs_with_mode` + `_cyim_lsp_on_ref_select` mode-branch + `_cyim_lsp_ref_split_mode` global (1.6.7 — open-in-split). The mirror itself is by design (cyim-lsp's bundle is self-contained; consumer copies the glue), but if a third example-glue refactor lands and the glue divergence becomes a maintenance burden, generalize the mirror into a documented copy-from-upstream procedure or a more aggressive bundle inclusion. |
-| Decimal-to-ASCII sprawl (4 implementations) | **Counted at the 1.9.3 closeout and deliberately not merged.** `_buf_append_dec`, `_cmd_ls_put_int`, `_render_u16_ascii` and agnos's `_al_put_uint` all reverse-fill digits into a scratch and emit them forward — a 5-line loop, four times. Past the "third instance" bar on count alone. **But their sinks differ in exactly the way that matters**: one writes raw, one goes through a bounds-checked putter, one carries a domain clamp that is load-bearing (audit F-2), and one is `#ifdef`-gated and writes via `syscall`. A shared core would be used four different ways, and the failure mode — someone improving it and dropping the render clamp — is worse than the duplication it removes. Trigger for revisiting: a fifth instance, or a bound bug in any of the four |
+| Decimal-to-ASCII sprawl (**3 implementations** since 1.11.0) | **Counted at the 1.9.3 closeout and deliberately not merged.** *1.11.0: `_render_u16_ascii` is gone — the colour escape is darshana's `tty_fg_256_buf` (BUG-006), which validates the domain the clamp only bounded. Three remain.* `_buf_append_dec`, `_cmd_ls_put_int`, `_render_u16_ascii` and agnos's `_al_put_uint` all reverse-fill digits into a scratch and emit them forward — a 5-line loop, four times. Past the "third instance" bar on count alone. **But their sinks differ in exactly the way that matters**: one writes raw, one goes through a bounds-checked putter, one carries a domain clamp that is load-bearing (audit F-2), and one is `#ifdef`-gated and writes via `syscall`. A shared core would be used four different ways, and the failure mode — someone improving it and dropping the render clamp — is worse than the duplication it removes. Trigger for revisiting: a fifth instance, or a bound bug in any of the four |
 | F-CO-2 (extract `_cyim_lsp_jump_to_uri_lc`) | Informational since 1.5.2. Still 2 instances; cyim-lsp `:lsp-implementation` or `:lsp-type-definition` would be the third. |
 
 ---
@@ -292,7 +299,9 @@ Ordered by what it would cost a user, not by when it was filed.
 | ~~**ADR 0005**~~ | ~~Should `.cyimrc` be loaded from the current directory at all?~~ | ✅ **Decided and implemented at v1.9.2.** Config lives in `$XDG_CONFIG_HOME/cyim/cyimrc`; `./.cyimrc` overrides it key by key, accepted with no gate because the whole surface is ten colour indexes. **The live obligation it leaves**: every new `.cyimrc` key must be classified local-overridable or home-only when added, per [ADR 0005](../adr/0005-cyimrc-cwd-trust-boundary.md)'s table. Keymaps are the first serious candidate for home-only |
 | **R-1a** | Extended attributes and ACLs are not carried across the atomic save path | `fchmod` preserves permission bits; xattrs, POSIX ACLs and SELinux labels are not copied, and cyim cannot *detect* a non-trivial ACL without an `xattr` surface the stdlib does not expose. Narrow: needs an ACL'd file, owned by the invoking user, not a symlink, not hardlinked | A stdlib `listxattr`/`getxattr` surface — then the detection becomes a sixth in-place condition in [ADR 0006](../adr/0006-atomic-save.md) |
 | **`lang.cyr` refactor** | Two if-chains (`lang_name` / `hl_grammar_name`) that must stay in lockstep | Trigger fired at 1.8.2 (third growth). Their silent divergence is what cost 34 languages their highlighting for six minor versions. The drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt | An ADR choosing between parallel global string arrays and a **vyakarana metadata query** — `grammar_count()` / `grammar_name_at(i)` would let the load list be *derived* rather than restated, which is the real end state |
-| **F-7 / arch 003** | The renderer is byte-oriented: C1 pass-through, no double-width or combining-character handling | [Accepted and documented](../architecture/003-render-is-byte-oriented.md), not a defect queue. The obvious "fix" breaks every non-ASCII file, because `0x80`–`0x9F` overlaps UTF-8 continuation bytes | A consumer editing CJK or RTL text in earnest — `aethersafha` hosting cyim is the likeliest. It needs a codepoint coordinate system threaded through cursor / undo / marks / search, not a render patch |
+| **F-7 / arch 003** | The renderer is byte-oriented: no double-width or combining-character handling | [Accepted and documented](../architecture/003-render-is-byte-oriented.md), not a defect queue. *The C1 pass-through half closed at 1.11.0 (BUG-005) — by decoding, which is the condition the note set; widths are untouched* | A consumer editing CJK or RTL text in earnest — `aethersafha` hosting cyim is the likeliest. It needs a codepoint coordinate system threaded through cursor / undo / marks / search, not a render patch |
+| **Bracketed paste** | darshana 1.3.0 ships `tty_paste_enable` / `_disable`; cyim does not enable it | The markers arrive as input and the decoder (1.11.0) already swallows them, so enabling it alone changes nothing. The value is in what a paste then MEANS — inserted literally in INSERT and on the command line (so a pasted ESC cannot run commands), the NORMAL-mode behaviour, one undo unit, dot-repeat — which is a design, not a call | A user asking, or a pastejacking report. The prerequisite (whole-CSI decoding) is in place |
+| **Frame batching** | Render writes a line (and a cursor move) per `write(2)` | darshana's `_buf` composers (`tty_move_buf`, `tty_clear_to_eol_buf`, `tty_sgr_list_buf`) would let a frame be one write. No measured need: the per-frame cost is the full-buffer retokenize, not the writes | A repaint-cost measurement that says otherwise (BENCHMARKS.md) |
 | ~~**Resize-aware rendering**~~ | ~~`scr_cols` is a hardcoded 80~~ | ✅ **Shipped at v1.10.0.** Real geometry, clamped, queried at start-up and per frame, plus live repaint on SIGWINCH via signalfd + epoll. The note below was right that the primitives were ready and the render guards already in place — both turned out to be exactly what made this a clean cut rather than a risky one |
 | **F-CO-2** | Extract `_cyim_lsp_jump_to_uri_lc` | Informational since 1.5.2. Still 2 instances; CLAUDE.md's "wait for the third" applies | `:lsp-implementation` or `:lsp-type-definition` would be the third |
 
@@ -319,8 +328,8 @@ had stopped being true, in some cases years of cuts ago.
 |---|---|---|
 | `src/cli.cyr` (regex caveats), `src/main.cyr` (`--help`) | Backreferences (`\1`) in regex flavors | Engine-side, not cyim's: deferred per niyama's own v1 plan. Reassess when niyama ships them |
 | `src/command.cyr` | Multi-byte ex ranges (`:1,5d`), `:%s/x/y/`, tab-completion, `:!cmd` | Out of scope since M1. `:!cmd` is additionally constrained by Refusal §0 — see Non-Goals |
-| `src/driver.cyr` | Dot-repeat captures insert sessions only; `x` / paste / visual are not replayable | The hook structure accepts them; needs a bite |
-| `src/driver.cyr` | A split CSI escape (ESC and `[`+final arriving in separate reads) dispatches a spurious mode-exit | Needs a 1-iteration look-ahead buffer. Not observed on modern terminals; plausible on slow serial |
+| `src/driver.cyr` | Dot-repeat captures insert sessions only; `x` / paste / visual are not replayable — nor, since 1.11.0, a Delete typed inside an insert session (`dot_buf` records bytes, and KEY_DELETE is not one) | The hook structure accepts them; needs a bite |
+| ~~`src/driver.cyr`~~ | ~~A split CSI escape dispatches a spurious mode-exit~~ | ✅ **Closed at 1.11.0** (BUG-003): the decoder carries a sequence across reads, and the interactive loop bounds the wait at 50 ms. It is not only a slow-serial case: a held arrow key's 3-byte sequences do not divide an 8-byte read, so a burst splits one (`tests/feed.tcyr`'s held-arrow group) |
 | `src/marks.cyr` | `viminfo`-style mark persistence across sessions | Post-1.6 and still unclaimed — gated on persistence earning its keep. *(The note said "post-1.6"; corrected at 1.8.5 from a stale "1.6.x" window that had closed.)* |
 | `src/marks.cyr` | A `:marks` command | `marks_count` exists for it. *(Was "deferred to 1.6.x" — stale, corrected at 1.8.5.)* |
 | `src/mode.cyr` | `cfg_line_numbers` / `cfg_tabstop` are stored but not rendered | Documented in [`cyimrc.md`](../guides/cyimrc.md) as storage-only. *(The note said "deferred to M5 perf pass"; M5 closed long ago — corrected at 1.8.5.)* |
@@ -342,18 +351,93 @@ and appear inside assertion messages — not deferrals.
 
 ---
 
+## Dependency notes
+
+- ~~**darshana 1.3.0 needs cyrius ≥ 6.7.2**~~ — **resolved at 1.11.0**: the pin moved
+  6.6.2 → 6.7.9 in the same cut as darshana 1.0.0 → 1.3.0. (Its bundle declares private
+  constants with `const`; under 6.6.x it fails with `expected '=', got identifier`.)
+- **cyim-lsp: the spawned server inherits cyim's blocked signals** (found 2026-10-12, cyim
+  1.11.0). `lsp_proc_spawn` does raw `sys_fork` / `sys_execve` with nothing between them,
+  and a blocked mask survives both — so a server started mid-session begins with
+  SIGWINCH (cyim's resize watch, since 1.10.0) and SIGPIPE (the 1.11.0 guard) blocked, and
+  so do its own children unless it resets them. cyim cannot reach between the fork and the
+  exec, and closing its guard around the spawn would re-open the SIGPIPE race the guard
+  exists for (the handshake write to a server that died at start-up). **Ask for cyim-lsp**:
+  in the child, before `execve`, set an empty mask (and SIGPIPE to SIG_DFL) — what the
+  cyrius 6.7.9 stdlib exec family now does for its own children.
+- **cyim-lsp: `lsp_doc_lazy_start` re-spawns on every edit while the server will not
+  start.** Measured at 1.11.0 with a `cyrius-lsp` that exits at once: 10 edits in a `.cyr`
+  file → 10 spawns. A fork + exec per keystroke is a cost; it was also, before 1.11.0's
+  guard, a SIGPIPE race per keystroke. **Ask**: back off after a failed start (e.g. until
+  `:lsp-restart`).
+
+---
+
 ## Open Bugs
 
-**None.** BUG-001 closed at v1.3.3, BUG-002 at v1.9.1.
+### BUG-007 — SS3 keys (F1–F4 on xterm-style terminals) arrive as Esc, `O`, a letter
 
-That is a statement about what is *tracked*, not a claim that cyim is
-bug-free — the 1.8.x line found seven defects nobody had filed, and 1.9.0
-found an eighth in `A` that had shipped since `A` landed. What it does mean is
-that every known defect has been fixed rather than parked.
+Filed 2026-10-12 (cyim 1.11.0, alongside BUG-003's fix). xterm-style terminals send
+F1–F4 as SS3 sequences, `ESC O P` .. `ESC O S`. The decoder handles CSI (`ESC [`) only,
+so F1 dispatches Esc, then `O` — open a line above, in INSERT — then types `P`.
+
+**Not decoded at 1.11.0, deliberately**: `<Esc>O` is an everyday vim gesture (leave
+INSERT, open a line above), and typed quickly both bytes land in ONE read — so a decoder
+that treated `ESC O <final>` as a key would eat the user's real command, a worse failure
+than the one it fixes. Decoding SS3 safely needs either a short list of finals that only
+a terminal sends (`P` `Q` `R` `S` are also plausible typed text after `O`) or an
+inter-byte timing signal a single read() does not carry. Decide which risk to take
+before writing code. CSI has no such conflict: `[` is unbound in NORMAL.
 
 ---
 
 ## Closed Bugs
+
+### BUG-003 — Delete (`ESC [ 3 ~`) inserted a literal `~` in INSERT mode (CLOSED v1.11.0, 2026-10-12)
+
+`editor_feed` assumed every CSI was three bytes and recognized one only when it arrived
+whole in a read; longer keys leaked their tails as keystrokes (measured: Delete → `~abc`,
+Ctrl-Right → `;5C`, PgUp/PgDn/Insert/Home/End/F5/paste marker/mouse report →
+`~~~~~5~00~0;10;5M`), and a sequence a read split ran its ESC as a mode exit. **Fixed**:
+the decoder runs every CSI to its final byte and carries partial sequences across reads
+in the editor record (`editor_feed_cont` / `editor_feed_pending` / `editor_feed_flush`;
+the interactive loop waits at most `ESC_SEQ_TIMEOUT_MS` = 50 ms, `--headless` flushes at
+EOF). Delete is `KEY_DELETE`; arrows ignore modifiers; other keys are swallowed whole.
+Regression: `tests/feed.tcyr` (52 assertions; 25 fail against the 1.10.1 decoder),
+`fuzz/feed.fcyr` (split feed must equal whole feed), and PTY / `--headless` cases in
+`tests/integration_smoke.py`. SS3 is split off as BUG-007.
+
+### BUG-004 — AGNOS keyboard decoder lacked chakshu's AG1 / AG2 fixes (CLOSED v1.11.0, 2026-10-12)
+
+`src/agnos_kbd.cyr` trusted kbscan#42's returned count against its 64-byte buffer
+(AG1: `n = 200` decoded 136 phantom keys) and kept the `0xE0` prefix per batch (AG2: a
+prefix ending one batch was lost — a split arrow vanished, a split media key typed `q`).
+**Fixed**: the count is clamped and the prefix is module state. Delete also emits
+`ESC [ 3 ~` now (it emitted DEL, so it deleted LEFT — measured under QEMU on the agnos
+kernel). chakshu's AG3–AG5 do not apply: cyim already cleared the prefix after every
+non-prefix byte, starts its decoder state zeroed once per process, and sizes its carry
+for a full batch. The pure decoder compiles under `CYIM_AGNOS_KBD_DECODER` so
+`tests/agnos_kbd.tcyr` (23 assertions, mutation-tested) runs on every host.
+
+### BUG-005 — C1 control bytes passed `render_ctrl_substitute` (CLOSED v1.11.0, 2026-10-12)
+
+Bytes 0x80–0x9F — the 8-bit CSI / OSC / DCS / ST introducers, raw or UTF-8-encoded
+(`C2 80`–`C2 9F`) — reached the terminal. **Fixed** by decoding (`render_c1_at`, RFC 3629,
+darshana's UTF-8 sanitizer rule): a C1 control shows as `<xx>`; well-formed UTF-8 —
+including the continuation bytes in that range — is untouched byte for byte; caret
+notation for C0 is unchanged (the editor's display convention, deliberately different
+from darshana's `?` — darshana ADR 0004). `tests/render.tcyr` +24. The same cut moved
+the untrusted text OUTSIDE the buffer (paths, messages, segments, picker rows, command
+line) onto darshana's `tty_sanitize_buf`.
+
+### BUG-006 — `_render_emit_fg` could emit an invalid 256-colour index (CLOSED v1.11.0, 2026-10-12)
+
+`_render_u16_ascii` clamped to 999, so an index of 256–999 went out as `38;5;N`.
+**Fixed** by composing with darshana's `tty_fg_256_buf`, which validates [0, 255] and
+writes nothing on a refusal (the token draws uncoloured). `_render_u16_ascii` deleted.
+`tests/cyimrc.tcyr` asserts exact bytes for 0 / 42 / 141 / 255, refusal for 256 / 999 /
+1000 / a 15-digit value / a negative, and a pipeline check with the palette slot forced
+past 255.
 
 ### BUG-002 — LSP fold smoke: handshake never completed (CLOSED cyim v1.9.1, 2026-08-23)
 
@@ -413,6 +497,15 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-10-12 (v1.11.0 — **cyrius 6.7.9 + darshana 1.3.0;
+BUG-003 … BUG-006 closed; BUG-007 filed.** Full CSI decoding carried across reads
+(Delete deletes; long keys no longer type their tails); the agnos decoder's AG1 / AG2;
+C1 controls shown as `<xx>` by decoding; 256-colour indices validated. Three defects
+the move surfaced, fixed in the cut: the editor died with its language server
+(SIGPIPE — now guarded), escapes in paths and picker rows reached the terminal (now
+sanitized), and `:e` was broken on aarch64. Two cyim-lsp asks recorded under
+Dependency notes. No closeout shipped for 1.10.x — one is owed at the end of 1.11.x.)*
 
 *Last updated: 2026-08-23 (v1.10.0 — **resize-aware
 rendering**, the roadmap's longest-standing actionable gap. cyim

@@ -337,6 +337,28 @@ def main():
             content = f.read()
         ok &= assert_eq(content, b"EDIThello\n", "--headless iEDIT<Esc>:wq writes 'EDIThello'")
 
+    print("=== --headless: key sequences decode the same wherever an 8-byte read cuts them (v1.11.0) ===")
+    # --headless reads stdin 8 bytes at a time. These two inputs differ only in
+    # where the read boundaries fall: in the first, `ESC [ D ESC [ 3 ~ ESC` is
+    # one whole read; in the second, the first read ENDS on the ESC of
+    # `ESC [ D`. Both type, then Left, then Delete, then :wq.
+    # 1.10.1 wrote 'hello123456~7' and 'hello123456' respectively.
+    cases = (
+        (b"A1234567\x1b[D\x1b[3~\x1b:wq\r", b"hello123456\n", "sequences whole in one read"),
+        (b"A123456\x1b[D\x1b[3~\x1b:wq\r", b"hello12345\n", "a sequence cut by the read boundary"),
+    )
+    for keys, expect, label in cases:
+        with open(headless_fixture, "wb") as f:
+            f.write(b"hello\n")
+        proc = subprocess.run([CYIM, "--headless", headless_fixture], input=keys, timeout=5)
+        with open(headless_fixture, "rb") as f:
+            content = f.read()
+        if proc.returncode != 0:
+            print(f"  FAIL: --headless ({label}) exited {proc.returncode}")
+            ok = False
+        else:
+            ok &= assert_eq(content, expect, f"--headless Left + Delete, {label}")
+
     print("=== --grep: emit FILE:N:LINE for every line containing PATTERN ===")
     grep_fixture = "/tmp/cyim-grep-fixture.txt"
     with open(grep_fixture, "wb") as f:
@@ -755,6 +777,235 @@ def main():
         os.unlink("/tmp/cyim-geom-smoke.txt")
     except OSError:
         pass
+
+    # ── v1.11.0 — terminal safety, key sequences, SIGPIPE ────────────────
+    #
+    # Every case below FAILS against the 1.10.1 binary except the ESC-timeout
+    # one, which guards the new carry path against holding an Esc forever.
+    # The child resets SIGPIPE to SIG_DFL before exec: Python starts with it
+    # IGNORED and an exec'd child inherits that, which would hide exactly the
+    # death the SIGPIPE cases look for — `drive()` above runs cyim that way.
+    print()
+    print("=== v1.11.0 terminal safety, key sequences, SIGPIPE ===")
+    import shutil
+
+    def spawn111(path, stdout_fd=None):
+        m, sl = pty.openpty()
+        fcntl.ioctl(sl, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        pid = os.fork()
+        if pid == 0:
+            os.setsid()
+            fcntl.ioctl(sl, termios.TIOCSCTTY, 0)
+            os.dup2(sl, 0); os.dup2(sl, 2)
+            os.dup2(stdout_fd if stdout_fd is not None else sl, 1)
+            os.close(m); os.close(sl)
+            signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+            os.execv(CYIM, [CYIM, path])
+        os.close(sl)
+        fcntl.fcntl(m, fcntl.F_SETFL, os.O_NONBLOCK)
+        return pid, m
+
+    def drain111(m, sec):
+        buf = b""; t0 = time.time()
+        while time.time() - t0 < sec:
+            try:
+                buf += os.read(m, 65536)
+            except BlockingIOError:
+                time.sleep(0.02)
+            except OSError:
+                break
+        return buf
+
+    def finish111(pid, m, keys=b"\x1b:q!\r", sec=0.5):
+        """Send `keys`, collect output, reap. Returns (output, wait status
+        or None if it had to be killed)."""
+        try:
+            os.write(m, keys)
+        except OSError:
+            pass
+        out = drain111(m, sec)
+        status = None
+        t0 = time.time()
+        while time.time() - t0 < 3:
+            wpid, st = os.waitpid(pid, os.WNOHANG)
+            if wpid == pid:
+                status = st
+                break
+            time.sleep(0.05)
+        if status is None:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+        os.close(m)
+        return out, status
+
+    def clean_exit(st):
+        return st is not None and os.WIFEXITED(st) and os.WEXITSTATUS(st) == 0
+
+    def desc(st):
+        if st is None:
+            return "hung"
+        if os.WIFSIGNALED(st):
+            return f"killed by signal {os.WTERMSIG(st)}"
+        return f"exit {os.WEXITSTATUS(st)}"
+
+    # A file NAME is not cyim's text: it reaches the status row, and through
+    # 1.10.1 an escape in it ran (here an OSC 0 window-title set).
+    p111 = "/tmp/cyim-esc-\x1b]0;PWNED\x07-name.txt"
+    try:
+        os.unlink(p111)
+    except OSError:
+        pass
+    pid, m = spawn111(p111)
+    out = drain111(m, 0.6)
+    o2, st = finish111(pid, m)
+    out += o2
+    if b"\x1b]0;PWNED" not in out and b"?]0;PWNED?-name" in out and clean_exit(st):
+        print("  PASS: an escape in the file name is shown as '?', not run")
+    else:
+        print(f"  FAIL: file-name escape reached the terminal ({desc(st)})")
+        ok = False
+
+    # BUG-005: C1 controls in file CONTENT, raw and UTF-8-encoded.
+    p111 = "/tmp/cyim-c1-smoke.txt"
+    with open(p111, "wb") as fh:
+        fh.write(b"a\xc2\x9bb\x9bc\n")
+    pid, m = spawn111(p111)
+    out = drain111(m, 0.6)
+    o2, st = finish111(pid, m)
+    out += o2
+    if b"a<9b>b<9b>c" in out and b"\x9b" not in out and clean_exit(st):
+        print("  PASS: C1 controls in the buffer render as <9b>; no raw 0x9B is written")
+    else:
+        print(f"  FAIL: C1 control reached the terminal ({desc(st)})")
+        ok = False
+
+    # BUG-003: Delete in INSERT, sent as ONE write the way a terminal sends it.
+    p111 = "/tmp/cyim-del-smoke.txt"
+    with open(p111, "wb") as fh:
+        fh.write(b"abc\n")
+    pid, m = spawn111(p111)
+    drain111(m, 0.5)
+    os.write(m, b"i")
+    drain111(m, 0.2)
+    os.write(m, b"\x1b[3~")
+    drain111(m, 0.2)
+    _, st = finish111(pid, m, b"\x1b:wq\r")
+    with open(p111, "rb") as fh:
+        got = fh.read()
+    ok &= assert_eq(got, b"bc\n", "Delete in INSERT deletes under the cursor (1.10.1 wrote '~abc')")
+
+    # The carried-ESC path: an 8-byte burst ending in ESC fills the read, so
+    # the ESC is held as a possible sequence start — and must still become
+    # the Esc key within ESC_SEQ_TIMEOUT_MS, with no further keystroke.
+    p111 = "/tmp/cyim-esc-timeout-smoke.txt"
+    with open(p111, "wb") as fh:
+        fh.write(b"\n")
+    pid, m = spawn111(p111)
+    drain111(m, 0.5)
+    os.write(m, b"iabcdef\x1b")
+    out = drain111(m, 0.5)
+    if out.rfind(b"-- NORMAL --") > out.rfind(b"-- INSERT --"):
+        print("  PASS: a carried ESC becomes Esc after the timeout, with no keystroke")
+    else:
+        print("  FAIL: editor still in INSERT after a held ESC timed out")
+        ok = False
+    _, st = finish111(pid, m, b":wq\r")
+    with open(p111, "rb") as fh:
+        got = fh.read()
+    ok &= assert_eq(got, b"abcdef\n", "the burst was typed, then :wq saved it")
+
+    # SIGPIPE: the language server dies mid-session; the next edit writes to
+    # its stdin. 1.10.1 died (signal 13) with unsaved changes, terminal raw.
+    if shutil.which("cyrius-lsp"):
+        p111 = "/tmp/cyim-lsp-sigpipe-smoke.cyr"
+        with open(p111, "w") as fh:
+            fh.write("var x = 1;\n")
+        pid, m = spawn111(p111)
+        drain111(m, 0.5)
+        os.write(m, b"ia")                 # first edit starts the server
+        drain111(m, 1.5)
+        kids = []
+        for d in os.listdir("/proc"):
+            if d.isdigit():
+                try:
+                    with open(f"/proc/{d}/stat") as fh:
+                        ppid = int(fh.read().rsplit(")", 1)[1].split()[1])
+                    if ppid == pid:
+                        kids.append(int(d))
+                except (OSError, ValueError, IndexError):
+                    pass
+        for k in kids:
+            os.kill(k, signal.SIGKILL)
+        drain111(m, 0.3)
+        os.write(m, b"b")                  # didChange -> a dead pipe
+        drain111(m, 0.5)
+        wpid, st = os.waitpid(pid, os.WNOHANG)
+        if wpid == 0 and kids:
+            # A clean :wq ALSO proves the guard was drained before it was
+            # closed: un-drained, the close would deliver the pending SIGPIPE.
+            _, st = finish111(pid, m, b"\x1b:wq\r", 1.0)
+            with open(p111) as fh:
+                got = fh.read()
+            if clean_exit(st) and got == "abvar x = 1;\n":
+                print("  PASS: editor survives its language server dying; edits saved, exit 0")
+            else:
+                print(f"  FAIL: after the server died: {desc(st)}, file {got!r}")
+                ok = False
+        else:
+            if wpid == 0:
+                finish111(pid, m)
+            print(f"  FAIL: editor died when its language server did ({desc(st)}; "
+                  f"{len(kids)} server process(es) killed)")
+            ok = False
+    else:
+        print("  SKIP: cyrius-lsp not on PATH — the language-server SIGPIPE case needs it")
+
+    # Teardown order + SIGPIPE guard: stdout is a pipe whose reader is gone.
+    # 1.10.1 died on its first write with the terminal still raw.
+    rfd, wfd = os.pipe()
+    os.close(rfd)
+    p111 = "/tmp/cyim-deadpipe-smoke.txt"
+    with open(p111, "wb") as fh:
+        fh.write(b"x\n")
+    pid, m = spawn111(p111, stdout_fd=wfd)
+    os.close(wfd)
+    time.sleep(0.5)
+    wpid, st = os.waitpid(pid, os.WNOHANG)
+    alive = (wpid == 0)
+    attrs = None
+    if alive:
+        # Read the line discipline back through the master BEFORE closing it.
+        try:
+            os.write(m, b":q!\r")
+        except OSError:
+            pass
+        t0 = time.time()
+        st = None
+        while time.time() - t0 < 3:
+            wpid, s2 = os.waitpid(pid, os.WNOHANG)
+            if wpid == pid:
+                st = s2
+                break
+            time.sleep(0.05)
+        if st is None:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+    attrs = termios.tcgetattr(m)
+    os.close(m)
+    cooked = bool(attrs[3] & termios.ICANON) and bool(attrs[3] & termios.ECHO)
+    if alive and clean_exit(st) and cooked:
+        print("  PASS: stdout to a dead pipe — no SIGPIPE death, exit 0, terminal cooked")
+    else:
+        print(f"  FAIL: stdout to a dead pipe: {desc(st)}, terminal cooked = {cooked}")
+        ok = False
+
+    for p111 in ("/tmp/cyim-esc-\x1b]0;PWNED\x07-name.txt", "/tmp/cyim-c1-smoke.txt",
+                 "/tmp/cyim-del-smoke.txt", "/tmp/cyim-esc-timeout-smoke.txt",
+                 "/tmp/cyim-lsp-sigpipe-smoke.cyr", "/tmp/cyim-deadpipe-smoke.txt"):
+        try:
+            os.unlink(p111)
+        except OSError:
+            pass
 
     print()
     if ok:

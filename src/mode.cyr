@@ -118,6 +118,12 @@ var KEY_CTRL_R    = 18;   # the ONLY seeded binding with no printable char
 var KEY_G         = 103;   # v1.4.2 — prefix for `gg` + plugin normal_prefix_key
 var KEY_M         = 109;   # v1.6.0 — prefix for `m<letter>` (set mark)
 var KEY_QUOTE     = 39;    # v1.6.0 — prefix for `'<letter>` (jump to mark)
+# v1.11.0 — the Delete key. NOT a byte: terminals send it as the CSI sequence
+# `ESC [ 3 ~`, which only `editor_feed` decodes, so this code can never arrive
+# as a typed byte and collide with one. Deletes the byte under the cursor in
+# NORMAL and INSERT (staying in INSERT), deletes the selection in VISUAL, and
+# is swallowed on the command line (BUG-003).
+var KEY_DELETE    = 256;
 
 # ──── Error codes (set into state.last_error)
 var ERR_NONE            = 0;
@@ -128,7 +134,7 @@ var ERR_SAVE_FAILED     = 4;
 var ERR_UNKNOWN_CMD     = 5;
 var ERR_FILE_TOO_LARGE  = 6;  # M7 audit F-2 — :e refused because file > maxfilesize
 
-# ──── EditorState layout (128 bytes)
+# ──── EditorState layout (240 bytes)
 #   off   0  mode             i64  current mode (MODE_*)
 #   off   8  buf              i64  ACTIVE buffer's gap-buffer (mirror of
 #                                   buf-list slot; updated by bl_set_active)
@@ -168,20 +174,28 @@ var ERR_FILE_TOO_LARGE  = 6;  # M7 audit F-2 — :e refused because file > maxfi
 #                                   case in / and ? scans.
 #   off 184  cfg_line_numbers i64  display gutter w/ line numbers (0/1).
 #                                   STORED, not rendered — see
-#                                   docs/guides/cyimrc.md and roadmap.md
-#                                   § Deferred in-source notes. The slot
+#                                   docs/guides/cyimrc.md and
+#                                   roadmap.md § Deferred in-source notes. The slot
 #                                   exists so `:set number` and `.cyimrc`
 #                                   agree. (Named the M5 perf pass through   #skip-lint: historical note, roadmap.md § Deferred in-source notes
 #                                   1.8.4; M5 closed long before.)
 #   off 192  cfg_tabstop      i64  display width of TAB (default 4).
 #   off 200  cfg_max_filesize i64  M7 F-2 fix — `:e` refuses files
 #                                   larger than this. Default 100 MB.
+#   off 208  feed_state       i64  v1.11.0 — `editor_feed`'s escape decoder
+#                                   state, carried ACROSS calls so a key
+#                                   sequence split between two reads still
+#                                   decodes: 0 = ground, 1 = ESC seen,
+#                                   2 = inside a CSI (`ESC [` seen).
+#   off 216  feed_plen        i64  CSI parameter / intermediate bytes seen so
+#                                   far. Counts past 16; only 16 are kept.
+#   off 224  feed_pbuf        16B  the first 16 of those bytes (two slots).
 
 # Allocate a fresh editor state over buffer `buf`, with every field at its
 # documented default (NORMAL mode, tabstop 4, maxfilesize 100 MB, everything
 # else zero). The command buffer is allocated here; the dot buffer is not.
 fn editor_new(buf) {
-    var s = alloc(208);
+    var s = alloc(240);
     store64(s, MODE_NORMAL);
     store64(s + 8, buf);
     var nmap = map_u64_new();
@@ -210,6 +224,10 @@ fn editor_new(buf) {
     store64(s + 184, 0);   # cfg_line_numbers
     store64(s + 192, 4);   # cfg_tabstop (vim default)
     store64(s + 200, 104857600);  # cfg_max_filesize (100 MB default)
+    store64(s + 208, 0);   # feed_state — ground
+    store64(s + 216, 0);   # feed_plen
+    store64(s + 224, 0);   # feed_pbuf[0..8)
+    store64(s + 232, 0);   # feed_pbuf[8..16)
     return s;
 }
 
@@ -361,6 +379,23 @@ fn editor_cfg_max_filesize(s)      { return load64(s + 200); }
 
 # Set the `:e` size cap. Written by `:set maxfilesize=N`.
 fn editor_set_cfg_max_filesize(s, v) { store64(s + 200, v); return 0; }
+
+# `editor_feed`'s carried escape-decoder state (v1.11.0): 0 ground, 1 ESC
+# seen, 2 inside a CSI. Private to src/driver.cyr's decoder.
+fn _editor_feed_state(s)           { return load64(s + 208); }
+
+# Set the escape-decoder state. Private to src/driver.cyr.
+fn _editor_set_feed_state(s, v)    { store64(s + 208, v); return 0; }
+
+# How many CSI parameter / intermediate bytes the decoder has seen in the
+# sequence it is inside. May exceed 16; only the first 16 are kept.
+fn _editor_feed_plen(s)            { return load64(s + 216); }
+
+# Set the CSI parameter count. Private to src/driver.cyr.
+fn _editor_set_feed_plen(s, v)     { store64(s + 216, v); return 0; }
+
+# Address of the 16-byte CSI parameter store inside the record.
+fn _editor_feed_pbuf(s)            { return s + 224; }
 
 # Seed NORMAL-mode keymap with the canonical single-byte vi mappings.
 fn _seed_normal_keymap(m) {
@@ -545,6 +580,9 @@ fn editor_dispatch(s, key) {
     }
 
     if (mode == MODE_NORMAL) {
+        # v1.11.0 — Delete is `x` (BUG-003). Decided here rather than seeded
+        # into the keymap because KEY_DELETE is not a byte.
+        if (key == KEY_DELETE) { return ACT_DELETE_RIGHT; }
         if (key == KEY_CTRL_W) {
             editor_set_prefix(s, KEY_CTRL_W);
             return ACT_NONE;
@@ -588,6 +626,7 @@ fn editor_dispatch(s, key) {
         if (key == 86)      { store64(s, MODE_VISUAL_LINE); return ACT_NONE; }    # V swap
         if (key == 121)     { store64(s, MODE_NORMAL); return ACT_VISUAL_YANK; }  # y
         if (key == 100)     { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; } # d
+        if (key == KEY_DELETE) { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
         # Motions allowed; everything else is swallowed so dispatch
         # doesn't trigger inserts / commands while a selection is open.
         var act = map_u64_get(load64(s + 16), key);
@@ -602,6 +641,7 @@ fn editor_dispatch(s, key) {
         if (key == 118)     { store64(s, MODE_VISUAL); return ACT_NONE; }         # v swap
         if (key == 121)     { store64(s, MODE_NORMAL); return ACT_VISUAL_YANK; }
         if (key == 100)     { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
+        if (key == KEY_DELETE) { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
         var act = map_u64_get(load64(s + 16), key);
         if (act >= ACT_MOVE_LEFT) {
             if (act <= ACT_MOVE_FILE_END) { return act; }
@@ -615,6 +655,7 @@ fn editor_dispatch(s, key) {
         if (key == KEY_LF)        { return ACT_INSERT_NEWLINE; }
         if (key == KEY_DEL)       { return ACT_DELETE_LEFT; }
         if (key == KEY_BACKSPACE) { return ACT_DELETE_LEFT; }
+        if (key == KEY_DELETE)    { return ACT_DELETE_RIGHT; }   # forward delete; stays in INSERT
         return ACT_INSERT_LITERAL;
     }
 
@@ -624,6 +665,9 @@ fn editor_dispatch(s, key) {
         if (key == KEY_LF)        { store64(s, MODE_NORMAL); return ACT_CMDLINE_EXECUTE; }
         if (key == KEY_DEL)       { return ACT_CMDLINE_BACKSPACE; }
         if (key == KEY_BACKSPACE) { return ACT_CMDLINE_BACKSPACE; }
+        # The command line has no cursor to delete under. Swallowed — APPEND
+        # would store the code's low byte, a NUL.
+        if (key == KEY_DELETE)    { return ACT_NONE; }
         return ACT_CMDLINE_APPEND;
     }
 
@@ -636,6 +680,7 @@ fn editor_dispatch(s, key) {
         if (key == KEY_LF)        { store64(s, MODE_NORMAL); return ACT_SEARCH_EXECUTE; }
         if (key == KEY_DEL)       { return ACT_CMDLINE_BACKSPACE; }
         if (key == KEY_BACKSPACE) { return ACT_CMDLINE_BACKSPACE; }
+        if (key == KEY_DELETE)    { return ACT_NONE; }
         return ACT_CMDLINE_APPEND;
     }
 
