@@ -698,3 +698,124 @@ test growth 973 → 1150 assertions; binary 957,720 B → 1,214,656 B
 → 5.10.20 + new `[deps.darshana]` block (TUI lib being extracted
 from cyim's `src/tty.cyr` + `src/render.cyr`; cyim is primary
 donor + first consumer).)*
+
+---
+
+## Adopting cmdit (CLI parsing)
+
+cyim is a tier-2 ("verb tool") candidate from the 2026-06-25 ecosystem CLI review
+([agnosticos `planning/cmdit.md`](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/cmdit.md)).
+Its `if (r_npos < 3)` guards are what `cmdit_require_positionals` was written to
+subsume.
+
+**Verdict (surveyed 2026-10-14): do not migrate the agent verbs yet.** cmdit could
+absorb the modifier loops, but three agent-facing behaviours have no cmdit equivalent,
+and the exit codes are a contract (CLAUDE.md § Consumers). **Demand-gated, not a forced
+sweep.**
+
+**What is hand-rolled** (`src/main.cyr` + `src/cli.cyr`; vendored `lib/` excluded; no
+`flags_` / `FLAG_ERR_`; `getenv` is used only for config paths, `cyimrc.cyr:315-319`):
+
+- **Verbs are flag-shaped and matched on `argv(1)` only** (`main.cyr:568-673`):
+  `--version`, `--help`, `--probe`, `--headless`, `--line` (agnos only), `--grep`,
+  `--grepfiles`, `--write`, `--replace[-all]`, `--replace-files[-all]`, `--batch`.
+  - Any other `argv(1)` — including `-h` or `--typo` — is the file the editor opens
+    (`:753`).
+  - `argv(2+)` is ignored.
+- **Eight modifier loops, ~750 lines**: six at `cli.cyr:1433-2026`, two inline at
+  `main.cyr:592-751`. The modifiers are:
+  - `=`-only values: `--context=`, `--regex=`, `--fuzzy-edits=`, `--expect-N=`,
+    `--expect=`, `--expect-not=` (parsed by `_cli_argprefix` / `_cli_atoi_nn`,
+    `cli.cyr:694-747`);
+  - `--wc[=l|=long]`;
+  - the bools `--expect-1` and `--all`.
+- **How the loops behave:**
+  - Modifiers may sit anywhere among the positionals.
+  - A repeated or same-slot modifier → `cyim: duplicate flag: --X`, exit 2.
+  - **Every other token is a positional**: OLD/NEW of `-x` or `--foo` work as-is, `--`
+    is a positional, and a typo'd modifier becomes OLD.
+  - Positional counts, each failing with its own stderr usage line and exit 2:
+    - `--grep`: exactly 2;
+    - `--grepfiles`: a pattern + 1..N files (array sized from argc, `cli.cyr:1530`);
+    - the replace verbs: exactly 3 (`cli.cyr:1702`);
+    - `--write` / `--batch`: exactly 1.
+  - `--fuzzy-edits` requires `--regex=fuzzy` (`cli.cyr:1508`).
+- `print_help` (`main.cyr:254-295`) is a stdout wall synced by hand.
+- **Out of scope** (in-app command languages, not argv): the ex command line
+  (`src/command.cyr`), `.cyimrc`, and the `--headless` keystroke stream.
+
+**Site → cmdit** (when unblocked):
+
+- [ ] **Modifier loops → per-verb handles.** After `cmdit_argv(h)`, parse the
+  post-verb slice with `cmdit_parse_argv(vh, cmdit_raw_argc(h) - 1, cmdit_raw_argv(h) + 8)`:
+  - ints → `cmdit_int` + `cmdit_range(…, 0, …)`;
+  - `--regex=` → `cmdit_enum(…, "bre|ere|fuzzy|pcre|re2|vim")`;
+  - `--expect[-not]=` → `cmdit_str`;
+  - `--all` / `--expect-1` → `cmdit_bool`;
+  - the fuzzy rule → `cmdit_seen` + `cmdit_get_enum`, caller-side (required-if is on
+    cmdit's v2 backlog).
+- [ ] **Positional guards.** `r_npos < 3` and its siblings →
+  `cmdit_require_positionals_exact(vh, n)`, with n = 3 for the replace verbs, 2 for
+  `--grep`, and 1 for `--write` / `--batch`. `--grepfiles` →
+  `cmdit_require_positionals(vh, 2)`.
+- [ ] **Verb identification stays a `streq`.** cmdit verbs are bare words, and
+  `cmdit_dispatch_argv` reads a dash-led token before the verb as a flag. So
+  `cmdit_dispatch`, `cmdit_verbs_help` and completions do not apply as-is.
+- [ ] **Keep `print_help` / `print_version`.** They write stdout; cmdit renders on stderr.
+
+**Blockers to identity.** Each needs an append-only cmdit addition or a deliberate
+contract change:
+
+1. **`--wc[=l|=long]` takes an optional value** (`main.cyr:609-620`,
+   `cli.cyr:1631-1642`). As a `cmdit_bool`, `--wc=l` parses but the `=l` is silently
+   dropped. As a `cmdit_str`, a bare `--wc FILE` swallows FILE, which
+   `tests/cli_smoke.sh:61` (Case 4) asserts must work. Optional-value flags are on
+   cmdit's v2 backlog.
+2. **Duplicate refusal.** cmdit is last-wins. `cmdit_seen` is presence only, and
+   `cmdit_repeat_count` covers value flags only. Cases 26–31 (`cli_smoke.sh:202-226`),
+   41 (`:357-359`), 66 (`:530-532`) and 87d (`:790-793`) assert exit 2. The same-slot
+   pairs are mutex, which is on the v2 backlog. A single-flag "once" refusal is not.
+3. **Dash-led OLD/NEW.** getopt rules turn `-x` into `CMDIT_ERR_BUNDLED` and `--foo`
+   into `CMDIT_ERR_UNKNOWN` unless the caller writes `--`. For the Edit-tool-shaped
+   `--replace`, OLD and NEW are arbitrary text. `cmdit_verb_trailing_after` cannot
+   help, because modifiers follow positionals (Cases 1, 4, 6). The decision is cyim's:
+   make `--` part of the contract, or keep this parser.
+4. **The positional cap is silent.** cmdit keeps 128 positionals and drops the rest
+   with no error, so `--grepfiles` over a long list would grep a truncated set and
+   exit 0. This is filed as an open question in cmdit's roadmap.
+5. **The interactive fallback.** If the top level ever moves to cmdit, call
+   `cmdit_help_short(h, 0)` / `cmdit_version_short(h, 0)`, so that `cyim -h` still
+   opens a file named `-h`.
+
+**cyrius.cyml** (when unblocked): `[deps].stdlib` already has `args` and `io` and no
+`flags`. Add the block below. The cmdit dist is verified on 6.6.2; cyim's 6.7.9 pin is
+newer, so a build check is part of the work.
+
+```
+[deps.cmdit]
+git = "https://github.com/MacCracken/cmdit.git"
+tag = "1.3.0"
+modules = ["dist/cmdit.cyr"]
+```
+
+**Tests / output-identity bar.** No `.tcyr` and no `fuzz/*.fcyr` harness touches CLI
+parsing, so the bar is binary-level:
+
+- [ ] `tests/cli_smoke.sh`: all 128 cases keep their exit codes, and the stdout captures
+  (`FILE:N:LINE`, `--context` separators, `--wc`) stay byte-identical. Error arms mostly
+  discard stderr, so usage *text* may change; exit codes may not.
+- [ ] `tests/integration_smoke.py`: the `--write` / `--replace[-all]` / `--grep` /
+  `--headless` rows, and the BUG-001 64 KB-NEW row (`:281-319`), which `cmdit_argv`
+  inherits through stdlib `args`.
+
+References: cmdit `README.md` (API reference); cmdit `docs/development/roadmap.md` (v2
+backlog, open questions); `docs/adr/0002-verb-dispatch.md`. stiva's `src/main.cyr` is
+the worked verb-tool migration.
+
+**Update — cmdit 1.3.1 (2026-10-14).** Blocker 4 is closed. cmdit now grows its
+positional array instead of dropping past 128, and a refused growth is
+`CMDIT_ERR_NOMEM`, so `--grepfiles` over a long list is never silently truncated.
+1.3.1 also rejects a bool given `=value` with `CMDIT_ERR_UNEXPECTED_VALUE`, so in
+blocker 1 a `cmdit_bool` `--wc=l` is now an error instead of a silently dropped
+`=l`. That is still not an optional-value flag, so blocker 1 stands, along with 2,
+3 and 5. When unblocked, pin `tag = "1.3.1"` or later.
