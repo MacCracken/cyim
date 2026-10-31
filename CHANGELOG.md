@@ -4,6 +4,193 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.11.2] — 2026-10-31
+
+**Closeout for the 1.11.x line** — and the first since 1.9.3, because 1.10.x
+shipped without one. All 11 CLAUDE.md closeout steps ran. The code review found
+six defects, and five are fixed here with regression tests:
+- arrows ignored the mode and any pending prefix;
+- the picker overlay broke on short terminals;
+- the status row was not bounded by the terminal width;
+- the status line leaked a buffer every frame;
+- an `epoll_wait` error could spin the main loop.
+
+The sixth, rxvt's `$`-final keys, is filed as BUG-008. A test that failed
+whenever it was run from an interactive terminal is fixed too. The `--agnos` /
+`--aarch64` builds and the qemu-aarch64 suite are now CI gates.
+
+Audit: [`docs/audit/2026-10-31-1.11x-closeout.md`](docs/audit/2026-10-31-1.11x-closeout.md).
+
+### Fixed — arrows are keys, dispatched by mode
+
+Through 1.11.1 the decoder applied an arrow with `motion_apply` directly. That
+function has no mode guard and never sees the pending prefix. The comment above
+the call said "motion_apply guards by mode / state", which was not true. Three
+effects, all present since 1.9.3 or earlier:
+- **On the `:` and `/` lines**, an arrow moved the buffer cursor underneath.
+  A search then started from the moved position.
+- **A pending prefix survived an arrow.** `g <Down> g` completed as `gg` and
+  jumped to the top. `Ctrl-W <Left> j` ran `Ctrl-W j`. `m <Down> a` set the mark
+  at the moved position.
+- **Every modified arrow went the same way** (Ctrl-, Shift-, Alt-arrows),
+  because 1.11.0 decodes them as arrows.
+
+Arrows now reach `editor_step` as `KEY_UP` / `KEY_DOWN` / `KEY_RIGHT` /
+`KEY_LEFT` (257–260), the way Delete became `KEY_DELETE` at 1.11.0:
+- In NORMAL, VISUAL and INSERT they are the `h` / `j` / `k` / `l` motions.
+- On the command and search lines they are swallowed.
+- After `Ctrl-W` they navigate windows, as in vim.
+- After `g`, `m` or `'` they cancel the prefix, like any unmatched follow-up key.
+- The picker's Up / Down handling moved into the same dispatch.
+
+`tests/feed.tcyr` +14 assertions; six fail against 1.11.1.
+
+### Fixed — the picker overlay on short terminals
+
+`_render_list_overlay` always reserved 10 rows. Since 1.10.0 the terminal can
+be as short as 2 rows, and then the overlay's rows fell at or above row 0, where
+`tty_move` refuses to go. On a 6-row terminal with 10 or more references, five
+items were drawn wherever the cursor happened to be, including the highlighted
+selection. The height is now `_render_list_height(rows, count)`: at most 10, and
+at most `rows - 1`. `tests/render.tcyr` +5.
+
+### Fixed — the status row could be wider than the terminal
+
+The normal bottom row wrote the mode tag, the full path, ` [+]` and up to
+1 KiB of plugin segments with no width bound. On the last row, anything wider
+than the terminal autowraps and scrolls the screen every frame, which also puts
+the cursor on the wrong line. Measured: 89 bytes on a 40-column terminal. A long
+path always did this. Since 1.10.0, narrower live widths make it much easier to
+hit. The row is now composed by `_render_status_compose` and capped at the
+terminal width (and the 1 KiB scratch), then written through the sanitizer,
+which never makes text longer. `tests/render.tcyr` +5, mutation-tested: without
+the cap they get 89 for 40.
+
+### Fixed — a buffer leaked on every frame
+
+`render_status` called `buf_new()` on every frame for the plugin segments. That
+is 128 bytes of bump allocation that is never reclaimed, so every keystroke cost
+128 bytes for the life of the session. The segments now use one buffer, cleared
+each frame. Present since 1.3.5.
+
+### Fixed — an `epoll_wait` error could spin the main loop
+
+Any negative return from `epoll_wait` was treated as EINTR: no keys, loop again.
+A persistent error, such as EBADF, would have redrawn the frame as fast as the
+CPU allows. Any error other than EINTR now gives the resize watch up and falls
+back to the plain blocking read, the path the editor already takes when the
+watch cannot be opened. No test covers it, because an epoll error cannot be
+injected from outside the process.
+
+### Fixed — `tests/render.tcyr` failed when run from a terminal
+
+The `_query_winsize` group assumed fd 0 is never a TTY under `cyrius test`.
+`cyrius test` passes stdin through, so the group failed 3 assertions whenever
+someone ran it interactively. `_query_winsize_fd(fd, …)` is split out, and the
+test asks `/dev/null`. It now passes the same way inside a 50 × 132 pty.
+
+### Changed — the cross-targets are CI gates
+
+A new `cross-targets` job builds `--agnos` and `--aarch64` with `CYRIUS_DCE=1`,
+then runs `cyrius test --aarch64` under qemu-user. Both cross-target breakages
+in cyim's history were found late:
+- the `--agnos` build was broken until 1.8.1;
+- `:e` was broken on aarch64 through 1.10.1.
+
+The suite takes about 15 s under qemu on a loaded host.
+
+### Changed — comments that described code that never shipped
+
+- `src/main.cyr`'s header said "three command-line shapes", listed five, and
+  omitted the agent verbs. It also described darshana as termios + ANSI + cursor
+  and counted four `:lsp-*` commands. There are six.
+- `src/plugin.cyr`, `src/render.cyr` and `src/plugins/trailing_ws.cyr`
+  described diagnostics painted in the buffer view: gutter glyphs, inline marks,
+  "lands at v1.4.0". That never shipped. Users see diagnostics only as
+  status-line counts. The comments now say so, and painting them is recorded in
+  the roadmap as demand-gated.
+
+### Changed — the roadmap holds open work only
+
+`docs/development/roadmap.md` goes from 843 lines to 381. Shipped-milestone
+tables, per-cycle sections, closed bugs and fourteen "Last updated" narratives are
+gone: CHANGELOG already records all of it. What remains is organized by version line:
+
+- 1.12.x agent verbs, from agnos's 2026-08-29 issue and proposal, neither
+  listed before;
+- 1.13.x keyboard input and paste;
+- 1.14.x commands cyim accepts but does not carry out;
+- a maintenance track, 2.0.0 (the CLI and plugin-ABI decisions only a major
+  can take), and 2.x;
+- demand-gated, blocked-upstream and watch-list items.
+
+Pointers in `src/lang.cyr`, architecture note 002 and `state.md` follow the new
+section names.
+
+### Closeout results
+
+- **Dead code:** the floor is 27 cyim-side functions unreachable from `main`,
+  the same as 1.9.3. Every one has a caller in a test or fuzz harness. No
+  top-level global is unused.
+- **Refactor:** nothing to consolidate in 1.10.x or 1.11.x. The start-up block
+  shared by `run_headless` and `run_editor` has only two copies, below the
+  third-copy threshold, and predates 1.9.3.
+- **Security re-scan:** no shell-out, and no access past any of the 103
+  fixed-size buffers in `src/`, `tests/` and `fuzz/`. Every new raw syscall
+  number is one cyrius renumbers on aarch64, or sits inside an agnos-only
+  block.
+- **AGNOS:** `scripts/agnos-fullscreen-test.py` passes on the real kernel under
+  QEMU.
+- **Downstream:** neither `agnoshi` nor `aethersafha` references cyim yet.
+
+### Tests
+
+- `cyrius test`: 23 suites, **1338 → 1363** assertions, 0 failures. The same
+  totals under qemu-aarch64.
+- `tests/feed.tcyr` 52 → 66 and `tests/render.tcyr` 84 → 95. The rest is
+  unchanged.
+- Fuzz 5 / 5, CLI smoke 128 / 0, LSP smoke 13 / 0, and the integration smoke
+  passes on both the debug and DCE builds.
+
+### Binary
+
+`CYRIUS_DCE=1`:
+
+| Target | 1.11.1 | 1.11.2 |
+|---|---:|---:|
+| x86_64 Linux | 1,057,560 B | **1,061,696 B** (+4,136) |
+| agnos | 1,033,480 B | **1,037,616 B** (+4,136) |
+| aarch64 Linux | 1,483,440 B | **1,483,480 B** (+40) |
+
+The aarch64 figure suggests the code itself grew by about 40 B. The x86_64 and
+agnos images grow by one 4 KiB page more than that.
+
+### Benchmarks
+
+**Not a re-baseline.** The host was shared, at load average ≈ 20 on 16 cores,
+and every workload ran about 2× slower than at 1.9.3, pure memory fills
+included. The comparison below is three alternating rounds of 1.10.1 (at its
+own pin, 6.6.2) and 1.11.2 under the same load. The 1.9.3 toolchain is no
+longer installed. Each value is the median of the three per-run minimums.
+
+| Bench | 1.10.1 | 1.11.2 | Δ |
+|---|---:|---:|---:|
+| `buf_fill_10MB` | 248.1 ms | 237.2 ms | −4 % |
+| `buf_move_10K_cycles_10MB` | 92.7 ms | 90.6 ms | −2 % |
+| `search_forward_10MB_worst_case` | 223.7 ms | 236.0 ms | **+5.5 %** |
+| `search_forward_10MB_worst_case_ic` | 339.8 ms | 344.7 ms | +1.5 % |
+| `render_build_line_80c_x1000` | 590 µs | 662 µs | +12 % |
+| `highlight_buf_1MB_cyrius` | 644.8 ms | 580.3 ms | **−10 %** |
+
+- **Search:** the ranges do not overlap (222.6–226.5 against 233.3–240.0 ms),
+  but neither `src/search.cyr` nor `src/buffer.cyr` changed since 1.10.1. That
+  points at the toolchain move (6.6.2 → 6.7.18), not at cyim.
+- **Render:** the run ranges overlap almost completely (384–644 against
+  360–680 µs). If any of the change is real, it is at most about 0.05 µs per
+  line.
+- **Highlighting:** the gain is vyakarana 2.10.0, as measured at 1.11.1.
+- **The baseline itself** is carried in the roadmap as a maintenance item.
+
 ## [1.11.1] — 2026-10-31
 
 **Toolchain `6.7.9` → `6.7.18`; vyakarana `2.4.0` → `2.10.0`, darshana

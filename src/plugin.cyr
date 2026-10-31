@@ -535,11 +535,11 @@ fn diag_msg(d)      { return load64(d + 16); }
 
 # Called once per render frame from render_frame. Allocates a fresh
 # diag vec, walks every registered provider, stashes the result for
-# inspection. Inline diag painting is provider-specific: cyim-lsp's
-# diagnostic_provider feeds publishDiagnostics tuples here; render
-# layer surfaces them (gutter glyphs, inline marks, status counts
-# via the parallel status_segment hook). Tests read
-# `plugin_last_diags()` for assertions on the per-frame collection.
+# inspection. cyim-lsp's diagnostic_provider feeds publishDiagnostics
+# tuples here. The render layer does not paint them in the buffer view
+# (no gutter glyphs or inline marks); users see counts through the
+# parallel status_segment hook. Tests read `plugin_last_diags()` for
+# assertions on the per-frame collection.
 fn _plugin_render_collect_diagnostics(s) {
     var v = vec_new();
     var b = editor_buf(s);

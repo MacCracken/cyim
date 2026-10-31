@@ -370,15 +370,19 @@ fn main() {
     # `_query_winsize` clamping is the other half — the absurd value never
     # enters the system rather than being caught at each sink.
     #
-    # `_query_winsize` reads fd 0, which under `cyrius test` is not a TTY, so
-    # what is asserted here is the FALLBACK contract: it always leaves a
-    # drawable grid and reports which one it gave.
+    # What is asserted here is the FALLBACK contract: on an fd that is not a
+    # terminal it always leaves a drawable grid and reports which one it gave.
+    # The fd is /dev/null, never a TTY. Through 1.11.1 this read fd 0, and so
+    # failed whenever `cyrius test` ran in an interactive terminal.
     test_group("v1.10.0 — _query_winsize always yields a drawable grid");
     var qr[8];
     var qc[8];
     store64(&qr, 0);
     store64(&qc, 0);
-    var answered = _query_winsize(&qr, &qc);
+    var nullfd = file_open("/dev/null", O_RDONLY, 0);
+    assert_eq(nullfd >= 0, 1, "opened /dev/null");
+    var answered = _query_winsize_fd(nullfd, &qr, &qc);
+    sys_close(nullfd);
     assert_eq(answered == 0 || answered == 1, 1, "returns a 1/0 verdict");
     assert_eq(load64(&qr) >= MIN_ROWS, 1, "rows at or above the floor");
     assert_eq(load64(&qc) >= MIN_COLS, 1, "cols at or above the floor");
@@ -403,6 +407,31 @@ fn main() {
       "plain render at MAX_COLS stays within out_max");
     assert_eq(render_build_line_naked(wb, 0, MAX_COLS, 0, wout, wcap) <= wcap, 1,
       "naked render at MAX_COLS stays within out_max");
+
+    test_group("1.11.2 — the picker overlay fits short terminals");
+    assert_eq(_render_list_height(24, 50), 10, "tall terminal: capped at 10 rows");
+    assert_eq(_render_list_height(24, 3), 3, "short list: its own length");
+    assert_eq(_render_list_height(6, 50), 5, "6 rows: 5, status row kept (1.11.1: 10)");
+    assert_eq(_render_list_height(MIN_ROWS, 50), MIN_ROWS - 1, "smallest grid: one row");
+    assert_eq(_render_list_height(24, 0), 0, "empty list: nothing");
+
+    # Wider than the terminal, the bottom row autowraps and scrolls the screen
+    # every frame. Through 1.11.1 nothing bounded it: 89 bytes on 40 columns.
+    test_group("1.11.2 — the status row fits the terminal width");
+    var stb = buf_new();
+    var sts = editor_new(stb);
+    var lpath = "/home/someone/projects/a-rather-long-directory-name/src/module/file.cyr";
+    editor_set_file_path(sts, lpath);
+    editor_set_modified(sts, 1);
+    var srow = alloc(1024);
+    var sfull = _render_status_compose(sts, srow, 1024);
+    assert_eq(sfull, 12 + 2 + strlen(lpath) + 4, "full row: tag, gap, path, [+]");
+    assert_eq(load8(srow), 45, "starts with the mode tag");
+    assert_eq(_render_status_compose(sts, srow, 40), 40, "40 columns: stops at 40 (1.11.1: all 89)");
+    assert_eq(_render_status_compose(sts, srow, 5), 5, "5 columns: stops at 5");
+    editor_set_file_path(sts, 0);
+    editor_set_modified(sts, 0);
+    assert_eq(_render_status_compose(sts, srow, 1024), 12 + 2 + 9, "scratch row: tag, gap, [scratch]");
 
     return assert_summary();
 }

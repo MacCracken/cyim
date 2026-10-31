@@ -1,11 +1,13 @@
 # main.cyr — cyim entry point
 #
-# Three command-line shapes:
-#   cyim                — open scratch buffer
-#   cyim <file>         — open <file>
+# Command-line shapes (print_help has the full list):
+#   cyim [<file>]       — open <file>, or a scratch buffer
+#   cyim --headless <file> — the same editor, keystrokes read from stdin
+#   cyim --write / --replace[-all] / --replace-files[-all] / --batch /
+#        --grep / --grepfiles — agent verbs (src/cli.cyr)
+#   cyim --line         — ed/ex line editor (agnos only)
 #   cyim --probe        — TTY round-trip diagnostic (raw on / sleep / cooked off)
-#   cyim --version      — print version and exit
-#   cyim --help         — print usage and exit
+#   cyim --version / --help
 #
 # Main loop:
 #   1. Render the frame (buffer + status + cursor).
@@ -25,11 +27,11 @@ include "lib/vyakarana.cyr"
 # narrow tests like tests/buffer.tcyr that don't pull plugin.cyr
 # stay clean. Consumer-side wiring lives in src/plugins/lsp_glue.cyr.
 include "lib/cyim-lsp.cyr"
-# darshana 0.2.0 — TTY/raw-mode primitives (termios + ANSI + cursor).
-# Extracted at v0.2.0 from cyim's `src/tty.cyr` donor source; cyim
-# is the primary donor and first consumer. v1.7.0 fold-in sheds the
-# donor function bodies from `src/tty.cyr` (only `tty_probe()`
-# stays — a cyim-internal raw-mode smoke). Must be included before
+# darshana — TTY primitives: termios raw / cooked, alt screen, cursor,
+# SGR and 256-colour, winsize, signalfd, the UTF-8 sanitizer. First
+# extracted at darshana 0.2.0 from cyim's `src/tty.cyr` donor source;
+# cyim is the primary donor and first consumer, and only `tty_probe()`
+# (a cyim-internal raw-mode smoke) stayed behind. Must be included before
 # `src/tty.cyr` because `tty_probe()` calls `tty_raw` / `tty_cooked`
 # from darshana; single-pass compiler resolves at parse time.
 include "lib/darshana.cyr"
@@ -45,7 +47,7 @@ include "src/plugin.cyr"
 # doesn't justify external repo overhead.
 include "src/plugins/trailing_ws.cyr"
 # v1.4.0: cyim-lsp consumer-side glue. Calls into lib/cyim-lsp.cyr's
-# pure-protocol API; registers the six hook callbacks + four
+# pure-protocol API; registers its hook callbacks and six
 # `:lsp-*` ex-commands against cyim's plugin ABI.
 include "src/plugins/lsp_glue.cyr"
 # niyama 1.0.1 folded into cyrius stdlib at 5.9.0 (sandhi-pattern).
@@ -489,6 +491,14 @@ fn run_editor(file_path) {
             if (nr < 0) {
                 # EINTR or a spurious wake — no keys, no EOF. Loop and redraw.
                 have_keys = 0;
+                # Any other error recurs on every call, and looping on it would
+                # redraw the frame flat out (1.11.2). Give the watch up and fall
+                # back to the plain blocking read, as when it fails to open.
+                if (nr != 0 - EINTR) {
+                    _resize_watch_close(epfd, wfd);
+                    epfd = 0 - 1;
+                    wfd = 0 - 1;
+                }
             }
             if (nr > 0) {
                 #ifdef CYRIUS_ARCH_AARCH64
@@ -511,9 +521,13 @@ fn run_editor(file_path) {
                 }
             }
         }
+        # `have_keys` is 0 here only when the watch was given up above, in
+        # this pass: read on the next one, so the keys are not dropped.
         if (epfd < 0) {
-            n = file_read(0, &key_buf, 8);
-            if (n == 8) { more = 1; }
+            if (have_keys == 1) {
+                n = file_read(0, &key_buf, 8);
+                if (n == 8) { more = 1; }
+            }
         }
         #endif
         if (have_keys == 1) {

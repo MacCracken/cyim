@@ -13,7 +13,33 @@ the source of truth for what's measured.
 
 ---
 
-## v1.8.6 — 2026-08-23 (current)
+## v1.11.2 — 2026-10-31 (A/B under load, not a baseline)
+
+The 1.11.x closeout ran on a shared host, at load average ≈ 20 on 16 cores,
+where every workload took about twice its 1.8.6 time. Absolute numbers from
+that run would mislead. The table compares 1.10.1, built at its own pin
+(cyrius 6.6.2), with 1.11.2 (cyrius 6.7.18): three alternating rounds under
+the same load, each value the median of the per-run minimums.
+
+| Bench | 1.10.1 | 1.11.2 | Δ |
+|---|---:|---:|---:|
+| `buf_fill_10MB` | 248.1 ms | 237.2 ms | −4 % |
+| `buf_move_10K_cycles_10MB` | 92.7 ms | 90.6 ms | −2 % |
+| `search_forward_10MB_worst_case` | 223.7 ms | 236.0 ms | +5.5 % |
+| `search_forward_10MB_worst_case_ic` | 339.8 ms | 344.7 ms | +1.5 % |
+| `render_build_line_80c_x1000` | 590 µs | 662 µs | +12 % (ranges overlap) |
+| `highlight_buf_1MB_cyrius` | 644.8 ms | 580.3 ms | −10 % |
+
+- **Highlighting:** the gain is vyakarana 2.10.0.
+- **Search:** the code is unchanged since 1.10.1, so its slowdown follows the
+  toolchain.
+- **Render:** the change is inside the run-to-run spread.
+
+The 1.8.6 table below remains the last absolute baseline.
+
+---
+
+## v1.8.6 — 2026-08-23 (last absolute baseline)
 
 First re-bench since v1.6.0. The 1.8.x line added bounds checks to the
 per-frame render path (1.8.3) and reworked the save path twice (1.8.3

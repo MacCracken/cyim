@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.11.1 — released.** The 1.x series shipped:
+**1.11.2 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -95,6 +95,11 @@ for humanity. Consumers:
 - **v1.11.1** — cyrius `6.7.18`, vyakarana `2.10.0`, darshana `1.7.0`,
   cyim-lsp `1.5.4`. Highlighting picks up vyakarana's grammar fixes and
   three new languages (Lean `.lean`, MDX `.mdx`, NASM `.nasm`).
+- **v1.11.2** — closeout for the 1.11.x line. The arrow keys follow the
+  mode (they no longer move the cursor under the `:` line or complete a
+  pending `g`), the status row and the reference picker fit narrow and
+  short terminals, and CI now builds and tests the agnos and aarch64
+  targets.
 
 Current pins: cyrius `6.7.18`, vyakarana `2.10.0`, cyim-lsp `1.5.4`,
 darshana `1.7.0`.

@@ -55,7 +55,7 @@ var LANG_COUNT = 49;
 #
 # 49 entries makes the if-chain noisy. The refactor (parallel global
 # string arrays or a vyakarana metadata query) is owed and tracked in
-# roadmap.md § Watch list; document the decision in an ADR before going.
+# roadmap.md § Maintenance; document the decision in an ADR before going.
 fn lang_name(i) {
     if (i == 0)  { return "plain"; }
     if (i == 1)  { return "shell"; }

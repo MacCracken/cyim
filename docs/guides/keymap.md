@@ -35,11 +35,16 @@ other follow-up byte falls through to the plugin prefix-key lookup
 
 **Arrow keys** also route to the motion actions: terminals send
 `ESC [ A/B/C/D` for up/down/right/left; cyim's driver-side
-`editor_feed` decodes the CSI sequence and dispatches the matching
-`ACT_MOVE_*` directly. Available in NORMAL, INSERT, and VISUAL. Since
-1.11.0 a modified arrow (`ESC [ 1 ; 5 C` — Ctrl-Right, Shift-Up, …)
-moves like the plain arrow, and a sequence decodes the same however the
-terminal's bytes are split across reads.
+`editor_feed` decodes the CSI sequence and dispatches it as a key, so
+an arrow obeys the mode like `h`/`j`/`k`/`l` do. It moves the cursor in
+NORMAL, INSERT and VISUAL and is ignored on the `:` and `/` lines. After
+a pending prefix it is that prefix's follow-up key (`Ctrl-w <Down>` is
+`Ctrl-w j`; after `g`, `m` or `'` it cancels the prefix). Since 1.11.0 a
+modified arrow (`ESC [ 1 ; 5 C` — Ctrl-Right, Shift-Up, …) moves like
+the plain arrow, and a sequence decodes the same however the terminal's
+bytes are split across reads. *(Through 1.11.1 an arrow moved the buffer
+cursor even on the `:` line and left a pending prefix in place, so
+`g <Down> g` ran `gg`.)*
 
 **Other terminal keys** (1.11.0). `Delete` (`ESC [ 3 ~`) is below. Every
 other multi-byte key a terminal sends as a CSI sequence — PgUp / PgDn,
@@ -97,6 +102,7 @@ selects the navigation direction:
 | `Ctrl-w k` | 23 107 | Move to upper window| `ACT_WIN_UP`      |
 | `Ctrl-w l` | 23 108 | Move to right window| `ACT_WIN_RIGHT`   |
 
+The arrow keys work in place of `h`/`j`/`k`/`l` (since 1.11.2).
 `Ctrl-w` followed by anything else clears the prefix and produces no
 action.
 
@@ -291,8 +297,8 @@ all keys return `ACT_NONE` so motion / edit pipelines stay no-ops.
 | `q`   | 113 | Dismiss without firing |
 | any other | — | Swallowed (no-op) |
 
-**Arrow keys**: Up / Down move the selection (since 1.6.7, via
-`editor_feed`'s CSI decoder); Left / Right are swallowed. Every other key,
+**Arrow keys**: Up / Down move the selection (since 1.6.7); Left / Right
+are swallowed. Every other key,
 Delete included, is swallowed while the picker is up. Picker rows are
 shown with control bytes as `?` (1.11.0): `:lsp-find-refs` rows carry a
 preview of a line from another file.

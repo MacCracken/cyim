@@ -81,10 +81,11 @@ fails it.
 ## When this note stops applying
 
 Two if-chains that must stay in lockstep is the debt, not the design.
-The roadmap's watch list carries the refactor: one table, derived rather
-than restated — most likely by asking vyakarana for its bundled grammar
-list (`grammar_count()` / `grammar_name_at(i)`) instead of cyim keeping
-its own copy. Until then the guard is what holds the invariant, and this
+The roadmap's Maintenance section tracks the refactor. The goal is one
+table that is derived rather than restated: ask vyakarana for its bundled
+grammar list (`grammar_count()` / `grammar_name_at(i)`), or since
+vyakarana 2.9.8 use its embedded grammars and
+`detect_language_registered`, instead of keeping cyim's own copy. Until then the guard is what holds the invariant, and this
 note is why the guard is shaped the way it is.
 
 ## See also

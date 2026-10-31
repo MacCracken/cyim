@@ -94,6 +94,7 @@ requests instead)
 - [2026-08-23 — 1.9.x closeout audit](docs/audit/2026-08-23-1.9x-closeout.md)
 - [2026-10-12 — 1.11.0 release audit](docs/audit/2026-10-12-1.11.0-audit.md)
 - [2026-10-31 — 1.11.1 release audit](docs/audit/2026-10-31-1.11.1-audit.md)
+- [2026-10-31 — 1.11.x closeout audit](docs/audit/2026-10-31-1.11x-closeout.md)
   (**most recent**)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
@@ -172,3 +173,10 @@ State at v1.11.1: one LOW from the
 cyrius 6.7.18's lint and fixed — 24 CLI messages wrote one byte past their
 string literal (its NUL) to stderr. The toolchain and dependency deltas add
 nothing reachable from cyim; the residuals above carry.
+
+State at v1.11.2: the [1.11.x closeout](docs/audit/2026-10-31-1.11x-closeout.md)
+reviewed everything since 1.9.3 and found six LOW defects, none memory-unsafe.
+Five are fixed with tests. Among them are a status row that could overrun the
+terminal width, and a main loop that could spin on a persistent `epoll_wait`
+error. The sixth, rxvt's `$`-final keys swallowing the next key, is BUG-008.
+The residuals above carry.

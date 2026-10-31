@@ -211,6 +211,52 @@ fn main() {
     assert_eq(editor_feed_pending(s15), 0, "back to ground");
     assert_lte(_editor_feed_plen(s15), FEED_PBUF_MAX, "count reset after dispatch");
 
+    # 1.11.2: arrows go through editor_dispatch like any other key. Through
+    # 1.11.1 the decoder called motion_apply directly, which has no mode
+    # guard and never sees the pending prefix.
+    test_group("An arrow on the command line is swallowed");
+    var s16 = ed_with("abcdef", 3);
+    editor_step(s16, 58);                       # :
+    feed(s16, "\x1b[D");
+    assert_eq(buf_cursor(editor_buf(s16)), 3, "buffer cursor stays (1.11.1: moved to 2)");
+    assert_eq(editor_mode(s16), MODE_COMMAND, "still COMMAND");
+    assert_eq(buf_len(editor_cmdbuf(s16)), 0, "cmdbuf empty");
+
+    test_group("An arrow on the search line is swallowed");
+    var s17 = ed_with("abcdef", 3);
+    editor_step(s17, 47);                       # /
+    feed(s17, "\x1b[C");
+    assert_eq(buf_cursor(editor_buf(s17)), 3, "search starts where it was opened (1.11.1: 4)");
+    assert_eq(editor_mode(s17), MODE_SEARCH, "still SEARCH");
+    assert_eq(buf_len(editor_cmdbuf(s17)), 0, "cmdbuf empty");
+
+    # Like any unmatched follow-up key, the arrow is consumed by the prefix.
+    test_group("An arrow cancels a pending `g`");
+    var s18 = ed_with("aa\nbb\ncc\n", 3);
+    editor_step(s18, 103);                      # g
+    feed(s18, "\x1b[B");
+    assert_eq(editor_prefix(s18), 0, "prefix cleared (1.11.1: still pending)");
+    assert_eq(buf_cursor(editor_buf(s18)), 3, "consumed as the prefix's follow-up");
+    editor_step(s18, 103);                      # g: a new prefix, not `gg`
+    assert_eq(buf_cursor(editor_buf(s18)), 3, "g <Down> g does not jump to the top (1.11.1: 0)");
+    assert_eq(editor_prefix(s18), KEY_G, "the second g is pending on its own");
+
+    test_group("Ctrl-W then an arrow is window navigation");
+    var s19 = ed_with("aa\nbb\ncc\n", 3);
+    editor_step(s19, KEY_CTRL_W);
+    feed(s19, "\x1b[B");
+    assert_eq(editor_prefix(s19), 0, "Ctrl-W consumed (1.11.1: still pending)");
+    assert_eq(buf_cursor(editor_buf(s19)), 3, "the buffer cursor did not move");
+    editor_step(s19, KEY_CTRL_W);
+    assert_eq(editor_step(s19, KEY_LEFT), ACT_WIN_LEFT, "Ctrl-W <Left> dispatches ACT_WIN_LEFT");
+
+    test_group("An arrow in VISUAL extends the selection");
+    var s20 = ed_with("abcdef", 0);
+    editor_step(s20, 118);                      # v
+    feed(s20, "\x1b[C");
+    editor_step(s20, 100);                      # d
+    assert_eq(buf_eq(editor_buf(s20), "cdef", 4), 1, "v <Right> d removes 'ab'");
+
     return assert_summary();
 }
 

@@ -53,11 +53,18 @@ var MAX_COLS = 1000;
 # was used — so a caller can tell "the terminal says 24x80" from "the terminal
 # said nothing". Both produce a drawable grid.
 fn _query_winsize(out_rows, out_cols) {
+    return _query_winsize_fd(0, out_rows, out_cols);
+}
+
+# `_query_winsize` for terminal `fd`. Split out at 1.11.2 so the fallback can
+# be tested on an fd that is never a terminal: fd 0 is one whenever
+# `cyrius test` runs in an interactive shell.
+fn _query_winsize_fd(fd, out_rows, out_cols) {
     store64(out_rows, DEFAULT_ROWS);
     store64(out_cols, DEFAULT_COLS);
     var wr = 0;
     var wc = 0;
-    if (tty_winsize(0, &wr, &wc) != 0) { return 0; }
+    if (tty_winsize(fd, &wr, &wc) != 0) { return 0; }
     if (wr < MIN_ROWS) { return 0; }
     if (wc < MIN_COLS) { return 0; }
     if (wr > MAX_ROWS) { wr = MAX_ROWS; }

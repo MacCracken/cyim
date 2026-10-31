@@ -124,6 +124,14 @@ var KEY_QUOTE     = 39;    # v1.6.0 — prefix for `'<letter>` (jump to mark)
 # NORMAL and INSERT (staying in INSERT), deletes the selection in VISUAL, and
 # is swallowed on the command line (BUG-003).
 var KEY_DELETE    = 256;
+# v1.11.2 — the arrow keys, which also arrive only as CSI sequences
+# (`ESC [ A`..`D`). Dispatched like any key: a motion in NORMAL, VISUAL and
+# INSERT, swallowed on the command and search lines, window navigation after
+# Ctrl-W, and a pending prefix is cancelled by them as by any other key.
+var KEY_UP        = 257;
+var KEY_DOWN      = 258;
+var KEY_RIGHT     = 259;
+var KEY_LEFT      = 260;
 
 # ──── Error codes (set into state.last_error)
 var ERR_NONE            = 0;
@@ -431,6 +439,16 @@ fn _seed_normal_keymap(m) {
     return 0;
 }
 
+# The motion an arrow key code stands for, or ACT_NONE when `key` is not an
+# arrow. Keeps the four arrows' mapping in one place for every mode below.
+fn _arrow_action(key) {
+    if (key == KEY_UP)    { return ACT_MOVE_UP; }
+    if (key == KEY_DOWN)  { return ACT_MOVE_DOWN; }
+    if (key == KEY_RIGHT) { return ACT_MOVE_RIGHT; }
+    if (key == KEY_LEFT)  { return ACT_MOVE_LEFT; }
+    return ACT_NONE;
+}
+
 # Translate one input byte into an action and update mode-state if the action
 # is a mode transition. Returns the action id; the caller is responsible for
 # applying its semantics (motion, insert, command-line append, ...) using
@@ -443,12 +461,13 @@ fn editor_dispatch(s, key) {
     # at the very top of dispatch so they don't fall through to the
     # mode-specific handlers below. All paths return ACT_NONE so
     # motion_apply / edit_apply / etc are no-ops; the buffer stays
-    # untouched while the picker is up. Arrow keys are NOT bound at
-    # v1.5.0 (would require editor_feed-side wiring); the j/k/Enter/
-    # Esc/q surface is the documented input set.
+    # untouched while the picker is up. Up / Down move the selection
+    # like k / j (since 1.11.2 here; 1.6.7–1.11.1 in editor_feed).
     if (_plugin_list_active == 1) {
         if (key == 106) { _plugin_list_next(); return ACT_NONE; }    # j
         if (key == 107) { _plugin_list_prev(); return ACT_NONE; }    # k
+        if (key == KEY_DOWN) { _plugin_list_next(); return ACT_NONE; }
+        if (key == KEY_UP)   { _plugin_list_prev(); return ACT_NONE; }
         if (key == KEY_ENTER) { _plugin_list_select(s); return ACT_NONE; }
         if (key == KEY_LF)    { _plugin_list_select(s); return ACT_NONE; }
         if (key == KEY_ESC)   { _plugin_list_dismiss();  return ACT_NONE; }
@@ -486,6 +505,10 @@ fn editor_dispatch(s, key) {
             if (key == 106) { return ACT_WIN_DOWN; }
             if (key == 107) { return ACT_WIN_UP; }
             if (key == 108) { return ACT_WIN_RIGHT; }
+            if (key == KEY_LEFT)  { return ACT_WIN_LEFT; }
+            if (key == KEY_DOWN)  { return ACT_WIN_DOWN; }
+            if (key == KEY_UP)    { return ACT_WIN_UP; }
+            if (key == KEY_RIGHT) { return ACT_WIN_RIGHT; }
             return ACT_NONE;
         }
 
@@ -583,6 +606,7 @@ fn editor_dispatch(s, key) {
         # v1.11.0 — Delete is `x` (BUG-003). Decided here rather than seeded
         # into the keymap because KEY_DELETE is not a byte.
         if (key == KEY_DELETE) { return ACT_DELETE_RIGHT; }
+        if (_arrow_action(key) != ACT_NONE) { return _arrow_action(key); }
         if (key == KEY_CTRL_W) {
             editor_set_prefix(s, KEY_CTRL_W);
             return ACT_NONE;
@@ -627,6 +651,7 @@ fn editor_dispatch(s, key) {
         if (key == 121)     { store64(s, MODE_NORMAL); return ACT_VISUAL_YANK; }  # y
         if (key == 100)     { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; } # d
         if (key == KEY_DELETE) { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
+        if (_arrow_action(key) != ACT_NONE) { return _arrow_action(key); }
         # Motions allowed; everything else is swallowed so dispatch
         # doesn't trigger inserts / commands while a selection is open.
         var act = map_u64_get(load64(s + 16), key);
@@ -642,6 +667,7 @@ fn editor_dispatch(s, key) {
         if (key == 121)     { store64(s, MODE_NORMAL); return ACT_VISUAL_YANK; }
         if (key == 100)     { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
         if (key == KEY_DELETE) { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
+        if (_arrow_action(key) != ACT_NONE) { return _arrow_action(key); }
         var act = map_u64_get(load64(s + 16), key);
         if (act >= ACT_MOVE_LEFT) {
             if (act <= ACT_MOVE_FILE_END) { return act; }
@@ -656,6 +682,7 @@ fn editor_dispatch(s, key) {
         if (key == KEY_DEL)       { return ACT_DELETE_LEFT; }
         if (key == KEY_BACKSPACE) { return ACT_DELETE_LEFT; }
         if (key == KEY_DELETE)    { return ACT_DELETE_RIGHT; }   # forward delete; stays in INSERT
+        if (_arrow_action(key) != ACT_NONE) { return _arrow_action(key); }
         return ACT_INSERT_LITERAL;
     }
 
@@ -668,6 +695,7 @@ fn editor_dispatch(s, key) {
         # The command line has no cursor to delete under. Swallowed — APPEND
         # would store the code's low byte, a NUL.
         if (key == KEY_DELETE)    { return ACT_NONE; }
+        if (_arrow_action(key) != ACT_NONE) { return ACT_NONE; }
         return ACT_CMDLINE_APPEND;
     }
 
@@ -681,6 +709,7 @@ fn editor_dispatch(s, key) {
         if (key == KEY_DEL)       { return ACT_CMDLINE_BACKSPACE; }
         if (key == KEY_BACKSPACE) { return ACT_CMDLINE_BACKSPACE; }
         if (key == KEY_DELETE)    { return ACT_NONE; }
+        if (_arrow_action(key) != ACT_NONE) { return ACT_NONE; }
         return ACT_CMDLINE_APPEND;
     }
 

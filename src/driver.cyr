@@ -197,8 +197,9 @@ fn editor_run(s, keys, n) {
 # keeps its state in the editor record (`feed_state` / `feed_plen` /
 # `feed_pbuf`), so a sequence split across reads decodes exactly as if it had
 # arrived in one. What it acts on:
-#   - final A / B / C / D — an arrow. Parameters (Shift / Ctrl / Alt
-#     modifiers) are ignored, so Ctrl-Right moves like Right.
+#   - final A / B / C / D — an arrow, fed to `editor_step` as KEY_UP /
+#     KEY_DOWN / KEY_RIGHT / KEY_LEFT (since 1.11.2). Parameters (Shift /
+#     Ctrl / Alt modifiers) are ignored, so Ctrl-Right moves like Right.
 #   - `ESC [ 3 ~`, with or without a `;<modifier>` — the Delete key, fed to
 #     `editor_step` as KEY_DELETE (src/mode.cyr says what each mode does).
 #   - everything else is SWALLOWED whole: PgUp / PgDn / Home / End / Insert,
@@ -221,6 +222,10 @@ fn editor_run(s, keys, n) {
 # which cyim never enables) are deliberately NOT decoded. `O` is "open line
 # above", and `<Esc>O` typed quickly lands in one read — decoding it would eat
 # a real command. See roadmap.md § Open Bugs.
+#
+# rxvt's `$`-final keys (`ESC [ 3 $`, Shift-Delete) are not decoded either:
+# `$` is an intermediate byte in ECMA-48, so the sequence stays open and the
+# NEXT key becomes its final byte (BUG-008, same section).
 
 # How long the interactive loop waits for the rest of a carried escape
 # sequence before `editor_feed_flush` resolves it. A terminal sends a whole
@@ -243,22 +248,16 @@ fn _feed_csi_dispatch(s, final) {
     }
     if (final >= 65) {
         if (final <= 68) {
-            # v1.6.7: arrows navigate the picker while it is up. Up / Down move
-            # the selection; Left / Right are swallowed (a single-column list
-            # has no horizontal motion, and dispatching them would land on the
-            # h / l-equivalent NORMAL motions underneath).
-            if (_plugin_list_active == 1) {
-                if (final == 65) { _plugin_list_prev(); }
-                if (final == 66) { _plugin_list_next(); }
-                return 0;
-            }
-            var act = ACT_MOVE_UP;
-            if (final == 66) { act = ACT_MOVE_DOWN; }
-            if (final == 67) { act = ACT_MOVE_RIGHT; }
-            if (final == 68) { act = ACT_MOVE_LEFT; }
-            # Applied in whatever mode the editor is in (NORMAL, INSERT,
-            # VISUAL); motion_apply guards by mode / state.
-            motion_apply(s, act);
+            # An arrow is a key like any other: editor_step dispatches it by
+            # mode and pending prefix (src/mode.cyr, KEY_UP..KEY_LEFT), and the
+            # picker takes Up / Down while it is up. Through 1.11.1 this called
+            # motion_apply directly, which moved the buffer cursor under the
+            # command line and let a pending `g` / Ctrl-W / `m` survive.
+            var key = KEY_UP;
+            if (final == 66) { key = KEY_DOWN; }
+            if (final == 67) { key = KEY_RIGHT; }
+            if (final == 68) { key = KEY_LEFT; }
+            editor_step(s, key);
             return 0;
         }
     }

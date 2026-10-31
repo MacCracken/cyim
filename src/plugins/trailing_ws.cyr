@@ -12,7 +12,7 @@
 #   - post_change_hook: recompute the set of lines that end in
 #     space or tab (after the last byte before \n).
 #   - diagnostic_provider: emit DIAG_HINT entries for each such
-#     line so future render-side painters can underline them.
+#     line (collected per frame; not painted in the buffer view).
 #   - status_segment: render "TWS:N" if N > 0 (human-readable
 #     count alongside the file path in the status row).
 #
@@ -92,9 +92,9 @@ fn _tws_on_change(s) {
 }
 
 # Diagnostic provider: emit one DIAG_HINT entry per trailing-ws
-# line. cyim-side diag rendering lands at v1.4.0+; until then
-# `plugin_last_diags()` makes the entries inspectable from tests
-# and the status_segment provides the human-readable path.
+# line. The renderer does not paint diagnostics in the buffer view,
+# so `plugin_last_diags()` is how tests inspect the entries and the
+# status_segment is the human-readable path.
 fn _tws_diags(s, b, out_vec) {
     var n = vec_len(_tws_lines);
     var i = 0;

@@ -145,10 +145,10 @@ jobs:
       - name: CLI smoke
         # tests/cli_smoke.sh drives the six one-shot agent verbs
         # (--write / --replace[-all] / --grep / --batch / --headless) and
-        # every modifier, asserting exit codes and on-disk results. 118
-        # assertions covering the `daimon` consumer surface — the contract
-        # CLAUDE.md § Consumers commits to. It had never been a CI step, so
-        # the agent-facing half of cyim was ungated until 1.8.2.
+        # every modifier, asserting exit codes and on-disk results — the
+        # `daimon` consumer surface, the contract CLAUDE.md § Consumers
+        # commits to. It had never been a CI step, so the agent-facing half
+        # of cyim was ungated until 1.8.2.
         run: bash tests/cli_smoke.sh
 
       - name: LSP smoke
@@ -199,6 +199,60 @@ jobs:
           # Replace the regular binary so integration_smoke.py picks up the DCE build.
           cp build/cyim-dce build/cyim
           python3 tests/integration_smoke.py
+
+  cross-targets:
+    name: Cross-targets (agnos, aarch64)
+    runs-on: ubuntu-latest
+    # Added at 1.11.2. Both cross-target breakages in cyim's history shipped
+    # because nothing here built or ran another target: the `--agnos` build
+    # failed inside the vendored cyim-lsp bundle until 1.8.1, and through
+    # 1.10.1 `:e` was broken on aarch64 by a raw x86_64 syscall number.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Cyrius toolchain
+        # Same installer, pinned the same way, as build-and-test (see there).
+        run: |
+          set -e
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          [ -n "$CYRIUS_VERSION" ] \
+            || { echo "::error::could not read [package].cyrius from cyrius.cyml"; exit 1; }
+          curl -sSfL "https://raw.githubusercontent.com/MacCracken/cyrius/${CYRIUS_VERSION}/scripts/install.sh" \
+            | CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+          echo "CYRIUS_HOME=$HOME/.cyrius" >> "$GITHUB_ENV"
+
+      - name: Verify toolchain layout
+        run: |
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          test -d "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" || {
+            echo "::error::stdlib snapshot missing at ~/.cyrius/versions/$CYRIUS_VERSION/lib"
+            exit 1
+          }
+
+      - name: Install qemu-user
+        # `cyrius test --aarch64` runs each suite under /usr/bin/qemu-aarch64.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user
+          test -x /usr/bin/qemu-aarch64
+
+      - name: Resolve dependencies
+        run: cyrius deps
+
+      - name: Build (agnos)
+        run: |
+          mkdir -p build
+          CYRIUS_DCE=1 cyrius build --agnos src/main.cyr build/cyim_agnos
+          echo "cyim_agnos: $(wc -c < build/cyim_agnos) bytes"
+
+      - name: Build (aarch64)
+        run: |
+          CYRIUS_DCE=1 cyrius build --aarch64 src/main.cyr build/cyim_aarch64
+          echo "cyim_aarch64: $(wc -c < build/cyim_aarch64) bytes"
+
+      - name: Test (aarch64, under qemu-user)
+        run: cyrius test --aarch64
 
   security:
     name: Security scan
