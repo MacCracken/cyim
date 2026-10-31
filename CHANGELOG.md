@@ -4,6 +4,77 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.12.1] — 2026-10-31
+
+**`--expect` / `--expect-not` on the replace verbs.** `--write` and
+`--batch` have had this post-save assertion. Now `--replace`, `--replace-all`,
+`--replace-files` and `--replace-files-all` have it too, so a single edit can
+check the file it produced, not only the match count before it. This is
+proposal § 3 of agnos's
+[2026-08-29 proposal](docs/development/proposals/2026-08-29-line-anchored-and-cyrius-aware-edits.md).
+
+Audit: [`docs/audit/2026-10-31-1.12.1-audit.md`](docs/audit/2026-10-31-1.12.1-audit.md).
+
+### Added
+
+```sh
+cyim --replace --expect-1 --expect-not='old_name(' 'old_name(' 'new_name(' src/api.cyr
+```
+
+- **Semantics are those of `--write` and `--batch`:**
+  - checked on the saved result;
+  - `<pat>` is a literal substring, even under `--regex=`;
+  - a miss exits 6, and the file stays saved;
+  - `--expect` and `--expect-not` share one slot, so a second of either exits 2;
+  - an empty pattern exits 2.
+- **`--expect-N` / `--expect-1` stay a separate slot**, checked before anything
+  is written, so the two compose: a count going in and a shape coming out.
+- **After an `--expect-N=0` no-op** (nothing to replace, nothing written), the
+  assertion is checked on the unchanged file.
+- **`--wc` prints only when the assertion holds**, as on `--write`.
+
+### Changed
+
+- **One implementation.** `_cli_parse_expect` and `_cli_check_expect` in
+  `src/cli.cyr` replace the inline copies in `--write` and `--batch`, and serve
+  all six verbs. A third copy, for `run_replace`, would have been CLAUDE.md's
+  third-instance trigger. The `--write` and `--batch` messages are
+  byte-identical.
+- **Usage lines** for the four replace verbs list the new flags.
+- **`--help`** lists the replace verbs under `--expect` / `--expect-not`. It now
+  also lists `--replace-files[-all]` under `--expect-N` / `--expect-1`, which
+  those verbs have always accepted.
+- **Argument parsing edge case.** An OLD or NEW that starts with `--expect=` or
+  `--expect-not=` is now read as the modifier, like `--expect-N=` and
+  `--regex=` already were.
+
+### Tests
+
+`tests/cli_smoke.sh`: 152 → **172** cases, across all four replace verbs.
+They cover:
+- both polarities, holding and missing;
+- the file staying saved after a miss;
+- the flag before the positionals;
+- `--expect-1` and `--expect` together;
+- the shared-slot duplicate and the empty pattern, both refused before anything
+  is written;
+- the `--expect-N=0` no-op, both ways;
+- `--wc` silent on a miss;
+- a literal `--expect` under `--regex=ere`.
+
+Against 1.12.0, 16 of the 20 fail. The other four pin behaviour 1.12.0 already
+had. `cyrius test` is unchanged at 1363.
+
+### Binary
+
+`CYRIUS_DCE=1`:
+
+| Target | 1.12.0 | 1.12.1 |
+|---|---:|---:|
+| x86_64 Linux | 1,061,776 B | **1,065,688 B** (+3,912) |
+| agnos | 1,037,688 B | **1,041,600 B** (+3,912) |
+| aarch64 Linux | 1,483,560 B | **1,483,376 B** (−184) |
+
 ## [1.12.0] — 2026-10-31
 
 **Agent CLI failures say what failed.** This opens the 1.12.x line, agent

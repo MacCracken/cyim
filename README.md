@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.12.0 — released.** The 1.x series shipped:
+**1.12.1 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -104,6 +104,8 @@ for humanity. Consumers:
   failing pair and quotes its OLD, count failures report what they found,
   and "OLD not found" asks `already applied?` when NEW is already in place.
   Exit codes unchanged.
+- **v1.12.1** — `--expect` / `--expect-not` on `--replace[-all]` and
+  `--replace-files[-all]`: a single edit can assert the file it produced.
 
 Current pins: cyrius `6.7.18`, vyakarana `2.10.0`, cyim-lsp `1.5.4`,
 darshana `1.7.0`.
@@ -210,7 +212,7 @@ Modifiers (parsed in any order between the verb and its positional args):
 | Modifier | Applies to | Effect |
 |---|---|---|
 | `--wc[=l\|=long]` | `--write`, `--replace[-all]`, `--batch` | Print `wc(1)` for the resulting file on success |
-| `--expect=<pat>` / `--expect-not=<pat>` | `--write`, `--batch` | Post-save shape assertion (exit **6** on mismatch) |
+| `--expect=<pat>` / `--expect-not=<pat>` | `--write`, `--batch`, `--replace[-all]`, `--replace-files[-all]` | Post-save shape assertion, literal substring (exit **6** on mismatch) |
 | `--expect-N=<n>` / `--expect-1` | `--replace[-all]` | Pre-substitution count assertion |
 | `--all` | `--batch` | Apply each pair via `--replace-all` semantics |
 | `--context=<n>` | `--grep`, `--grepfiles` | `grep -C N` shape with overlap-merge + `--` separators |

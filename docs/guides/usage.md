@@ -200,10 +200,20 @@ cyim --write --wc=long foo.txt < new.txt   # alias for --wc=l
 cyim --replace --wc 'old' 'new' foo.txt
 ```
 
-**`--expect=<pat>` / `--expect-not=<pat>`** (`--write` only) — after the
-file is saved, the resulting buffer is scanned for `<pat>`. Mismatch
-returns **exit 6** with a message on stderr; the file is saved either
-way (the assertion is a contract on the *result*, not a save gate):
+**`--expect=<pat>` / `--expect-not=<pat>`** — on `--write`, `--batch`,
+and (since 1.12.1) `--replace`, `--replace-all`, `--replace-files` and
+`--replace-files-all`.
+
+- **When it runs.** After the file is saved, the resulting buffer is
+  scanned for `<pat>`.
+- **On a mismatch.** It returns **exit 6** with a message on stderr. The
+  file is saved either way: the assertion is a contract on the *result*,
+  not a save gate.
+- **What `<pat>` is.** A literal substring, even when the verb runs with
+  `--regex=`.
+- **How many.** One per call: `--expect` and `--expect-not` share a slot,
+  and a second of either exits 2.
+
 
 ```sh
 # "After this rewrite, TS_LEX_JSX_SKIP MUST NOT appear":
@@ -219,6 +229,17 @@ Composes with `--wc`:
 ```sh
 cyim --write --wc=l --expect='ROUTE_TABLE' src/router.cyr < new.txt
 ```
+
+On the replace verbs it composes with `--expect-N` too. That makes a single
+edit check its input count before the write and the result after it:
+
+```sh
+# Exactly one `old_name(` before the edit, and none anywhere after it.
+cyim --replace --expect-1 --expect-not='old_name(' 'old_name(' 'new_name(' src/api.cyr
+```
+
+After an `--expect-N=0` no-op, which writes nothing, the assertion is
+checked on the unchanged file.
 
 **`--expect-N=<n>` / `--expect-1`** (`--replace`/`--replace-all` only) —
 asserts `OLD` occurs *exactly* `<n>` times in the file *before*

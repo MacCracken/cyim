@@ -96,6 +96,7 @@ requests instead)
 - [2026-10-31 — 1.11.1 release audit](docs/audit/2026-10-31-1.11.1-audit.md)
 - [2026-10-31 — 1.11.x closeout audit](docs/audit/2026-10-31-1.11x-closeout.md)
 - [2026-10-31 — 1.12.0 release audit](docs/audit/2026-10-31-1.12.0-audit.md)
+- [2026-10-31 — 1.12.1 release audit](docs/audit/2026-10-31-1.12.1-audit.md)
   (**most recent**)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
@@ -187,3 +188,8 @@ found nothing. The agent CLI's failure messages now quote part of a `--batch`
 pair's OLD. That excerpt is the only new path from input to output. It is
 capped at 60 bytes and sanitized, so an escape sequence in the caller's text
 cannot reach a terminal through stderr.
+
+State at v1.12.1: the [1.12.1 release audit](docs/audit/2026-10-31-1.12.1-audit.md)
+found nothing. The replace verbs gained `--expect` / `--expect-not`, which parse
+a pattern the CLI already parsed for `--write` and `--batch`. The pattern is used
+only as a bounded literal needle and is never echoed.

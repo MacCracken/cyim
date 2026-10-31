@@ -1009,7 +1009,8 @@ fn _cli_slurp_file(file_path, len_out) {
 #   4 — OLD content not found in FILE
 #   5 — OLD content occurs more than once and not --replace-files-all
 #   6 — --expect-N / --expect-1 mismatch
-fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits) {
+fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits,
+  expect_pat, expect_pol) {
     if (old_file == 0)  { syscall(1, 2, "cyim --replace-files: missing OLD_FILE\n", 39); return 2; }
     if (new_file == 0)  { syscall(1, 2, "cyim --replace-files: missing NEW_FILE\n", 39); return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace-files: missing FILE\n",     35); return 2; }
@@ -1034,7 +1035,8 @@ fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, reg
         return 3;
     }
 
-    return run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits);
+    return run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits,
+      expect_pat, expect_pol);
 }
 
 # `cyim --grep [--context=N] PATTERN FILE` — emit `FILE:N:LINE` for
@@ -1150,44 +1152,6 @@ fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor, fuzzy_
     return 0;
 }
 
-# `cyim --write FILE` — read stdin, replace FILE's contents with it.
-# `wc_mode`:    0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
-# `expect_pat`: 0 = no assertion; otherwise C-string pattern to check
-#               in the post-save buffer.
-# `expect_pol`: 0 none, 1 must contain (--expect), 2 must not contain
-#               (--expect-not). On mismatch, returns 6 (file is already
-#               saved — the assertion is a contract on the result).
-fn run_write(file_path, wc_mode, expect_pat, expect_pol) {
-    if (file_path == 0) {
-        syscall(1, 2, "cyim --write: missing FILE argument\n", 36);
-        return 2;
-    }
-    var b = buf_new();
-    _cli_drain_stdin(b);
-    var n = buf_save_file(b, file_path);
-    if (n < 0) {
-        syscall(1, 2, "cyim --write: save failed\n", 26);
-        return 1;
-    }
-    if (expect_pol != 0) {
-        var ec = _cli_count_matches(b, expect_pat);
-        if (expect_pol == 1) {
-            if (ec == 0) {
-                syscall(1, 2, "cyim --write: --expect pattern not found in result\n", 51);
-                return 6;
-            }
-        }
-        if (expect_pol == 2) {
-            if (ec > 0) {
-                syscall(1, 2, "cyim --write: --expect-not pattern present in result\n", 53);
-                return 6;
-            }
-        }
-    }
-    _cli_print_wc(b, file_path, wc_mode);
-    return 0;
-}
-
 # ── Failure messages (1.12.0) ────────────────────────────
 #
 # An agent acts on a failure's stderr, so the messages that can say WHAT
@@ -1295,6 +1259,100 @@ fn _cli_looks_applied(b, new_str, mode) {
     return 0;
 }
 
+# Parse one `--expect=<pat>` / `--expect-not=<pat>`: the post-save shape
+# assertion of --write, --batch and (since 1.12.1) the four replace verbs.
+# The two share one slot, so a second of either is a duplicate. `st` is a
+# 24-byte record the caller zeroes: +0 the pattern, +8 the polarity (0 none,
+# 1 must contain, 2 must not contain), +16 seen. `verb` names the verb in a
+# message. Returns 1 if `arg` was one of the two, 0 if not, or -1 after
+# printing a usage error (the caller exits 2).
+fn _cli_parse_expect(arg, verb, st) {
+    var pol = 0;
+    var pat = _cli_argprefix(arg, "--expect=");
+    if (pat != 0) { pol = 1; }
+    if (pol == 0) {
+        pat = _cli_argprefix(arg, "--expect-not=");
+        if (pat != 0) { pol = 2; }
+    }
+    if (pol == 0) { return 0; }
+    var name = "--expect";
+    if (pol == 2) { name = "--expect-not"; }
+    var msg[512];                       # must equal CLI_MSG_CAP
+    if (strlen(pat) == 0) {
+        var ep = _cli_msg_str(&msg, 0, "cyim ");
+        ep = _cli_msg_str(&msg, ep, verb);
+        ep = _cli_msg_str(&msg, ep, ": ");
+        ep = _cli_msg_str(&msg, ep, name);
+        ep = _cli_msg_str(&msg, ep, " requires a non-empty pattern\n");
+        syscall(1, 2, &msg, ep);
+        return 0 - 1;
+    }
+    if (load64(st + 16) == 1) {
+        var dp = _cli_msg_str(&msg, 0, "cyim: duplicate flag: ");
+        dp = _cli_msg_str(&msg, dp, name);
+        dp = _cli_msg_str(&msg, dp, "\n");
+        syscall(1, 2, &msg, dp);
+        return 0 - 1;
+    }
+    store64(st, pat);
+    store64(st + 8, pol);
+    store64(st + 16, 1);
+    return 1;
+}
+
+# Check a post-save assertion against the result `b`: `pat` is a literal
+# substring (also under --regex), `pol` as in _cli_parse_expect. Returns 0
+# when it holds or there is none; otherwise prints `cyim <verb>: --expect
+# pattern not found in result` (or `--expect-not pattern present in result`)
+# and returns 6. The file is already saved: the assertion is a contract on
+# the result, not a guard on the write.
+fn _cli_check_expect(b, verb, pat, pol) {
+    if (pol == 0) { return 0; }
+    var ec = _cli_count_matches(b, pat);
+    var fail = 0;
+    if (pol == 1) {
+        if (ec == 0) { fail = 1; }
+    }
+    if (pol == 2) {
+        if (ec > 0) { fail = 1; }
+    }
+    if (fail == 0) { return 0; }
+    var msg[512];                       # must equal CLI_MSG_CAP
+    var p = _cli_msg_str(&msg, 0, "cyim ");
+    p = _cli_msg_str(&msg, p, verb);
+    if (pol == 1) {
+        p = _cli_msg_str(&msg, p, ": --expect pattern not found in result\n");
+    } else {
+        p = _cli_msg_str(&msg, p, ": --expect-not pattern present in result\n");
+    }
+    syscall(1, 2, &msg, p);
+    return 6;
+}
+
+# `cyim --write FILE` — read stdin, replace FILE's contents with it.
+# `wc_mode`:    0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
+# `expect_pat`: 0 = no assertion; otherwise C-string pattern to check
+#               in the post-save buffer.
+# `expect_pol`: 0 none, 1 must contain (--expect), 2 must not contain
+#               (--expect-not). On mismatch, returns 6 (file is already
+#               saved — the assertion is a contract on the result).
+fn run_write(file_path, wc_mode, expect_pat, expect_pol) {
+    if (file_path == 0) {
+        syscall(1, 2, "cyim --write: missing FILE argument\n", 36);
+        return 2;
+    }
+    var b = buf_new();
+    _cli_drain_stdin(b);
+    var n = buf_save_file(b, file_path);
+    if (n < 0) {
+        syscall(1, 2, "cyim --write: save failed\n", 26);
+        return 1;
+    }
+    if (_cli_check_expect(b, "--write", expect_pat, expect_pol) != 0) { return 6; }
+    _cli_print_wc(b, file_path, wc_mode);
+    return 0;
+}
+
 # `cyim --replace OLD NEW FILE` (mode = REPLACE_FIRST_UNIQUE) or
 # `cyim --replace-all OLD NEW FILE` (mode = REPLACE_ALL).
 # `wc_mode`:  0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
@@ -1303,7 +1361,11 @@ fn _cli_looks_applied(b, new_str, mode) {
 #             return 6 *before* touching the file. --expect-N=0 is the
 #             "must be a no-op" idiom: success without writing, with
 #             --wc still honored if requested.
-fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits) {
+# `expect_pat` / `expect_pol` (1.12.1): the post-save assertion, as on
+#             --write and --batch — checked on the saved result (or, after
+#             an --expect-N=0 no-op, on the unchanged file); 6 on a miss.
+fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits,
+  expect_pat, expect_pol) {
     if (old_str == 0)   { syscall(1, 2, "cyim --replace: missing OLD\n", 28);  return 2; }
     if (new_str == 0)   { syscall(1, 2, "cyim --replace: missing NEW\n", 28);  return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace: missing FILE\n", 29); return 2; }
@@ -1358,6 +1420,7 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavo
         # OLD" — the caller is using us as a defensive check, not an
         # edit. Honor --wc on the unchanged file and exit clean.
         if (expect_n == 0) {
+            if (_cli_check_expect(b, "--replace", expect_pat, expect_pol) != 0) { return 6; }
             _cli_print_wc(b, file_path, wc_mode);
             return 0;
         }
@@ -1390,6 +1453,7 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavo
         syscall(1, 2, "cyim --replace: save failed\n", 28);
         return 1;
     }
+    if (_cli_check_expect(out, "--replace", expect_pat, expect_pol) != 0) { return 6; }
     _cli_print_wc(out, file_path, wc_mode);
     return 0;
 }
@@ -1548,21 +1612,7 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
         syscall(1, 2, "cyim --batch: save failed\n", 26);
         return 1;
     }
-    if (expect_pol != 0) {
-        var ec = _cli_count_matches(b, expect_pat);
-        if (expect_pol == 1) {
-            if (ec == 0) {
-                syscall(1, 2, "cyim --batch: --expect pattern not found in result\n", 51);
-                return 6;
-            }
-        }
-        if (expect_pol == 2) {
-            if (ec > 0) {
-                syscall(1, 2, "cyim --batch: --expect-not pattern present in result\n", 53);
-                return 6;
-            }
-        }
-    }
+    if (_cli_check_expect(b, "--batch", expect_pat, expect_pol) != 0) { return 6; }
     _cli_print_wc(b, file_path, wc_mode);
     return 0;
 }
@@ -1767,6 +1817,10 @@ fn _dispatch_replace(ac) {
     var r_regex_seen = 0;
     var r_fuzzy_edits = 0 - 1;
     var r_fz_seen = 0;
+    var r_exp[24];                  # _cli_parse_expect's record (1.12.1)
+    store64(&r_exp, 0);
+    store64(&r_exp + 8, 0);
+    store64(&r_exp + 16, 0);
     var r_idx = 2;
     while (r_idx < ac) {
         var arg = argv(r_idx);
@@ -1817,6 +1871,11 @@ fn _dispatch_replace(ac) {
             }
         }
         if (consumed == 0) {
+            var pe = _cli_parse_expect(arg, "--replace", &r_exp);
+            if (pe < 0) { return 2; }
+            if (pe == 1) { consumed = 1; }
+        }
+        if (consumed == 0) {
             var s = _cli_argprefix(arg, "--expect-N=");
             if (s != 0) {
                 var n = _cli_atoi_nn(s);
@@ -1843,7 +1902,8 @@ fn _dispatch_replace(ac) {
         r_idx = r_idx + 1;
     }
     if (r_npos < 3) {
-        syscall(1, 2, "usage: cyim --replace [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 80);
+        syscall(1, 2, "usage: cyim --replace [--wc[=l]] [--expect-N=<n>|--expect-1] ", 61);
+        syscall(1, 2, "[--expect=<pat>|--expect-not=<pat>] <old> <new> <file>\n", 55);
         return 2;
     }
     if (r_fz_seen == 1) {
@@ -1852,7 +1912,8 @@ fn _dispatch_replace(ac) {
             return 2;
         }
     }
-    return run_replace(r_p0, r_p1, r_p2, REPLACE_FIRST_UNIQUE, r_wc, r_expect_n, r_regex_flavor, r_fuzzy_edits);
+    return run_replace(r_p0, r_p1, r_p2, REPLACE_FIRST_UNIQUE, r_wc, r_expect_n, r_regex_flavor, r_fuzzy_edits,
+      load64(&r_exp), load64(&r_exp + 8));
 }
 
 fn _dispatch_replace_all(ac) {
@@ -1869,6 +1930,10 @@ fn _dispatch_replace_all(ac) {
     var ra_regex_seen = 0;
     var ra_fuzzy_edits = 0 - 1;
     var ra_fz_seen = 0;
+    var ra_exp[24];                  # _cli_parse_expect's record (1.12.1)
+    store64(&ra_exp, 0);
+    store64(&ra_exp + 8, 0);
+    store64(&ra_exp + 16, 0);
     var ra_idx = 2;
     while (ra_idx < ac) {
         var arg = argv(ra_idx);
@@ -1919,6 +1984,11 @@ fn _dispatch_replace_all(ac) {
             }
         }
         if (consumed == 0) {
+            var pe = _cli_parse_expect(arg, "--replace-all", &ra_exp);
+            if (pe < 0) { return 2; }
+            if (pe == 1) { consumed = 1; }
+        }
+        if (consumed == 0) {
             var s = _cli_argprefix(arg, "--expect-N=");
             if (s != 0) {
                 var n = _cli_atoi_nn(s);
@@ -1945,7 +2015,8 @@ fn _dispatch_replace_all(ac) {
         ra_idx = ra_idx + 1;
     }
     if (ra_npos < 3) {
-        syscall(1, 2, "usage: cyim --replace-all [--wc[=l]] [--expect-N=<n>|--expect-1] <old> <new> <file>\n", 84);
+        syscall(1, 2, "usage: cyim --replace-all [--wc[=l]] [--expect-N=<n>|--expect-1] ", 65);
+        syscall(1, 2, "[--expect=<pat>|--expect-not=<pat>] <old> <new> <file>\n", 55);
         return 2;
     }
     if (ra_fz_seen == 1) {
@@ -1954,7 +2025,8 @@ fn _dispatch_replace_all(ac) {
             return 2;
         }
     }
-    return run_replace(ra_p0, ra_p1, ra_p2, REPLACE_ALL, ra_wc, ra_expect_n, ra_regex_flavor, ra_fuzzy_edits);
+    return run_replace(ra_p0, ra_p1, ra_p2, REPLACE_ALL, ra_wc, ra_expect_n, ra_regex_flavor, ra_fuzzy_edits,
+      load64(&ra_exp), load64(&ra_exp + 8));
 }
 
 fn _dispatch_replace_files(ac) {
@@ -1975,6 +2047,10 @@ fn _dispatch_replace_files(ac) {
     var rf_regex_seen = 0;
     var rf_fuzzy_edits = 0 - 1;
     var rf_fz_seen = 0;
+    var rf_exp[24];                  # _cli_parse_expect's record (1.12.1)
+    store64(&rf_exp, 0);
+    store64(&rf_exp + 8, 0);
+    store64(&rf_exp + 16, 0);
     var rf_idx = 2;
     while (rf_idx < ac) {
         var arg = argv(rf_idx);
@@ -2025,6 +2101,11 @@ fn _dispatch_replace_files(ac) {
             }
         }
         if (consumed == 0) {
+            var pe = _cli_parse_expect(arg, "--replace-files", &rf_exp);
+            if (pe < 0) { return 2; }
+            if (pe == 1) { consumed = 1; }
+        }
+        if (consumed == 0) {
             var s = _cli_argprefix(arg, "--expect-N=");
             if (s != 0) {
                 var n = _cli_atoi_nn(s);
@@ -2052,7 +2133,7 @@ fn _dispatch_replace_files(ac) {
     }
     if (rf_npos < 3) {
         syscall(1, 2, "usage: cyim --replace-files [--wc[=l]] [--expect-N=<n>|--expect-1] ", 67);
-        syscall(1, 2, "<old-file> <new-file> <file>\n", 29);
+        syscall(1, 2, "[--expect=<pat>|--expect-not=<pat>] <old-file> <new-file> <file>\n", 65);
         return 2;
     }
     if (rf_fz_seen == 1) {
@@ -2061,7 +2142,8 @@ fn _dispatch_replace_files(ac) {
             return 2;
         }
     }
-    return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor, rf_fuzzy_edits);
+    return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor, rf_fuzzy_edits,
+      load64(&rf_exp), load64(&rf_exp + 8));
 }
 
 fn _dispatch_replace_files_all(ac) {
@@ -2078,6 +2160,10 @@ fn _dispatch_replace_files_all(ac) {
     var rfa_regex_seen = 0;
     var rfa_fuzzy_edits = 0 - 1;
     var rfa_fz_seen = 0;
+    var rfa_exp[24];                  # _cli_parse_expect's record (1.12.1)
+    store64(&rfa_exp, 0);
+    store64(&rfa_exp + 8, 0);
+    store64(&rfa_exp + 16, 0);
     var rfa_idx = 2;
     while (rfa_idx < ac) {
         var arg = argv(rfa_idx);
@@ -2128,6 +2214,11 @@ fn _dispatch_replace_files_all(ac) {
             }
         }
         if (consumed == 0) {
+            var pe = _cli_parse_expect(arg, "--replace-files-all", &rfa_exp);
+            if (pe < 0) { return 2; }
+            if (pe == 1) { consumed = 1; }
+        }
+        if (consumed == 0) {
             var s = _cli_argprefix(arg, "--expect-N=");
             if (s != 0) {
                 var n = _cli_atoi_nn(s);
@@ -2155,7 +2246,8 @@ fn _dispatch_replace_files_all(ac) {
     }
     if (rfa_npos < 3) {
         syscall(1, 2, "usage: cyim --replace-files-all [--wc[=l]] ", 43);
-        syscall(1, 2, "[--expect-N=<n>|--expect-1] <old-file> <new-file> <file>\n", 57);
+        syscall(1, 2, "[--expect-N=<n>|--expect-1] [--expect=<pat>|--expect-not=<pat>] ", 64);
+        syscall(1, 2, "<old-file> <new-file> <file>\n", 29);
         return 2;
     }
     if (rfa_fz_seen == 1) {
@@ -2164,6 +2256,7 @@ fn _dispatch_replace_files_all(ac) {
             return 2;
         }
     }
-    return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor, rfa_fuzzy_edits);
+    return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor, rfa_fuzzy_edits,
+      load64(&rfa_exp), load64(&rfa_exp + 8));
 }
 

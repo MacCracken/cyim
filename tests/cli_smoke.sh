@@ -1066,5 +1066,81 @@ assert_err_lacks '--batch excerpt never splits a UTF-8 character' '?..."' "$err"
 assert_err_has '--batch excerpt keeps whole characters' "$(printf '\303\251...')" "$err"
 rm -f "$DIAG"
 
+# ── 1.12.1: --expect / --expect-not on the replace verbs ─────────────
+# Proposal § 3 (docs/development/proposals/2026-08-29-line-anchored-and-
+# cyrius-aware-edits.md). The same post-save assertion --write and --batch
+# have: checked on the saved result, exit 6, the file stays saved. It shares
+# no slot with --expect-N, which counts OLD before the substitution.
+EXP=/tmp/cyim-cli-smoke-expect.txt
+assert_file() {
+    if [ "$(cat "$2")" = "$3" ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: $1 — file is: $(cat "$2")"; fi
+}
+
+printf 'alpha beta\n' > "$EXP"
+"$BIN" --replace beta BETA "$EXP" --expect=BETA >/dev/null 2>&1
+assert_rc '--replace --expect=PAT (holds)' 0 $?
+assert_file '--replace --expect=PAT saved' "$EXP" 'alpha BETA'
+
+printf 'alpha beta\n' > "$EXP"
+err=$("$BIN" --replace beta BETA "$EXP" --expect=GAMMA 2>&1 >/dev/null); rc=$?
+assert_rc '--replace --expect=PAT (miss)' 6 $rc
+assert_err_has '--replace --expect miss names the assertion' '--expect pattern not found in result' "$err"
+assert_file '--replace --expect is checked AFTER the save' "$EXP" 'alpha BETA'
+
+printf 'alpha beta\n' > "$EXP"
+"$BIN" --replace beta BETA --expect-not=beta "$EXP" >/dev/null 2>&1
+assert_rc '--replace --expect-not=PAT (holds)' 0 $?
+
+printf 'alpha beta\n' > "$EXP"
+err=$("$BIN" --replace beta BETA "$EXP" --expect-not=BETA 2>&1 >/dev/null); rc=$?
+assert_rc '--replace --expect-not=PAT (present)' 6 $rc
+assert_err_has '--replace --expect-not names the assertion' '--expect-not pattern present in result' "$err"
+
+printf 'a a a\n' > "$EXP"
+"$BIN" --replace-all a b --expect-not=a "$EXP" >/dev/null 2>&1
+assert_rc '--replace-all --expect-not=PAT (all gone)' 0 $?
+
+printf 'alpha beta\n' > "$EXP"
+"$BIN" --replace --expect=BETA beta BETA "$EXP" >/dev/null 2>&1
+assert_rc '--replace --expect=PAT before the positionals' 0 $?
+
+printf 'alpha beta\n' > "$EXP"
+"$BIN" --replace beta BETA "$EXP" --expect-1 --expect=BETA >/dev/null 2>&1
+assert_rc '--replace --expect-1 and --expect together' 0 $?
+
+printf 'alpha beta\n' > "$EXP"
+"$BIN" --replace beta BETA "$EXP" --expect=BETA --expect-not=beta >/dev/null 2>&1
+assert_rc '--replace --expect + --expect-not (one slot: duplicate)' 2 $?
+assert_file '--replace refused before writing' "$EXP" 'alpha beta'
+
+"$BIN" --replace beta BETA "$EXP" --expect= >/dev/null 2>&1
+assert_rc '--replace --expect= (empty pattern)' 2 $?
+
+printf 'no match here\n' > "$EXP"
+"$BIN" --replace-all OLDVAL X "$EXP" --expect-N=0 --expect=match >/dev/null 2>&1
+assert_rc '--expect-N=0 no-op + --expect on the unchanged file (holds)' 0 $?
+"$BIN" --replace-all OLDVAL X "$EXP" --expect-N=0 --expect=absent >/dev/null 2>&1
+assert_rc '--expect-N=0 no-op + --expect on the unchanged file (miss)' 6 $?
+
+printf 'alpha beta\n' > "$EXP"
+out=$("$BIN" --replace beta BETA "$EXP" --wc --expect=GAMMA 2>/dev/null)
+assert_err_lacks '--replace --wc prints nothing when --expect fails' "$EXP" "$out"
+
+printf 'foo boo\n' > "$EXP"
+"$BIN" --replace-all --regex=ere 'o+' 0 "$EXP" --expect='f0 b0' >/dev/null 2>&1
+assert_rc '--replace-all --regex with a literal --expect' 0 $?
+
+EXP_OLD=/tmp/cyim-cli-smoke-expect.old
+EXP_NEW=/tmp/cyim-cli-smoke-expect.new
+printf 'beta' > "$EXP_OLD"
+printf 'BETA' > "$EXP_NEW"
+printf 'alpha beta\n' > "$EXP"
+"$BIN" --replace-files "$EXP_OLD" "$EXP_NEW" "$EXP" --expect=BETA >/dev/null 2>&1
+assert_rc '--replace-files --expect=PAT (holds)' 0 $?
+printf 'beta beta\n' > "$EXP"
+"$BIN" --replace-files-all "$EXP_OLD" "$EXP_NEW" "$EXP" --expect-not=BETA >/dev/null 2>&1
+assert_rc '--replace-files-all --expect-not=PAT (present)' 6 $?
+rm -f "$EXP" "$EXP_OLD" "$EXP_NEW"
+
 echo "$PASS passed, $FAIL failed ($((PASS + FAIL)) total)"
 [ "$FAIL" = "0" ] || exit 1
