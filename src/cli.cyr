@@ -1096,15 +1096,15 @@ fn run_grep(pattern, file_path, context_n, regex_flavor, fuzzy_edits) {
 # caller learns about typos before partial output diverges).
 fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor, fuzzy_edits) {
     if (pattern == 0) {
-        syscall(1, 2, "cyim --grepfiles: missing PATTERN\n", 35);
+        syscall(1, 2, "cyim --grepfiles: missing PATTERN\n", 34);
         return 2;
     }
     if (file_count <= 0) {
-        syscall(1, 2, "cyim --grepfiles: missing FILE\n", 32);
+        syscall(1, 2, "cyim --grepfiles: missing FILE\n", 31);
         return 2;
     }
     if (strlen(pattern) == 0) {
-        syscall(1, 2, "cyim --grepfiles: PATTERN must be non-empty\n", 45);
+        syscall(1, 2, "cyim --grepfiles: PATTERN must be non-empty\n", 44);
         return 2;
     }
 
@@ -1114,7 +1114,7 @@ fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor, fuzzy_
         m = _matcher_literal(pattern);
     } else {
         var opts = _regex_opts_new(regex_flavor);
-        if (opts == 0) { syscall(1, 2, "cyim --grepfiles: alloc failed\n", 32); return 1; }
+        if (opts == 0) { syscall(1, 2, "cyim --grepfiles: alloc failed\n", 31); return 1; }
         _regex_opts_set_fuzzy_edits(opts, fuzzy_edits);
         m = _matcher_regex(pattern, opts);
         if (m == 0) {
@@ -1122,7 +1122,7 @@ fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor, fuzzy_
             return 2;
         }
     }
-    if (m == 0) { syscall(1, 2, "cyim --grepfiles: alloc failed\n", 32); return 1; }
+    if (m == 0) { syscall(1, 2, "cyim --grepfiles: alloc failed\n", 31); return 1; }
 
     var emitted[8];
     store64(&emitted, 0);
@@ -1140,7 +1140,7 @@ fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor, fuzzy_
         }
         var rc = _cli_grep_one(b, fp, m, context_n, &emitted);
         if (rc < 0) {
-            syscall(1, 2, "cyim --grepfiles: alloc failed\n", 32);
+            syscall(1, 2, "cyim --grepfiles: alloc failed\n", 31);
             return 1;
         }
         if (rc == 1) { any_hit = 1; }
@@ -1467,7 +1467,7 @@ fn _dispatch_grep(ac) {
             if (sfe != 0) {
                 var nfe = _cli_atoi_nn(sfe);
                 if (nfe < 0) {
-                    syscall(1, 2, "cyim --grep: --fuzzy-edits requires a non-negative integer\n", 60);
+                    syscall(1, 2, "cyim --grep: --fuzzy-edits requires a non-negative integer\n", 59);
                     return 2;
                 }
                 if (g_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
@@ -1481,7 +1481,7 @@ fn _dispatch_grep(ac) {
             if (sc != 0) {
                 var nc = _cli_atoi_nn(sc);
                 if (nc < 0) {
-                    syscall(1, 2, "cyim --grep: --context requires a non-negative integer\n", 56);
+                    syscall(1, 2, "cyim --grep: --context requires a non-negative integer\n", 55);
                     return 2;
                 }
                 if (g_ctx_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --context\n", 32); return 2; }
@@ -1494,7 +1494,7 @@ fn _dispatch_grep(ac) {
             if (g_npos == 0) { g_p0 = arg; }
             if (g_npos == 1) { g_p1 = arg; }
             if (g_npos >= 2) {
-                syscall(1, 2, "cyim --grep: unexpected extra argument\n", 40);
+                syscall(1, 2, "cyim --grep: unexpected extra argument\n", 39);
                 return 2;
             }
             g_npos = g_npos + 1;
@@ -1502,12 +1502,12 @@ fn _dispatch_grep(ac) {
         g_idx = g_idx + 1;
     }
     if (g_npos < 2) {
-        syscall(1, 2, "usage: cyim --grep [--context=<n>] <pattern> <file>\n", 53);
+        syscall(1, 2, "usage: cyim --grep [--context=<n>] <pattern> <file>\n", 52);
         return 2;
     }
     if (g_fz_seen == 1) {
         if (g_regex_flavor != FLAVOR_FUZZY) {
-            syscall(1, 2, "cyim --grep: --fuzzy-edits requires --regex=fuzzy\n", 51);
+            syscall(1, 2, "cyim --grep: --fuzzy-edits requires --regex=fuzzy\n", 50);
             return 2;
         }
     }
@@ -1555,7 +1555,7 @@ fn _dispatch_grepfiles(ac) {
             if (sfe != 0) {
                 var nfe = _cli_atoi_nn(sfe);
                 if (nfe < 0) {
-                    syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires a non-negative integer\n", 65);
+                    syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires a non-negative integer\n", 64);
                     return 2;
                 }
                 if (gf_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
@@ -1569,7 +1569,7 @@ fn _dispatch_grepfiles(ac) {
             if (sc != 0) {
                 var nc = _cli_atoi_nn(sc);
                 if (nc < 0) {
-                    syscall(1, 2, "cyim --grepfiles: --context requires a non-negative integer\n", 61);
+                    syscall(1, 2, "cyim --grepfiles: --context requires a non-negative integer\n", 60);
                     return 2;
                 }
                 if (gf_ctx_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --context\n", 32); return 2; }
@@ -1590,16 +1590,16 @@ fn _dispatch_grepfiles(ac) {
         gf_idx = gf_idx + 1;
     }
     if (gf_pat_seen == 0) {
-        syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 61);
+        syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 60);
         return 2;
     }
     if (gf_fcount == 0) {
-        syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 61);
+        syscall(1, 2, "usage: cyim --grepfiles [--context=<n>] <pattern> <file...>\n", 60);
         return 2;
     }
     if (gf_fz_seen == 1) {
         if (gf_regex_flavor != FLAVOR_FUZZY) {
-            syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires --regex=fuzzy\n", 56);
+            syscall(1, 2, "cyim --grepfiles: --fuzzy-edits requires --regex=fuzzy\n", 55);
             return 2;
         }
     }
@@ -1664,7 +1664,7 @@ fn _dispatch_replace(ac) {
             if (sfe != 0) {
                 var nfe = _cli_atoi_nn(sfe);
                 if (nfe < 0) {
-                    syscall(1, 2, "cyim --replace: --fuzzy-edits requires a non-negative integer\n", 63);
+                    syscall(1, 2, "cyim --replace: --fuzzy-edits requires a non-negative integer\n", 62);
                     return 2;
                 }
                 if (r_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
@@ -1705,7 +1705,7 @@ fn _dispatch_replace(ac) {
     }
     if (r_fz_seen == 1) {
         if (r_regex_flavor != FLAVOR_FUZZY) {
-            syscall(1, 2, "cyim --replace: --fuzzy-edits requires --regex=fuzzy\n", 54);
+            syscall(1, 2, "cyim --replace: --fuzzy-edits requires --regex=fuzzy\n", 53);
             return 2;
         }
     }
@@ -1766,7 +1766,7 @@ fn _dispatch_replace_all(ac) {
             if (sfe != 0) {
                 var nfe = _cli_atoi_nn(sfe);
                 if (nfe < 0) {
-                    syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires a non-negative integer\n", 67);
+                    syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires a non-negative integer\n", 66);
                     return 2;
                 }
                 if (ra_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
@@ -1807,7 +1807,7 @@ fn _dispatch_replace_all(ac) {
     }
     if (ra_fz_seen == 1) {
         if (ra_regex_flavor != FLAVOR_FUZZY) {
-            syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires --regex=fuzzy\n", 58);
+            syscall(1, 2, "cyim --replace-all: --fuzzy-edits requires --regex=fuzzy\n", 57);
             return 2;
         }
     }
@@ -1872,7 +1872,7 @@ fn _dispatch_replace_files(ac) {
             if (sfe != 0) {
                 var nfe = _cli_atoi_nn(sfe);
                 if (nfe < 0) {
-                    syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires a non-negative integer\n", 69);
+                    syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires a non-negative integer\n", 68);
                     return 2;
                 }
                 if (rf_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
@@ -1914,7 +1914,7 @@ fn _dispatch_replace_files(ac) {
     }
     if (rf_fz_seen == 1) {
         if (rf_regex_flavor != FLAVOR_FUZZY) {
-            syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires --regex=fuzzy\n", 60);
+            syscall(1, 2, "cyim --replace-files: --fuzzy-edits requires --regex=fuzzy\n", 59);
             return 2;
         }
     }
@@ -1975,7 +1975,7 @@ fn _dispatch_replace_files_all(ac) {
             if (sfe != 0) {
                 var nfe = _cli_atoi_nn(sfe);
                 if (nfe < 0) {
-                    syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires a non-negative integer\n", 73);
+                    syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires a non-negative integer\n", 72);
                     return 2;
                 }
                 if (rfa_fz_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --fuzzy-edits\n", 36); return 2; }
@@ -2017,7 +2017,7 @@ fn _dispatch_replace_files_all(ac) {
     }
     if (rfa_fz_seen == 1) {
         if (rfa_regex_flavor != FLAVOR_FUZZY) {
-            syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires --regex=fuzzy\n", 64);
+            syscall(1, 2, "cyim --replace-files-all: --fuzzy-edits requires --regex=fuzzy\n", 63);
             return 2;
         }
     }

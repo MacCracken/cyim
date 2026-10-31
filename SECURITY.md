@@ -93,6 +93,7 @@ requests instead)
 - [2026-08-23 — 1.8.x P(-1) hardening audit](docs/audit/2026-08-23-1.8x-hardening.md)
 - [2026-08-23 — 1.9.x closeout audit](docs/audit/2026-08-23-1.9x-closeout.md)
 - [2026-10-12 — 1.11.0 release audit](docs/audit/2026-10-12-1.11.0-audit.md)
+- [2026-10-31 — 1.11.1 release audit](docs/audit/2026-10-31-1.11.1-audit.md)
   (**most recent**)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
@@ -165,3 +166,9 @@ from the [1.11.0 release audit](docs/audit/2026-10-12-1.11.0-audit.md):
 Residual: the LSP server inherits cyim's blocked SIGWINCH / SIGPIPE
 through the cyim-lsp bundle's own fork + exec; the fix is upstream.
 R-1a is still open. ADR 0005 was decided at v1.9.2.
+
+State at v1.11.1: one LOW from the
+[1.11.1 release audit](docs/audit/2026-10-31-1.11.1-audit.md), found by
+cyrius 6.7.18's lint and fixed — 24 CLI messages wrote one byte past their
+string literal (its NUL) to stderr. The toolchain and dependency deltas add
+nothing reachable from cyim; the residuals above carry.

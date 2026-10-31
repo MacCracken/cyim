@@ -5,45 +5,17 @@ description = "Sovereign Cyrius-native text editor — VIM-inspired, zero attack
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/cyim"
 language = "cyrius"
-cyrius = "6.7.9"
+cyrius = "6.7.18"
 
 [build]
 entry = "src/main.cyr"
 test = "src/test.cyr"
 output = "cyim"
 
-# Stdlib footprint — minimal modal editor baseline:
-#   syscalls/alloc/fmt/io — required core
-#   str/string/vec        — buffer, line, gap-buffer scaffolding
-#   args                  — CLI: `cyim <file>`
-#   fs                    — file read/write
-#   hashmap               — keymap tables, mode dispatch
-#   assert                — tests/cyim.tcyr
-#   regex                 — Pike NFA / POSIX-ERE engine (--regex=ere)
-#   unicode/normalize     — required by niyama_fuzzy's NFD path; pulled
-#   unicode/_normalize_data  in even though cyim's v1.3.0 doesn't expose
-#                           fuzzy, because the niyama dist is one
-#                           concatenated artifact. v5.8.49 subdir-nested
-#                           stdlib resolution (`"unicode/<file>"` →
-#                           `lib/unicode/<file>.cyr`) is the documented
-#                           way to pull these in.
-# niyama itself is folded into stdlib at cyrius 5.9.0 (per niyama
-# 1.0.1's ADR 0011 fold trigger) but NOT auto-prepended — per the
-# sandhi-pattern documented in cyrius.cyml itself, folded libs are
-# pulled via explicit `include "lib/niyama.cyr"` to keep the
-# preprocess_out buffer under the 2 MB cap. See src/main.cyr.
-#
-# lib/ is GENERATED (1.11.0): `rm -rf lib/ && cyrius deps` rebuilds it from
-# this list plus the [deps.*] bundles, and it holds exactly that closure. It
-# used to be a full `cyrius lib sync --full` mirror of the snapshot, which
-# went stale silently — at 1.10.1 twelve folded libs in it were older than
-# the 6.6.2 snapshot they claimed to mirror, niyama 1.0.7 against 1.0.10
-# among them, and the build compiled the stale copies. `lib/niyama.cyr` is no
-# longer vendored: the compiler reads it from the version-pinned snapshot
-# (~/.cyrius/versions/<pin>/lib) through its lib/ overlay, so it can only be
-# the pin's own.
-# vyakarana grammar/tokenizer dep added when M2 highlighting lands.
 [deps]
+# lib/ is generated output: rebuild it with `rm -rf lib/ && cyrius deps`.
+# The unicode/* leaves serve niyama, which src/main.cyr includes explicitly
+# (`include "lib/niyama.cyr"`, resolved from the pinned snapshot).
 stdlib = [
     "syscalls",
     "alloc",
@@ -67,124 +39,20 @@ stdlib = [
     "unicode/_normalize_data",
 ]
 
-# vyakarana — token-level grammar/tokenizer library. M2 syntax-highlighting
-# pulls the bundled distlib (`dist/vyakarana.cyr`); grammar files
-# (`grammars/<lang>.cyml`) are bundled separately in cyim's repo and
-# resolved at runtime via /proc/self/exe (binary-relative).
-#
-# 2.2.3 → 2.4.0 is grammar coverage plus streaming correctness, no public-API
-# signature change: 45 → 46 bundled grammars (`openqasm` added at 2.3.5) and
-# five independent chunk-boundary bugs fixed at 2.4.0, so a chunk-fed consumer
-# now gets the same tokens a whole-buffer consumer gets on 15 of 20 corpora
-# (was 7). cyim tokenizes whole buffers, so the streaming half is latent here —
-# it matters if incremental re-tokenization ever lands. The grammar count is
-# asserted in `tests/lang.tcyr`; `grammars/` is re-synced from the tag.
+# Syntax-highlighting tokenizer. grammars/ is re-synced from this tag.
 [deps.vyakarana]
 git = "https://github.com/MacCracken/vyakarana.git"
-tag = "2.4.0"
+tag = "2.10.0"
 modules = ["dist/vyakarana.cyr"]
 
-# cyim-lsp — LSP client plugin. v1.0.2 ships a self-contained
-# bundle (per its ADR 0001 v1.0.2 amendment): every symbol resolves
-# against the bundle + cyrius stdlib, with zero references to
-# cyim-side editor symbols. Consumer-side hook registration lives
-# in `src/plugins/lsp_glue.cyr`, adapted from cyim-lsp's
-# `docs/examples/cyim_glue.cyr` reference.
-#
-# 1.5.0 → 1.5.2 is the fix for cyim's OWN `--agnos` build, which failed inside
-# this dep: `lib/cyim-lsp.cyr:459: 'sys_waitpid' expects 1 argument, got 3`.
-# agnos's `sys_waitpid(pid)` takes one argument and returns the child's exit
-# code directly; the bundle used Linux's three-argument form unconditionally,
-# which cyrius only warned about until 6.5.1 made a wrong argument count a hard
-# error. 1.5.2 branches it per target and gates the rest of the spawn half
-# (`sys_fork` / `sys_execve` / `sys_dup2`, none of which agnos has) behind
-# matched `#ifdef` / `#ifndef CYRIUS_TARGET_AGNOS` definitions, exposing
-# `LSP_HAVE_SUBPROC` / `lsp_have_subproc()` so a consumer can branch on the
-# capability. cyim needs no source change for this: `cyim_lsp_init()` in
-# `src/plugins/lsp_glue.cyr` already registers nothing under `--agnos`, so LSP
-# is simply absent there and cyim runs on agnos as a plain editor.
-#
-# 1.5.2 also DROPS `json` from its stdlib leaves (declared since v0.2.0, never
-# called; cyrius folded `json` into `bayan`, so it no longer resolves) and ADDS
-# `args` (agnos-only: io.cyr's `getenv()` delegates to `args_agnos.cyr`). Both
-# arrive automatically via the `dist/cyim-lsp.deps` sidecar — cyim already
-# declares `args`, so no change is needed on this side.
-#
-# 1.5.2 → 1.5.3 CLOSES BUG-002 — the LSP client works on Linux for the first
-# time. `_lsp_proc_exec` declared `var argv[4]`: four BYTES for four 64-bit
-# pointers, so `lsp_client_start_default()`'s
-# ("/usr/bin/env", "cyrius-lsp", 0) wrote 24 bytes into 4, `execve` got a
-# clobbered vector, and the child died on its own `sys_exit(127)`. Silent,
-# because execve never took and so `env` was never there to complain.
-#
-# Root-caused from this repo at 1.8.2 and fixed upstream; **no cyim source
-# change is involved** — `cyrius smoke` goes 4 passed / 9 failed → 13 / 0 on
-# the tag bump alone. The `cyrius smoke` CI gate lands in this same cut, now
-# that it can go in green.
+# LSP client; its hooks are registered in src/plugins/lsp_glue.cyr.
 [deps.cyim-lsp]
 git = "https://github.com/MacCracken/cyim-lsp.git"
-tag = "1.5.3"
+tag = "1.5.4"
 modules = ["dist/cyim-lsp.cyr"]
 
-# darshana — TTY/raw-mode primitives (termios + ANSI + cursor).
-# Extracted at v0.2.0 from cyim's `src/tty.cyr` donor source;
-# cyim is the primary donor and first consumer (per the saved
-# project-memory rule). 1.7.0 picked it up at darshana 0.2.0 + shed
-# the donor definitions from cyim's tty.cyr — only `tty_probe()` (a
-# cyim-internal raw-mode smoke) stays local; 1.7.1 advanced to 0.4.0.
-# 1.7.2 bumps to 0.7.0 alongside the cyrius 6.2.7 pin. 0.7.0 is the
-# first darshana cut to BREAK the API for symbols cyim actually
-# calls: `tty_itoa` → `tty_dec_buf` (return is now the write
-# position, not the digit count), `tty_cooked(0)` → `tty_cooked()`
-# (arg dropped), and `tty_apply_raw_flags` → `_tty_apply_raw_flags`
-# (privatized). Callsites in `src/{render,main,tty}.cyr` and
-# `tests/tty.tcyr` were ported in lockstep — see CHANGELOG 1.7.2.
-# Bundled distfile is `dist/darshana.cyr`; consumer-side
-# `include "lib/darshana.cyr"` in `src/main.cyr` brings the module
-# bodies into cyim's compilation unit at fold-in time.
-#
-# 0.8.2 → 1.0.0 is the API FREEZE: 29 public fns + 37 public constants named
-# and enumerated in darshana's ADR 0003, machine-checked bidirectionally
-# against the bundle on every upstream CI run. 1.0.0 itself is byte-identical
-# to 0.9.4; the code-shaped content cyim picks up is 0.9.0–0.9.3:
-#   • 0.9.1 — toolchain pin 6.2.36 → 6.5.35, matching cyim's own pin here.
-#   • 0.9.2 — aarch64-Linux ioctl fix: darshana's local `SYS_IOCTL = 16`
-#     shadowed the stdlib's arch-aware definition, so all five ioctl callsites
-#     issued `fremovexattr` on aarch64. Latent for cyim (x86_64 host), live for
-#     the out-of-band Pi target.
-#   • 0.9.3 — two pre-freeze BREAKS, neither of which cyim trips:
-#     `tty_sgr_reset_buf` / `tty_dec_buf` gain a `-1` return for a negative
-#     `pos` (cyim's nine `tty_dec_buf` callsites all pass a non-negative
-#     compile-visible offset), and the four `AGNOS_*` constants become
-#     `_AGNOS_*` (cyim references none). `tty_open_signalfd`'s failure return
-#     also normalizes from `-errno` to exactly `-1` — cyim does not call it.
-# `dist/darshana.deps` (the sidecar cyrius 6.5.35's `distlib` emits) declares
-# darshana's four stdlib leaves — `syscalls`, `alloc`, `io`, `assert` — all of
-# which cyim already declares above, so `[deps].stdlib` needs no change.
-#
-# 1.0.0 → 1.3.0 (cyim 1.11.0). Additive under darshana's API freeze — no
-# symbol cyim names changed — but it NEEDS cyrius ≥ 6.7.2: the 1.3.0 bundle
-# declares private constants with `const`, so it moved in the same cut as the
-# 6.6.2 → 6.7.9 pin. Its sidecar is down to `syscalls` + `io` (1.1.3), both
-# declared above. What cyim now uses from 1.1.x–1.3.0:
-#   • 1.1.4's amended teardown order — `tty_cooked()` FIRST, signalfds LAST
-#     (src/main.cyr's exit path had the retired order);
-#   • `TTY_SIGMASK_PIPE` (1.3.0) — a SIGPIPE guard, so a dead language server
-#     no longer kills the editor;
-#   • `tty_read_signal` (1.2.0) for the resize drain it read by hand;
-#   • `tty_sanitize_buf` (1.2.0) for the untrusted text outside the buffer —
-#     paths, status messages, plugin segments, picker rows, the command line;
-#   • `tty_fg_256_buf` (BUG-006), `tty_sgr_buf` / `tty_sgr_reset_buf` /
-#     `tty_sgr` / `tty_sgr_reset` in place of hand-built SGR bytes (the bytes
-#     are identical).
-# Not adopted, deliberately: `tty_winsize_or` (cyim's `_query_winsize` also
-# clamps and REPORTS the fallback, which the tests assert on);
-# `tty_raw_nonblock` (the loop waits in epoll); `tty_paste_enable` (bracketed
-# paste needs paste semantics designed first — roadmap.md); the frame-buffer
-# composers `tty_move_buf` / `tty_clear_to_eol_buf` / `tty_sgr_list_buf`
-# (render still writes per line; batching it is a refactor with no measured
-# need yet).
+# TTY primitives: termios, alt screen, SGR, winsize, signalfd, sanitizer.
 [deps.darshana]
 git = "https://github.com/MacCracken/darshana.git"
-tag = "1.3.0"
+tag = "1.7.0"
 modules = ["dist/darshana.cyr"]

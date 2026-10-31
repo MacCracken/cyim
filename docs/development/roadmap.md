@@ -34,7 +34,10 @@ ships next, what's deferred, and what's refused.
 
 ## Status
 
-cyim is at **1.11.0** (see [`state.md`](state.md)). **1.11.0 moves the
+cyim is at **1.11.1** (see [`state.md`](state.md)). **1.11.1 is the
+toolchain / dependency patch** — cyrius 6.7.18, vyakarana 2.10.0 (Lean, MDX,
+NASM routed), darshana 1.7.0, cyim-lsp 1.5.4, a manifest cut back to
+declarations, and 25 off-by-one literal writes the new lint found. **1.11.0 moves the
 toolchain to cyrius 6.7.9 and darshana to 1.3.0, and closes the four bugs
 darshana's consumer survey filed** (BUG-003 … BUG-006) — plus three defects
 the move surfaced: the editor died (SIGPIPE) whenever its language server
@@ -160,6 +163,7 @@ this is a sequencing index.
 | **v1.9.3** — **Closeout cut for the 1.9.x cycle**, all 11 CLAUDE.md steps at P(-1) depth ([audit](../audit/2026-08-23-1.9x-closeout.md)). 2 findings, both fixed: the config read cap **fabricated a value** — a line cut mid-value applied a truncated number that landed back inside the valid range (`palette.keyword = 199999` → `19`, painted silently), now dropped rather than misread, with `cyimrc_truncated()` reporting it; and 1.9.2's two precedence accessors had **no caller anywhere**, which [architecture note 004](../architecture/004-reading-the-dce-report.md) classifies as a coverage hole rather than dead code — closed with an invariant test, the second time that note's check has earned its keep. Four itoa implementations counted and **deliberately not merged** (their bound policies are exactly what differs). **First closeout with no known-red gate** and no open bugs | Shipped 2026-08-23 |
 | **v1.10.1** — cyrius 6.5.35 → 6.6.2 pin. No source change | Shipped 2026-09-11 |
 | **v1.11.0** — **cyrius 6.6.2 → 6.7.9 + darshana 1.0.0 → 1.3.0; BUG-003 … BUG-006 closed.** Full CSI decoding: sequences of any length, carried across reads (`editor_feed_cont` / `_pending` / `_flush`, a 50 ms bound in the interactive loop), so Delete deletes (`KEY_DELETE`) and PgUp / Home / F5 / mouse reports no longer type their tails (BUG-003). The agnos decoder's `0xE0` prefix survives batches and the kbscan count is clamped (BUG-004, chakshu AG1 / AG2); agnos Delete stops acting as Backspace. C1 controls shown as `<xx>`, decided by decoding so UTF-8 is untouched (BUG-005). `tty_fg_256_buf` refuses an index past 255 (BUG-006). **Found in the cut**: a SIGPIPE guard (`TTY_SIGMASK_PIPE`, drained before close) so a dying language server no longer kills the editor; `tty_sanitize_buf` on paths, messages, segments, picker rows and the command line; aarch64 `:e` fixed (`xlseek`). Teardown in darshana 1.1.4's order. `lib/` regenerated from the manifest (112 → 46 files). Suite 1226 → 1329; fuzz 4 → 5 harnesses; integration smoke +9 | Shipped 2026-10-12 |
+| **v1.11.1** — **cyrius 6.7.9 → 6.7.18; vyakarana 2.4.0 → 2.10.0, darshana 1.3.0 → 1.7.0, cyim-lsp 1.5.3 → 1.5.4.** No API cyim calls changed. `cyrius.cyml` cut from 199 to 57 lines — bump narratives were CHANGELOG's, the darshana not-adopted list moved to § Dependency notes. The 6.7.18 lint's write-length rule found 24 CLI messages writing a NUL to stderr and one bench header short its newline — fixed. Lean / MDX / NASM loaded and routed (`LANG_COUNT` / `HL_GRAMMAR_COUNT` 46 → 49); `grammars/` re-synced, and every file now load-tested through the editor's disk path. `lib/` + `cyrius.lock` regenerated (stale darshana 1.0.0 row dropped). Suite 1329 → 1338; DCE binary −40,720 B | Shipped 2026-10-31 |
 | **v1.10.0** — **Resize-aware rendering.** cyim used a fixed 24×80 on every target but agnos; darshana had shipped `tty_winsize` since 0.4.0 and cyim never called it. Geometry is now queried at start-up **and per frame**, clamped at both ends (`ws_col` is u16, and the 1.8.3 audit's F-3 hardened the render buffers *because* this feature would make geometry live input), with a reported 24×80 fallback. **Live repaint on SIGWINCH via signalfd + epoll** — a signal handler is refused by darshana's ADR 0002 and a read timeout would spin an idle editor forever; the watch is entirely optional and falls back to the plain blocking read on any failure. Geometry moved to `src/tty.cyr`, outside the per-target gates. `--headless` opens no watch. +10 unit assertions, +4 pty cases including a 65535×65535 clamp and a keystroke-free repaint | Shipped 2026-08-23 |
 
 Verbose milestone descriptions for M0–M7 lived here in the v1.x
@@ -261,7 +265,7 @@ trigger.
 
 | Item | Forcing function |
 |---|---|
-| `lang.cyr` if-chain refactor | **Trigger fired at 1.8.2, and the shape of the refactor is now clearer.** 46 entries, and as of 1.8.2 there is a *second* if-chain that must stay in lockstep with it — `hl_grammar_name(i)` in `src/highlight.cyr`. Their silent divergence is precisely what cost 34 languages their highlighting for six minor versions. 1.6.2 (extension catch-up) was instance 1; 1.6.4 added a new parallel table rather than growing the existing one; 1.8.2's `openqasm` append is the third growth, satisfying CLAUDE.md's "wait for the third instance". `tests/lang.tcyr`'s drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt — but the right end state is one table, not three chains plus a guard. Owed: an ADR choosing between parallel global string arrays and a vyakarana metadata query (`grammar_count()` / `grammar_name_at(i)` would let the load list be derived rather than restated), then the refactor. |
+| `lang.cyr` if-chain refactor | **Trigger fired at 1.8.2, and the shape of the refactor is now clearer.** 46 entries, and as of 1.8.2 there is a *second* if-chain that must stay in lockstep with it — `hl_grammar_name(i)` in `src/highlight.cyr`. Their silent divergence is precisely what cost 34 languages their highlighting for six minor versions. 1.6.2 (extension catch-up) was instance 1; 1.6.4 added a new parallel table rather than growing the existing one; 1.8.2's `openqasm` append is the third growth, satisfying CLAUDE.md's "wait for the third instance". `tests/lang.tcyr`'s drift guard makes divergence loud, which downgrades this from correctness risk to maintenance debt — but the right end state is one table, not three chains plus a guard. Owed: an ADR choosing between parallel global string arrays and a vyakarana metadata query (`grammar_count()` / `grammar_name_at(i)` would let the load list be derived rather than restated), then the refactor. *1.11.1 appended three more (`lean`, `mdx`, `nasm`) to both chains. vyakarana now offers a third option: since 2.9.8 `detect_language_registered(path, src, len)` routes by each grammar's declared extensions, and the distlib embeds every grammar under its `grammars/<name>.cyml` key. cyim could drop the on-disk `grammars/` copy, its load table and the per-tag re-sync, and let vyakarana's own bootstrap serve the embedded set. The cost is cyim's routing overrides: `.asm` → `asm_x86_64`, the `.tcyr` / `.bcyr` / `.fcyr` harness extensions, the shell rc basenames.* |
 | `_cyim_lsp_*` shape duplication (cyim-lsp example glue ↔ cyim's `src/plugins/lsp_glue.cyr`) | The mirror pattern is instance-counting per CLAUDE.md "wait for the third": (1) `_cyim_lsp_label_for_ref` (1.6.5 — preview format), (2) `_cyim_lsp_ex_find_refs_with_mode` + `_cyim_lsp_on_ref_select` mode-branch + `_cyim_lsp_ref_split_mode` global (1.6.7 — open-in-split). The mirror itself is by design (cyim-lsp's bundle is self-contained; consumer copies the glue), but if a third example-glue refactor lands and the glue divergence becomes a maintenance burden, generalize the mirror into a documented copy-from-upstream procedure or a more aggressive bundle inclusion. |
 | Decimal-to-ASCII sprawl (**3 implementations** since 1.11.0) | **Counted at the 1.9.3 closeout and deliberately not merged.** *1.11.0: `_render_u16_ascii` is gone — the colour escape is darshana's `tty_fg_256_buf` (BUG-006), which validates the domain the clamp only bounded. Three remain.* `_buf_append_dec`, `_cmd_ls_put_int`, `_render_u16_ascii` and agnos's `_al_put_uint` all reverse-fill digits into a scratch and emit them forward — a 5-line loop, four times. Past the "third instance" bar on count alone. **But their sinks differ in exactly the way that matters**: one writes raw, one goes through a bounds-checked putter, one carries a domain clamp that is load-bearing (audit F-2), and one is `#ifdef`-gated and writes via `syscall`. A shared core would be used four different ways, and the failure mode — someone improving it and dropping the render clamp — is worse than the duplication it removes. Trigger for revisiting: a fifth instance, or a bound bug in any of the four |
 | F-CO-2 (extract `_cyim_lsp_jump_to_uri_lc`) | Informational since 1.5.2. Still 2 instances; cyim-lsp `:lsp-implementation` or `:lsp-type-definition` would be the third. |
@@ -356,6 +360,19 @@ and appear inside assertion messages — not deferrals.
 - ~~**darshana 1.3.0 needs cyrius ≥ 6.7.2**~~ — **resolved at 1.11.0**: the pin moved
   6.6.2 → 6.7.9 in the same cut as darshana 1.0.0 → 1.3.0. (Its bundle declares private
   constants with `const`; under 6.6.x it fails with `expected '=', got identifier`.)
+- **darshana: what cyim does not adopt, deliberately** (recorded in `cyrius.cyml` until
+  1.11.1, which cut the manifest back to declarations). Revisit an item when its reason
+  stops holding.
+  - `tty_winsize_or` — cyim's `_query_winsize` also clamps, and it *reports* the
+    fallback, which the tests assert on.
+  - `tty_raw_nonblock` — the loop waits in epoll.
+  - `tty_paste_enable` — bracketed paste needs paste semantics designed first
+    (§ Everything Still Deferred).
+  - The frame composers `tty_move_buf` / `tty_clear_to_eol_buf` / `tty_sgr_list_buf` —
+    render still writes per line; batching it is a refactor with no measured need yet.
+  - The 1.4.0–1.7.0 additions (`tty_sgr_len` / `tty_sgr_strip_buf`,
+    `tty_isatty_is_per_fd`, `tty_winsize_px`) — no caller: cyim substitutes control bytes
+    rather than stripping SGR, never asks `tty_isatty`, and lays out in cells, not pixels.
 - **cyim-lsp: the spawned server inherits cyim's blocked signals** (found 2026-10-12, cyim
   1.11.0). `lsp_proc_spawn` does raw `sys_fork` / `sys_execve` with nothing between them,
   and a blocked mask survives both — so a server started mid-session begins with
@@ -497,6 +514,11 @@ BUG-001 row.
 name in the tradition, written in the language of the library.
 
 ---
+
+*Last updated: 2026-10-31 (v1.11.1 — **cyrius 6.7.18; vyakarana 2.10.0, darshana
+1.7.0, cyim-lsp 1.5.4.** Manifest cut back to declarations; darshana's not-adopted
+list moved under Dependency notes; the `lang.cyr` watch-list row gains vyakarana's
+embedded-grammar option. Lean / MDX / NASM routed. A 1.11.x closeout is still owed.)*
 
 *Last updated: 2026-10-12 (v1.11.0 — **cyrius 6.7.9 + darshana 1.3.0;
 BUG-003 … BUG-006 closed; BUG-007 filed.** Full CSI decoding carried across reads

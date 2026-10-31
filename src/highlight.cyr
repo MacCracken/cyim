@@ -148,10 +148,16 @@ fn _hl_load_one(dir, dir_len, name, path_buf) {
 # ⚠ This table must cover every name `lang_name()` (`src/lang.cyr`) can
 # return, and `highlight_init`'s `_grammars_bootstrapped = 1` is why.
 # That flag turns OFF vyakarana's own `bootstrap_grammars()`, which loads
-# all 46 grammars by *cwd-relative* path — the fallback that would
-# otherwise cover anything omitted here. So a routed language missing
-# from this table does not degrade to a slower path; it gets no grammar
-# at all, and `highlight_buf` silently renders it uncolored.
+# every grammar it bundles by relative `grammars/<name>.cyml` key (served
+# from the distlib's embedded copies, else cwd-relative) — the fallback
+# that would otherwise cover anything omitted here. So a routed language
+# missing from this table does not degrade to a slower path; it gets no
+# grammar at all, and `highlight_buf` silently renders it uncolored.
+#
+# `_hl_load_one`'s absolute path never matches an embedded key, so on the
+# normal path every grammar is read from disk: `grammars/` must be
+# re-synced with every vyakarana tag, or cyim runs the new tokenizer over
+# the old tag's grammar files.
 #
 # That is exactly what happened between 1.6.2 and 1.8.2: `src/lang.cyr`
 # grew from 11 languages to 45 and the load list did not follow, so **34
@@ -163,15 +169,15 @@ fn _hl_load_one(dir, dir_len, name, path_buf) {
 # bootstrap loads everything and the gap cannot appear.
 #
 # `tests/lang.tcyr` now asserts the invariant against this table
-# directly, which is why the list is data rather than 46 call sites: the
-# guard has to be checkable without resolving `grammars/` from disk,
-# because under `cyrius test` the harness binary lives in a temp dir and
-# `_hl_resolve_dir()` answers 0 there.
+# directly, which is why the list is data rather than one call site per
+# grammar: the guard has to be checkable without resolving `grammars/`
+# from disk, because under `cyrius test` the harness binary lives in a
+# temp dir and `_hl_resolve_dir()` answers 0 there.
 #
 # `asm_aarch64` is shipped and loaded but not currently routed —
 # `src/lang.cyr` sends `.s` / `.asm` to `asm_x86_64` (primary dev arch).
 # The invariant is one-way: routed ⊆ loaded.
-var HL_GRAMMAR_COUNT = 46;
+var HL_GRAMMAR_COUNT = 49;
 
 # The bare grammar name at index `i` (0..HL_GRAMMAR_COUNT-1), or "" when out
 # of range. `tests/lang.tcyr` walks this table against `lang_name()` — see the
@@ -223,6 +229,9 @@ fn hl_grammar_name(i) {
     if (i == 43) { return "xml"; }
     if (i == 44) { return "yaml"; }
     if (i == 45) { return "zig"; }
+    if (i == 46) { return "lean"; }
+    if (i == 47) { return "mdx"; }
+    if (i == 48) { return "nasm"; }
     return "";
 }
 

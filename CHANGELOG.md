@@ -4,6 +4,150 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.11.1] — 2026-10-31
+
+**Toolchain `6.7.9` → `6.7.18`; vyakarana `2.4.0` → `2.10.0`, darshana
+`1.3.0` → `1.7.0`, cyim-lsp `1.5.3` → `1.5.4`; `cyrius.cyml` cut back to a
+manifest.**
+
+- No dependency changed an API cyim calls.
+- The new toolchain's lint found 25 literal writes whose length was off by one.
+  CI's lint gate would have failed on them at the new pin, so they are fixed here.
+- Highlighting picks up vyakarana's grammar fixes through 2.10.0 and three new
+  languages: Lean, MDX and NASM.
+
+[Release audit](docs/audit/2026-10-31-1.11.1-audit.md).
+
+### Fixed — write lengths the 6.7.18 lint caught
+
+cyrlint's write-length rule (cyrius 6.7.11, widened at 6.7.12) flags
+`syscall(1, fd, "<literal>", N)` when `N` is not the literal's byte length.
+
+- **24 usage and error messages in `src/cli.cyr` wrote a NUL to stderr.** They
+  cover `--grepfiles`, `--grep`, the replace verbs, `--write` and `--batch`.
+  Each passed one byte too many, so it wrote the literal's terminator after its
+  newline. On 1.11.0, `cyim --grepfiles pat` ends its stderr with `\n\0`; it now
+  ends with `\n`. Exit codes and stdout are unchanged.
+- **`tests/perf.bcyr` lost a newline.** One bench header was one byte short: its
+  `×` is 2 bytes in UTF-8. So it dropped its newline, and the result printed on
+  the header's line.
+
+Each corrected length was checked against an independent decode of its literal.
+
+### Added — Lean, MDX and NASM highlighting
+
+vyakarana 2.9.9 added three grammars. cyim now loads and routes them:
+
+- **Routing** (`src/lang.cyr`): `LANG_COUNT` 46 → 49, appended under the
+  append-only index rule. `lean` (46) gets `.lean`, `mdx` (47) gets `.mdx`, and
+  `nasm` (48) gets `.nasm`.
+- **Loading** (`src/highlight.cyr`): `HL_GRAMMAR_COUNT` 46 → 49.
+- **`.asm` is unchanged.** vyakarana's `nasm` grammar also claims `.asm`, but
+  cyim's routing wins and `.asm` stays on `asm_x86_64` as before.
+
+### Changed — toolchain and dependencies
+
+- **cyrius `6.7.9` → `6.7.18`.** Every target builds with no warning: x86_64,
+  `CYRIUS_DCE=1`, `--agnos` and `--aarch64`.
+  - **Unchanged for cyim:** no stdlib module was renamed, split or folded, no
+    stdlib function cyim calls changed, and `[deps].stdlib` stays as it was.
+  - **`cyrius audit`'s fmt stage now takes `cyrfmt --check`'s verdict**
+    (6.7.12). That closes the disagreement between the two that 1.11.0 recorded.
+  - **Security:** 6.7.18 fixes 13 audited issues, none in a module cyim
+    compiles. The audit lists them.
+- **vyakarana `2.4.0` → `2.10.0`, and `grammars/` re-synced from the tag.** 45
+  grammar files changed and 3 were added. No public function cyim calls changed
+  signature or meaning. What changes on screen:
+  - number literals are single tokens: floats, `1_000`, type suffixes;
+  - Cyrius `#ifdef` / `#define` lines highlight as preprocessor;
+  - Rust, JS and TS block comments, shell heredocs and string prefixes are
+    recognized.
+
+  Chunked tokenization now matches whole-buffer tokenization, and is linear. That
+  is latent here, because cyim tokenizes whole buffers. The bundle's stdlib
+  sidecar shrinks to `alloc`, `string`, `vec` and `io`, all already declared.
+- **The re-sync is not optional.** The editor loads grammars from disk by
+  absolute path, never from the bundle's embedded copies. Stale files would run
+  the 2.10.0 parser over 2.4.0 grammars, and no test would notice. The `Tests`
+  section below closes that gap. `src/highlight.cyr`'s table comment now says so.
+- **darshana `1.3.0` → `1.7.0`.** The API has been frozen since 1.0.0, and these
+  releases only add to it:
+  - `tty_sgr_len` and `tty_sgr_strip_buf` (1.4.0);
+  - per-fd AGNOS arms for `tty_isatty`, `tty_echo_off` and `tty_flush_input`
+    (1.5.0; an `--agnos` build of them needs cyrius ≥ 6.7.11);
+  - `tty_isatty_is_per_fd` (1.6.0);
+  - `tty_winsize_px` (1.7.0).
+
+  cyim calls none of them. Why not is in roadmap.md § Dependency notes.
+- **cyim-lsp `1.5.3` → `1.5.4`.** A toolchain-pin release, with no code change.
+- **`lib/` and `cyrius.lock` were regenerated from scratch** with
+  `rm -rf lib/ cyrius.lock && cyrius deps`. There are still 46 files, 30 of them
+  changed. The lock drops the stale `darshana 1.0.0` commit row that 1.11.0 left
+  behind; cyrius 6.7.12+ flagged it on every resolve. `cyrius deps --locked`
+  passes.
+
+### Changed — `cyrius.cyml` is a manifest again
+
+The manifest goes from 199 lines to 57. Since 1.7.0 it had accumulated a
+narrative for every dependency bump, which is history this file already holds. It
+now carries declarations only, plus a one-line purpose comment per dependency. The
+one durable item, darshana's deliberately unadopted functions and the reason for
+each, moved to roadmap.md § Dependency notes. `cyrius deps --locked` confirms that
+the cut manifest resolves exactly the same `lib/` and lock.
+
+### Tests
+
+- **`tests/lang.tcyr`: 110 → 119.**
+  - The new indices and routes: `.mdx` is not `.md`'s markdown, and `.nasm` is
+    not `.asm`'s `asm_x86_64`.
+  - Every `grammars/` file must load from disk under the bundled vyakarana. That
+    disk path is the editor's, and no test reached it before, because under
+    `cyrius test` vyakarana serves its embedded copies. The new check reads
+    `./grammars/<name>.cyml`; the `./` misses the embedded key.
+  - Mutation-checked: corrupting `grammars/lean.cyml` fails it.
+- **`cyrius test`:** 23 suites, 1329 → **1338** assertions, 0 failures, 0
+  warnings. The totals are the same under `cyrius test --aarch64`.
+- **`cyrius fuzz`:** 5 / 5.
+- **Smoke tests:** CLI 128 / 0, LSP 13 / 0, PTY integration 58 PASS, plus the
+  DCE parity re-run.
+- **Static checks:** `cyrius doc --check` reports 0 undocumented. `cyrfmt
+  --check` and `cyrius lint` are clean across `src/`, `src/plugins/`, `tests/`
+  and `fuzz/`.
+- **`cyrius audit`** still exits 1 on its docs stage, on the same 48 test and
+  fuzz helpers as 1.11.0. Its lint stage is clean again.
+
+### Binary
+
+`CYRIUS_DCE=1`, compared with 1.11.0 built the same way at its own pin:
+
+| Target | 1.11.0 (6.7.9) | 1.11.1 (6.7.18) |
+|---|---:|---:|
+| x86_64 Linux | 1,098,280 B | **1,057,560 B** (−40,720) |
+| agnos | 1,074,016 B | **1,033,480 B** (−40,536) |
+| aarch64 Linux | 1,487,280 B | **1,483,440 B** (−3,840) |
+
+For x86_64, the pin alone accounts for −4,112 B (1,094,168 B with 1.11.0's
+deps). The dependency move accounts for the other −36,608 B, not attributed
+further.
+
+### Benchmarks
+
+`tests/perf.bcyr`, three interleaved rounds each of 1.11.0 (from a worktree at
+its own pin) and 1.11.1. **Not a re-baseline**: the host was shared, at load
+average 12 on 16 cores.
+
+Every workload is within run-to-run noise. The clearest movement:
+
+- `highlight_buf_1MB_cyrius`: 530.0–552.9 ms → 481.4–532.2 ms, about 9 % lower
+  at the median (vyakarana 2.10.0).
+- `buf_fill_1MB`: 13.9–22.2 ms → 14.3–17.8 ms.
+- `render_build_line_80c_x1000`: 556–627 µs → 339–651 µs. The spread is the
+  host.
+
+1.11.0's `highlight_buf_cache_hit_x1000` was not captured, because the perf.bcyr
+newline fixed above glued it onto its header line. 1.11.1 measures 31.1–32.5 µs.
+The last clean baseline is still the 1.8.6 table in BENCHMARKS.md.
+
 ## [1.11.0] — 2026-10-12
 
 **Toolchain `6.6.2` → `6.7.9`, darshana `1.0.0` → `1.3.0`, and the four

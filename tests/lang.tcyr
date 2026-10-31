@@ -25,8 +25,8 @@ fn main() {
     # `cyrius test` the harness binary lives in a temp dir with no
     # grammars/ beside it — `_hl_resolve_dir()` answers 0, highlight_init
     # returns before setting `_grammars_bootstrapped`, and vyakarana's
-    # cwd-relative bootstrap then loads all 46 and masks any gap. The
-    # table compare has no such escape hatch.
+    # own bootstrap then loads every grammar it bundles and masks any gap.
+    # The table compare has no such escape hatch.
     test_group("every routed language is in the grammar load table (drift guard)");
     var gi = 1;
     var gmissing = 0;
@@ -47,15 +47,22 @@ fn main() {
     # ships, or highlight_init silently no-ops on it. Test cwd is the
     # project root, so grammars/ is directly reachable.
     test_group("every grammar in the load table ships in grammars/");
+    #
+    # 1.11.1: each file must also PARSE under the bundled vyakarana. The
+    # `./` prefix is deliberate — vyakarana serves its embedded copy for
+    # an exact `grammars/<name>.cyml` key, so only a path that misses the
+    # key reads the file, as `_hl_load_one`'s absolute path does in the
+    # editor. Nothing else under `cyrius test` reaches that disk path.
     var gk = 0;
     var gabsent = 0;
+    var gunparsed = 0;
     var gpath[128];
     while (gk < HL_GRAMMAR_COUNT) {
         var gn = hl_grammar_name(gk);
         var gp = 0;
-        var gpre = "grammars/";
+        var gpre = "./grammars/";
         var gq = 0;
-        while (gq < 9) { store8(&gpath + gp, load8(gpre + gq)); gp = gp + 1; gq = gq + 1; }
+        while (gq < 11) { store8(&gpath + gp, load8(gpre + gq)); gp = gp + 1; gq = gq + 1; }
         gq = 0;
         while (gq < strlen(gn)) { store8(&gpath + gp, load8(gn + gq)); gp = gp + 1; gq = gq + 1; }
         var gsuf = ".cyml";
@@ -63,10 +70,12 @@ fn main() {
         while (gq < 5) { store8(&gpath + gp, load8(gsuf + gq)); gp = gp + 1; gq = gq + 1; }
         store8(&gpath + gp, 0);
         if (file_exists(&gpath) == 0) { gabsent = gabsent + 1; }
+        if (grammar_load(&gpath) == 0) { gunparsed = gunparsed + 1; }
         gk = gk + 1;
     }
     assert_eq(gabsent, 0, "0 load-table entries missing from grammars/");
-    assert_eq(HL_GRAMMAR_COUNT, 46, "46 bundled grammars at vyakarana 2.4.0");
+    assert_eq(gunparsed, 0, "0 grammars/ files the bundled vyakarana fails to load");
+    assert_eq(HL_GRAMMAR_COUNT, 49, "49 bundled grammars at vyakarana 2.10.0");
 
     test_group("lang_index / lang_is_valid");
     assert_eq(lang_index("plain"),       0,  "plain @ 0");
@@ -77,6 +86,9 @@ fn main() {
     assert_eq(lang_index("markdown"),   12,  "markdown @ 12 (added 1.6.2)");
     assert_eq(lang_index("makefile"),   44,  "makefile @ 44 (added 1.6.2)");
     assert_eq(lang_index("openqasm"),   45,  "openqasm @ 45 (added 1.8.2, vyakarana 2.3.5)");
+    assert_eq(lang_index("lean"),       46,  "lean @ 46 (added 1.11.1, vyakarana 2.9.9)");
+    assert_eq(lang_index("mdx"),        47,  "mdx @ 47 (added 1.11.1, vyakarana 2.9.9)");
+    assert_eq(lang_index("nasm"),       48,  "nasm @ 48 (added 1.11.1, vyakarana 2.9.9)");
     assert_eq(lang_index("esperanto"), 0 - 1, "unknown -> -1");
     assert_eq(lang_is_valid("rust"), 1, "rust valid");
     assert_eq(lang_is_valid("nope"), 0, "nope invalid");
@@ -145,6 +157,14 @@ fn main() {
     assert_streq(detect_language_from_path("bell.qasm"),     "openqasm", ".qasm");
     assert_streq(detect_language_from_path("BELL.QASM"),     "openqasm", ".QASM uppercase");
     assert_streq(detect_language_from_path("a/b/teleport.qasm"), "openqasm", "deep path .qasm");
+    # 1.11.1: vyakarana 2.9.9 added lean, mdx and nasm (46 -> 49 bundled).
+    # nasm's grammar also claims `.asm`; cyim keeps `.asm` on asm_x86_64
+    # (asserted above), so `.nasm` is nasm's only route.
+    assert_streq(detect_language_from_path("Basic.lean"),    "lean",     ".lean");
+    assert_streq(detect_language_from_path("page.mdx"),      "mdx",      ".mdx (not .md's markdown)");
+    assert_streq(detect_language_from_path("README.md"),     "markdown", ".md stays markdown");
+    assert_streq(detect_language_from_path("boot.nasm"),     "nasm",     ".nasm (not .asm's asm_x86_64)");
+    assert_streq(detect_language_from_path("BOOT.NASM"),     "nasm",     ".NASM uppercase");
 
     test_group("detect_language_from_path: 1.6.4 basename detection — dockerfile / makefile / shell rc");
     # 1.6.4 added a basename probe that runs before the extension table.

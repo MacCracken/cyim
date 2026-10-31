@@ -48,11 +48,12 @@ include "src/plugins/trailing_ws.cyr"
 # pure-protocol API; registers the six hook callbacks + four
 # `:lsp-*` ex-commands against cyim's plugin ABI.
 include "src/plugins/lsp_glue.cyr"
-# niyama 1.0.1 folded into cyrius stdlib at 5.9.0 (sandhi-pattern):
-# vendored as `lib/niyama.cyr` byte-identical from niyama's
-# `dist/niyama.cyr`. Pulled here via explicit include rather than
-# `[deps].stdlib` auto-prepend — see cyrius.cyml's own comment on
-# the sandhi fold pattern (folded ~6.6 KLOC + folded peers stay under
+# niyama 1.0.1 folded into cyrius stdlib at 5.9.0 (sandhi-pattern).
+# Not vendored (since 1.11.0): the compiler resolves `lib/niyama.cyr`
+# from the pinned snapshot, `~/.cyrius/versions/<pin>/lib`, so it is
+# always the pin's own. Pulled here via explicit include rather than
+# `[deps].stdlib` auto-prepend — the sandhi fold pattern, which keeps
+# opt-in libs out of every build (folded ~6.6 KLOC + folded peers stay under
 # the 2 MB preprocess_out cap that motivated opt-in includes for
 # folded libs at cyrius v5.8.65). Engines exposed: bre, re2, pcre,
 # vim (v1.3.0); fuzzy gated to v1.3.1 because its `_search_at`

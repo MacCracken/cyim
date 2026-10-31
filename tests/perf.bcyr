@@ -186,7 +186,7 @@ fn main() {
     # single hashmap-keyed pointer compare per call. Reports the
     # average; expect sub-microsecond.
     # v1.5.3 (F-CO-1 closeout): 10 outer rounds × 1000 inner.
-    syscall(1, 1, "\n=== highlight_buf cache hit × 1000 on unchanged 1 MB buffer ===\n", 65);
+    syscall(1, 1, "\n=== highlight_buf cache hit × 1000 on unchanged 1 MB buffer ===\n", 66);
     var bench_cached = bench_new("highlight_buf_cache_hit_x1000");
     var ch_round = 0;
     while (ch_round < 10) {
