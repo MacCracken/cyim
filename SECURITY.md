@@ -95,6 +95,7 @@ requests instead)
 - [2026-10-12 — 1.11.0 release audit](docs/audit/2026-10-12-1.11.0-audit.md)
 - [2026-10-31 — 1.11.1 release audit](docs/audit/2026-10-31-1.11.1-audit.md)
 - [2026-10-31 — 1.11.x closeout audit](docs/audit/2026-10-31-1.11x-closeout.md)
+- [2026-10-31 — 1.12.0 release audit](docs/audit/2026-10-31-1.12.0-audit.md)
   (**most recent**)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
@@ -180,3 +181,9 @@ Five are fixed with tests. Among them are a status row that could overrun the
 terminal width, and a main loop that could spin on a persistent `epoll_wait`
 error. The sixth, rxvt's `$`-final keys swallowing the next key, is BUG-008.
 The residuals above carry.
+
+State at v1.12.0: the [1.12.0 release audit](docs/audit/2026-10-31-1.12.0-audit.md)
+found nothing. The agent CLI's failure messages now quote part of a `--batch`
+pair's OLD. That excerpt is the only new path from input to output. It is
+capped at 60 bytes and sanitized, so an escape sequence in the caller's text
+cannot reach a terminal through stderr.

@@ -990,5 +990,81 @@ rm -rf "$RO_DIR"
 
 rm -f "$SHORTW" "$PAYLOAD" "$SAFE"
 
-echo "$PASS passed, $FAIL failed (128 total)"
+# ── 1.12.0: failure messages say which pair and how many ─────────────
+# Filed by agnos (docs/development/issues/2026-08-29-batch-and-expect-
+# diagnostics.md). The exit codes are the contract and do not change; the
+# stderr text gains what the caller needs to act on it.
+assert_err_has() {
+    case "$3" in
+        *"$2"*) PASS=$((PASS + 1)) ;;
+        *) FAIL=$((FAIL + 1)); echo "FAIL: $1 — stderr lacks '$2': $3" ;;
+    esac
+}
+assert_err_lacks() {
+    case "$3" in
+        *"$2"*) FAIL=$((FAIL + 1)); echo "FAIL: $1 — stderr has '$2': $3" ;;
+        *) PASS=$((PASS + 1)) ;;
+    esac
+}
+DIAG=/tmp/cyim-cli-smoke-diag.txt
+
+printf 'a\nb\nc\n' > "$DIAG"
+err=$(printf 'a\0A\0b\0B\0NOPE\0Z\0' | "$BIN" --batch "$DIAG" 2>&1 >/dev/null); rc=$?
+assert_rc '--batch: missing pair 3 still exits 4' 4 $rc
+assert_err_has '--batch names the missing pair' 'pair 3/3' "$err"
+assert_err_has '--batch quotes the missing OLD' '"NOPE"' "$err"
+
+printf 'x x x\nunique\n' > "$DIAG"
+err=$(printf 'unique\0U\0x\0X\0' | "$BIN" --batch "$DIAG" 2>&1 >/dev/null); rc=$?
+assert_rc '--batch: non-unique pair 2 still exits 5' 5 $rc
+assert_err_has '--batch names the non-unique pair' 'pair 2/2' "$err"
+assert_err_has '--batch says how many times' '3 times' "$err"
+
+printf 'one tok\n' > "$DIAG"
+err=$("$BIN" --replace tok TOK --expect-N=3 "$DIAG" 2>&1 >/dev/null); rc=$?
+assert_rc '--expect-N mismatch still exits 6' 6 $rc
+assert_err_has '--expect-N reports both counts' 'expected 3, found 1' "$err"
+
+printf 'dup dup\n' > "$DIAG"
+err=$("$BIN" --replace dup D "$DIAG" 2>&1 >/dev/null); rc=$?
+assert_rc '--replace non-unique still exits 5' 5 $rc
+assert_err_has '--replace says how many times' '2 times' "$err"
+
+printf 'value = NEWVAL\n' > "$DIAG"
+err=$("$BIN" --replace OLDVAL NEWVAL "$DIAG" 2>&1 >/dev/null); rc=$?
+assert_rc '--replace already applied still exits 4' 4 $rc
+assert_err_has '--replace hints the edit is already applied' 'already applied?' "$err"
+err=$("$BIN" --replace OLDVAL ABSENT "$DIAG" 2>&1 >/dev/null)
+assert_err_lacks '--replace: no hint when NEW is absent' 'already applied' "$err"
+
+printf 'N and N\n' > "$DIAG"
+err=$("$BIN" --replace OLDVAL N "$DIAG" 2>&1 >/dev/null)
+assert_err_lacks '--replace: no hint when NEW is not unique' 'already applied' "$err"
+err=$("$BIN" --replace-all OLDVAL N "$DIAG" 2>&1 >/dev/null)
+assert_err_has '--replace-all: hint when NEW is present' 'already applied?' "$err"
+
+printf 'A\nb\n' > "$DIAG"
+err=$(printf 'a\0A\0' | "$BIN" --batch "$DIAG" 2>&1 >/dev/null); rc=$?
+assert_rc '--batch already applied still exits 4' 4 $rc
+assert_err_has '--batch hints the pair is already applied' 'already applied?' "$err"
+if [ "$(cat "$DIAG")" = "$(printf 'A\nb')" ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: --batch modified the file on exit 4"; fi
+
+# The OLD excerpt is the caller's own text, but it reaches a terminal: only
+# its first line, at most 60 bytes, with control bytes neutralized.
+printf 'q\n' > "$DIAG"
+err=$(printf 'ZZ\033[31m0123456789012345678901234567890123456789012345678901234567890123456789\nsecond\0X\0' \
+    | "$BIN" --batch "$DIAG" 2>&1 >/dev/null)
+assert_err_has '--batch excerpt neutralizes ESC' 'ZZ?[31m' "$err"
+assert_err_has '--batch excerpt marks the cut' '..."' "$err"
+assert_err_lacks '--batch excerpt stops at the first line' 'second' "$err"
+assert_err_lacks '--batch excerpt carries no raw ESC' "$(printf '\033')" "$err"
+# 'a' then 2-byte characters: byte 60 falls inside one. Cutting there would
+# leave half a character, which the sanitizer shows as '?'.
+err=$( { printf 'a'; i=0; while [ $i -lt 40 ]; do printf '\303\251'; i=$((i + 1)); done; printf '\0X\0'; } \
+    | "$BIN" --batch "$DIAG" 2>&1 >/dev/null)
+assert_err_lacks '--batch excerpt never splits a UTF-8 character' '?..."' "$err"
+assert_err_has '--batch excerpt keeps whole characters' "$(printf '\303\251...')" "$err"
+rm -f "$DIAG"
+
+echo "$PASS passed, $FAIL failed ($((PASS + FAIL)) total)"
 [ "$FAIL" = "0" ] || exit 1

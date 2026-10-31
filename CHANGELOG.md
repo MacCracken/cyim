@@ -4,6 +4,73 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-10-31
+
+**Agent CLI failures say what failed.** This opens the 1.12.x line, agent
+verbs round two, and closes agnos's
+[diagnostics issue](docs/development/issues/2026-08-29-batch-and-expect-diagnostics.md):
+- `--batch` names the failing pair;
+- count failures report the count they found;
+- "OLD not found" asks whether the edit is already applied.
+
+The exit codes are unchanged; they are the contract.
+
+Audit: [`docs/audit/2026-10-31-1.12.0-audit.md`](docs/audit/2026-10-31-1.12.0-audit.md).
+
+### Changed — failure messages
+
+| Failure | Through 1.11.2 | 1.12.0 |
+|---|---|---|
+| `--batch`, OLD missing (exit 4) | `pair OLD not found in file` | `pair 3/3: OLD not found in file: "NOPE"` |
+| `--batch`, OLD not unique (exit 5) | `pair OLD not unique — use --all or specify more` | `pair 2/5: OLD occurs 3 times — not unique; use --all or specify more: "x"` |
+| `--expect-N` mismatch (exit 6) | `--expect-N count mismatch` | `--expect-N count mismatch: expected 3, found 1` |
+| `--replace`, OLD not unique (exit 5) | `OLD occurs more than once — not unique. …` | `OLD occurs 2 times — not unique. …` |
+| OLD missing, NEW in place (exit 4) | `OLD not found in FILE` | `OLD not found in FILE (NEW already present — already applied?)` |
+
+- **The `--batch` quote** is the start of the pair's OLD:
+  - its first line, at most 60 bytes, ending in `...` when shortened;
+  - a cut never splits a UTF-8 character;
+  - it goes through darshana's sanitizer with tabs kept, so an ESC in the
+    caller's OLD shows as `?`.
+- **The "already applied?" hint** fires only when NEW is a literal and is in
+  the file the way a finished edit leaves it: exactly once for `--replace` and
+  `--batch`, at least once for `--replace-all` and `--batch --all`. A regex
+  NEW can hold group references, so it is not searched for. An empty NEW (a
+  deletion) never hints.
+- **Implementation.** Each message is built in one 512-byte buffer
+  (`CLI_MSG_CAP`) and written with one `write(2)`.
+- **The exit-code half of the issue's third ask is not done.** A distinct exit
+  code for "already applied" would change what scripts see where they get 4
+  today, so it is a 2.0.0 decision.
+
+**If you match stderr text:** two phrases changed. `--batch`'s
+`pair OLD not found` now reads `pair K/N: OLD not found`, and `--replace`'s
+`occurs more than once` now reads `occurs N times`. `OLD not found in FILE`,
+`count mismatch` and `not unique` still appear as before.
+
+### Tests
+
+- `tests/cli_smoke.sh`: 128 → **152** cases. The new cases assert each
+  message's content next to its unchanged exit code.
+  - Of the first 22, the 11 content checks fail against the 1.11.2 messages.
+    The other 11 pin exit codes, file content and hints that must not appear.
+  - Two more cover the excerpt's UTF-8 cut. They are mutation-tested: removing
+    the back-up fails both.
+- The harness now computes its "total" from the cases it ran, instead of
+  printing a fixed 128.
+- `cyrius test` is unchanged at 23 suites, 1363 assertions. The CLI is built
+  only through `src/main.cyr`, so its tests are the shell smoke.
+
+### Binary
+
+`CYRIUS_DCE=1`:
+
+| Target | 1.11.2 | 1.12.0 |
+|---|---:|---:|
+| x86_64 Linux | 1,061,696 B | **1,061,776 B** (+80) |
+| agnos | 1,037,616 B | **1,037,688 B** (+72) |
+| aarch64 Linux | 1,483,480 B | **1,483,560 B** (+80) |
+
 ## [1.11.2] — 2026-10-31
 
 **Closeout for the 1.11.x line** — and the first since 1.9.3, because 1.10.x

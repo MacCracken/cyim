@@ -34,7 +34,7 @@ Own the editor surface in the AGNOS library. Modal grammar in the lineage of `vi
 
   Modifiers (parsed in any order between verb and positionals): `--wc[=l|=long]` (print `wc(1)` on success of `--write`/`--replace[-all]`/`--batch`); `--expect=<pat>` / `--expect-not=<pat>` (post-save shape assertion on `--write` and `--batch`, exit 6 on mismatch); `--expect-N=<n>` / `--expect-1` (pre-substitution count assertion on `--replace[-all]`, exit 6 on mismatch); `--all` (on `--batch`: every pair runs `--replace-all`).
 
-  Exit codes match `~/.local/bin/cyim-edit` so wrapper scripts collapse to `exec` one-liners. The keymap dispatch (M1) was designed with this consumer first-class, not retrofit.
+  Exit codes match `~/.local/bin/cyim-edit` so wrapper scripts collapse to `exec` one-liners. The exit codes are the contract; stderr text is not, but it names what failed (since 1.12.0): `--batch` gives the failing pair as `pair K/N` and quotes the start of its OLD, count failures say what they found, and "OLD not found" asks `already applied?` when a literal NEW is already in place. The keymap dispatch (M1) was designed with this consumer first-class, not retrofit.
 
 ## Current State
 

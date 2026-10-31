@@ -59,16 +59,14 @@ These rules apply to every cut in every version line below.
 
 ## Next: 1.12.x — Agent verbs, round two
 
-agnos filed these after a ~60-edit session on its kernel tree: one
-[issue](issues/2026-08-29-batch-and-expect-diagnostics.md) and one
+agnos filed these after a ~60-edit session on its kernel tree, in a
 [proposal](proposals/2026-08-29-line-anchored-and-cyrius-aware-edits.md).
-Agents are a first-class consumer, and every item here only adds
-behaviour. Each cut updates CLAUDE.md § Consumers, `--help` and
-`tests/cli_smoke.sh`.
+(Its companion issue, on failure messages, closed at 1.12.0.) Agents are a
+first-class consumer, and every item here only adds behaviour. Each cut
+updates CLAUDE.md § Consumers, `--help` and `tests/cli_smoke.sh`.
 
 | Cut | Item | Notes |
 |---|---|---|
-| 1.12.0 | **Failure messages say which pair and how many** | Closes the issue. `--batch` names the failing pair (`pair 3/3 OLD not found`). `--expect-N` reports the count it saw (`expected 3, found 1`). When OLD is missing and NEW is present at a unique site, "OLD not found" adds `(NEW already present — already applied?)`. Messages change; exit codes stay 4 / 5 / 6 / 2. A separate exit code for "already applied" would change the contract, so it is listed under 2.0.0 |
 | 1.12.x | **`--expect` / `--expect-not` on `--replace[-all]`** | Proposal § 3. Today `--replace` rejects both with exit 2 (`unexpected extra argument`). So a single edit can check the match count beforehand, but not the file afterwards |
 | 1.12.x | **`--dry-run`** | Proposal § 2. Prints a unified diff to stdout, writes nothing, and exits non-zero if the edit would change nothing. The diff routine is the new code |
 | 1.12.x | **`--replace-lines A:B`** | Proposal § 1, and the filer's top ask. Replaces lines A–B, with a required content check (`--expect-first=`) so an edit that has already shifted the file cannot send it to the wrong lines. Then line-range pairs in `--batch`, resolved against the original buffer and applied from the bottom up. Decide where NEW comes from (a file, as proposed, or stdin) before writing code |
@@ -152,9 +150,10 @@ these decisions are cyim's to make:
    and later arguments are ignored. Keeping that means calling
    `cmdit_help_short(h, 0)` / `cmdit_version_short(h, 0)`. Changing it
    is a break.
-5. **An exit code for "already applied".** The message half ships in
-   1.12.0. A separate code (issue § 3) would change what scripts see
-   where they get exit 4 today.
+5. **An exit code for "already applied".** The message half shipped in
+   1.12.0. A separate code
+   ([issue](issues/2026-08-29-batch-and-expect-diagnostics.md) § 3) would
+   change what scripts see where they get exit 4 today.
 
 **Once unblocked:**
 
@@ -377,5 +376,5 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-10-31, at 1.11.2. Replace this line on each update; do not
+*Last updated: 2026-10-31, at 1.12.0. Replace this line on each update; do not
 add to it.*

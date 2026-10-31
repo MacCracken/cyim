@@ -253,6 +253,30 @@ Exit codes (verb-disambiguated where noted):
 | 5    | OLD occurs more than once and `--replace-all` not used |
 | 6    | Assertion failed (`--expect`/`--expect-not`/`--expect-N` mismatch) |
 
+**What stderr says.** The exit code is the contract. The stderr text is
+for whoever acts on the failure. Since 1.12.0 it names what failed:
+
+- **`--batch`** names the failing pair as `K/N`, where N is the number of
+  pairs. It also quotes the start of that pair's OLD: its first line, at
+  most 60 bytes, with control bytes shown as `?`.
+
+  ```
+  cyim --batch: pair 3/3: OLD not found in file: "NOPE"
+  ```
+
+- **A count failure** says the count it found:
+
+  ```
+  cyim --replace: --expect-N count mismatch: expected 3, found 1
+  cyim --replace: OLD occurs 2 times — not unique. Use --replace-all or pick a more specific OLD.
+  ```
+
+- **"OLD not found"** adds `(NEW already present — already applied?)` when
+  a literal NEW is already in the file. For `--replace` and `--batch`, that
+  means exactly once; for `--replace-all` and `--batch --all`, at least
+  once. So a retried edit is told apart from a wrong anchor. The exit code
+  is still 4.
+
 ---
 
 ## Modes

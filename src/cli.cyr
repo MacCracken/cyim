@@ -1188,6 +1188,113 @@ fn run_write(file_path, wc_mode, expect_pat, expect_pol) {
     return 0;
 }
 
+# ── Failure messages (1.12.0) ────────────────────────────
+#
+# An agent acts on a failure's stderr, so the messages that can say WHAT
+# failed do: which `--batch` pair, how many matches there were, and whether
+# the edit looks already applied. Each is composed in one buffer and written
+# with one write(2). Only the text changes: the exit codes are the contract
+# (CLAUDE.md § Consumers) and stay as they were. Filed by agnos in
+# docs/development/issues/2026-08-29-batch-and-expect-diagnostics.md.
+
+# Bytes in a composed message; every `var msg[N]` that holds one must equal it.
+var CLI_MSG_CAP = 512;
+# Bytes of a pair's OLD quoted in a `--batch` failure.
+var CLI_EXCERPT_MAX = 60;
+
+# Append `n` bytes at `src` to message `m` at `pos`, stopping at CLI_MSG_CAP.
+# Returns the new position.
+fn _cli_msg_put(m, pos, src, n) {
+    var take = n;
+    if (take > CLI_MSG_CAP - pos) { take = CLI_MSG_CAP - pos; }
+    var i = 0;
+    while (i < take) {
+        store8(m + pos + i, load8(src + i));
+        i = i + 1;
+    }
+    return pos + take;
+}
+
+# Append the NUL-terminated string `str` to message `m`. Returns the new position.
+fn _cli_msg_str(m, pos, str) { return _cli_msg_put(m, pos, str, strlen(str)); }
+
+# Append the count `v` in decimal (negative prints as 0). Returns the new position.
+fn _cli_msg_dec(m, pos, v) {
+    if (CLI_MSG_CAP - pos < 20) { return pos; }
+    return _buf_append_dec(m, pos, v);
+}
+
+# Start a `--batch` pair failure: `cyim --batch: pair K/N: `. Returns the position.
+fn _cli_msg_pair(m, k, n) {
+    var p = _cli_msg_str(m, 0, "cyim --batch: pair ");
+    p = _cli_msg_dec(m, p, k);
+    p = _cli_msg_str(m, p, "/");
+    p = _cli_msg_dec(m, p, n);
+    return _cli_msg_str(m, p, ": ");
+}
+
+# Append `: "<excerpt>"`: the first line of `str` (`slen` bytes), at most
+# CLI_EXCERPT_MAX bytes, ended with `...` when shortened. A length cut backs up
+# to a UTF-8 lead byte. It is the caller's own text, but stderr may be a
+# terminal, so it goes through darshana's sanitizer with tabs kept.
+# Returns the new position.
+fn _cli_msg_excerpt(m, pos, str, slen) {
+    var n = 0;
+    var cut = 0;
+    var go = 1;
+    while (go == 1) {
+        if (n >= slen) {
+            go = 0;
+        } else {
+            if (load8(str + n) == 10) {
+                cut = 1;
+                go = 0;
+            } else {
+                if (n >= CLI_EXCERPT_MAX) {
+                    cut = 1;
+                    go = 0;
+                } else {
+                    n = n + 1;
+                }
+            }
+        }
+    }
+    if (n < slen) {
+        var back = 0;
+        while (back < 3) {
+            if ((load8(str + n) & 0xC0) == 0x80) {
+                n = n - 1;
+                back = back + 1;
+            } else {
+                back = 3;
+            }
+        }
+    }
+    var p = _cli_msg_str(m, pos, ": \"");
+    if (n > CLI_MSG_CAP - 8 - p) { n = CLI_MSG_CAP - 8 - p; }
+    if (n > 0) {
+        var np = tty_sanitize_buf(m, p, str, n, TTY_SANITIZE_UTF8, TTY_KEEP_TAB);
+        if (np >= 0) { p = np; }
+    }
+    if (cut == 1) { p = _cli_msg_str(m, p, "..."); }
+    return _cli_msg_str(m, p, "\"");
+}
+
+# 1 when NEW is already in `b` the way a finished edit leaves it — exactly once
+# for a unique replace, at least once for replace-all — so "OLD not found" can
+# ask whether the edit is already applied rather than imply a wrong anchor.
+# An empty NEW (a deletion) leaves nothing to look for and never hints.
+fn _cli_looks_applied(b, new_str, mode) {
+    if (strlen(new_str) == 0) { return 0; }
+    var c = _cli_count_matches(b, new_str);
+    if (mode == REPLACE_ALL) {
+        if (c > 0) { return 1; }
+        return 0;
+    }
+    if (c == 1) { return 1; }
+    return 0;
+}
+
 # `cyim --replace OLD NEW FILE` (mode = REPLACE_FIRST_UNIQUE) or
 # `cyim --replace-all OLD NEW FILE` (mode = REPLACE_ALL).
 # `wc_mode`:  0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
@@ -1228,13 +1335,20 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavo
     if (m == 0) { syscall(1, 2, "cyim --replace: alloc failed\n", 29); return 1; }
 
     var count = _cli_count_matches_m(b, m);
+    var msg[512];                       # must equal CLI_MSG_CAP
 
     # --expect-N comes first: an explicit count assertion is the
     # strongest contract the caller can express, and a mismatch is a
-    # hard fail before any of the implicit checks fire.
+    # hard fail before any of the implicit checks fire. Since 1.12.0 the
+    # message says what it found: that count is the payload of the failure.
     if (expect_n >= 0) {
         if (count != expect_n) {
-            syscall(1, 2, "cyim --replace: --expect-N count mismatch\n", 42);
+            var ep = _cli_msg_str(&msg, 0, "cyim --replace: --expect-N count mismatch: expected ");
+            ep = _cli_msg_dec(&msg, ep, expect_n);
+            ep = _cli_msg_str(&msg, ep, ", found ");
+            ep = _cli_msg_dec(&msg, ep, count);
+            ep = _cli_msg_str(&msg, ep, "\n");
+            syscall(1, 2, &msg, ep);
             return 6;
         }
     }
@@ -1247,13 +1361,25 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavo
             _cli_print_wc(b, file_path, wc_mode);
             return 0;
         }
-        syscall(1, 2, "cyim --replace: OLD not found in FILE\n", 38);
+        # A literal NEW already in place reads as "already applied?", which
+        # calls for the opposite response to a mistyped anchor (1.12.0). A
+        # regex NEW can hold group references, so it is not searched for.
+        var np = _cli_msg_str(&msg, 0, "cyim --replace: OLD not found in FILE");
+        if (regex_flavor == FLAVOR_LITERAL) {
+            if (_cli_looks_applied(b, new_str, mode) == 1) {
+                np = _cli_msg_str(&msg, np, " (NEW already present — already applied?)");
+            }
+        }
+        np = _cli_msg_str(&msg, np, "\n");
+        syscall(1, 2, &msg, np);
         return 4;
     }
     if (mode == REPLACE_FIRST_UNIQUE) {
         if (count > 1) {
-            syscall(1, 2, "cyim --replace: OLD occurs more than once — ", 46);
-            syscall(1, 2, "not unique. Use --replace-all or pick a more specific OLD.\n", 59);
+            var up = _cli_msg_str(&msg, 0, "cyim --replace: OLD occurs ");
+            up = _cli_msg_dec(&msg, up, count);
+            up = _cli_msg_str(&msg, up, " times — not unique. Use --replace-all or pick a more specific OLD.\n");
+            syscall(1, 2, &msg, up);
             return 5;
         }
     }
@@ -1369,6 +1495,7 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
     var on_old = 1;
     var old_ptr = 0;
     var t = 0;
+    var msg[512];                       # must equal CLI_MSG_CAP
     while (t < num_tokens) {
         var j = tok_start;
         while (load8(stdin_buf + j) != 0) { j = j + 1; }
@@ -1382,14 +1509,30 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
             old_ptr = tok_ptr;
             on_old = 0;
         } else {
+            # Since 1.12.0 a failure names its pair as `K/N` and quotes the
+            # start of its OLD: with N pairs generated programmatically,
+            # "not found" alone points at nothing the caller can find.
             var count = _cli_count_matches(b, old_ptr);
             if (count == 0) {
-                syscall(1, 2, "cyim --batch: pair OLD not found in file\n", 41);
+                var bp = _cli_msg_pair(&msg, t / 2 + 1, num_tokens / 2);
+                bp = _cli_msg_str(&msg, bp, "OLD not found in file");
+                bp = _cli_msg_excerpt(&msg, bp, old_ptr, strlen(old_ptr));
+                if (_cli_looks_applied(b, tok_ptr, mode) == 1) {
+                    bp = _cli_msg_str(&msg, bp, " (NEW already present — already applied?)");
+                }
+                bp = _cli_msg_str(&msg, bp, "\n");
+                syscall(1, 2, &msg, bp);
                 return 4;
             }
             if (mode == REPLACE_FIRST_UNIQUE) {
                 if (count > 1) {
-                    syscall(1, 2, "cyim --batch: pair OLD not unique — use --all or specify more\n", 64);
+                    var bu = _cli_msg_pair(&msg, t / 2 + 1, num_tokens / 2);
+                    bu = _cli_msg_str(&msg, bu, "OLD occurs ");
+                    bu = _cli_msg_dec(&msg, bu, count);
+                    bu = _cli_msg_str(&msg, bu, " times — not unique; use --all or specify more");
+                    bu = _cli_msg_excerpt(&msg, bu, old_ptr, strlen(old_ptr));
+                    bu = _cli_msg_str(&msg, bu, "\n");
+                    syscall(1, 2, &msg, bu);
                     return 5;
                 }
             }

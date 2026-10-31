@@ -7,7 +7,17 @@
 3-pair batch whose 3rd pair misses leaves the file byte-identical, exit 4), and the exit codes are already
 properly distinct and non-zero (4 = OLD not found, 5 = OLD not unique, 6 = expect mismatch, 2 = usage), so
 `&&`-chaining is safe. This is purely a *diagnosis* cost.
-**Status:** OPEN
+**Status:** ✅ **CLOSED 2026-10-31 (cyim 1.12.0).** All three messages now carry what was asked, and
+the exit codes are unchanged:
+1. `--batch` names the pair and quotes the start of its OLD:
+   `cyim --batch: pair 3/3: OLD not found in file: "NOPE"`.
+2. `--expect-N` reports both counts: `--expect-N count mismatch: expected 3, found 1`. Not-unique
+   failures give the count too.
+3. "OLD not found" adds `(NEW already present — already applied?)` when a literal NEW is already in
+   place. The *distinct exit code* half of § 3 would change what scripts see on exit 4, so it is a
+   2.0.0 decision (roadmap § 2.0.0 — Agent CLI).
+
+Covered by `tests/cli_smoke.sh` (+24 cases).
 
 ---
 

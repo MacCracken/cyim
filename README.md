@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.11.2 — released.** The 1.x series shipped:
+**1.12.0 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -100,6 +100,10 @@ for humanity. Consumers:
   pending `g`), the status row and the reference picker fit narrow and
   short terminals, and CI now builds and tests the agnos and aarch64
   targets.
+- **v1.12.0** — agent CLI failures say what failed: `--batch` names the
+  failing pair and quotes its OLD, count failures report what they found,
+  and "OLD not found" asks `already applied?` when NEW is already in place.
+  Exit codes unchanged.
 
 Current pins: cyrius `6.7.18`, vyakarana `2.10.0`, cyim-lsp `1.5.4`,
 darshana `1.7.0`.
