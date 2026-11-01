@@ -3,8 +3,8 @@
 **Filed:** 2026-08-29
 **Filer:** agnos (one session: ~60 cyim edits across 19 `.cyr` files, including a 25-site atomic conversion)
 **Status:** PROPOSAL — five independent asks, ordered by how often they bit. Each stands alone.
-§ 3 shipped in cyim 1.12.1. §§ 1 and 2 are planned for 1.12.x, § 4 needs a scope decision, and § 5 is
-for 2.x (see `../roadmap.md`).
+§ 3 shipped in cyim 1.12.1 and § 2 in 1.12.2. § 1 is planned for 1.12.x, § 4 needs a scope decision,
+and § 5 is for 2.x (see `../roadmap.md`).
 **Related issue:** [`../issues/2026-08-29-batch-and-expect-diagnostics.md`](../issues/2026-08-29-batch-and-expect-diagnostics.md)
 
 ---

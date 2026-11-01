@@ -97,6 +97,7 @@ requests instead)
 - [2026-10-31 — 1.11.x closeout audit](docs/audit/2026-10-31-1.11x-closeout.md)
 - [2026-10-31 — 1.12.0 release audit](docs/audit/2026-10-31-1.12.0-audit.md)
 - [2026-10-31 — 1.12.1 release audit](docs/audit/2026-10-31-1.12.1-audit.md)
+- [2026-10-31 — 1.12.2 release audit](docs/audit/2026-10-31-1.12.2-audit.md)
   (**most recent**)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
@@ -193,3 +194,10 @@ State at v1.12.1: the [1.12.1 release audit](docs/audit/2026-10-31-1.12.1-audit.
 found nothing. The replace verbs gained `--expect` / `--expect-not`, which parse
 a pattern the CLI already parsed for `--write` and `--batch`. The pattern is used
 only as a bounded literal needle and is never echoed.
+
+State at v1.12.2: the [1.12.2 release audit](docs/audit/2026-10-31-1.12.2-audit.md)
+found nothing. `--dry-run` adds a unified diff (`src/diff.cyr`), which reads only
+the two buffers the edit already held and writes only stdout. Every index in it
+is bounded by its own line counts, and a cap bounds both its time and its
+memory. The diff carries the file's bytes unsanitized, as `--grep` does, because
+a sanitized diff would not apply. A dry run never opens its target for writing.

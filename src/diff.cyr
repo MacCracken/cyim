@@ -1,0 +1,487 @@
+# src/diff.cyr — unified diff of two byte buffers (1.12.2, for `--dry-run`)
+#
+# Adapted from sit's src/diff.cyr (sit 1.13.0; same author, GPL-3.0-only):
+# the line split with its final-newline flag, and Myers' greedy forward
+# search with a per-depth trace for the backtrack (Myers 1986). What differs:
+#   - Common leading and trailing lines are trimmed first, so Myers pays for
+#     the changed region's edit distance, not the file's.
+#   - Past DIFF_DCAP it does not refuse, as sit does. It falls back to a diff
+#     that still applies but is not minimal: line for line when both sides of
+#     the changed region have the same number of lines (what a replace-all of
+#     a one-line OLD produces), else the whole region as one replacement.
+#   - Within a run of changes, deletions are printed before insertions, as
+#     GNU diff prints them.
+#   - Output goes into a gap buffer rather than to stdout, so it can be tested.
+#
+# The output is GNU `diff -u`'s shape: `--- PATH` and `+++ PATH`, then
+# `@@ -a,b +c,d @@` hunks with DIFF_CONTEXT lines of context. A count of 1
+# is left out, an empty side starts at the line before the change, and a last
+# line with no newline is followed by `\ No newline at end of file`.
+# `patch -p0` applies it.
+#
+# Cost: O((N + M) * D) time for the trimmed region, D <= DIFF_DCAP, and a
+# trace of about D * D / 2 words, 4 MB at the cap. Bump-allocated: the CLI
+# runs once and exits.
+
+var DIFF_KEEP = 0;
+var DIFF_DEL  = 1;
+var DIFF_INS  = 2;
+# Lines of context around each change.
+var DIFF_CONTEXT = 3;
+# The largest edit distance Myers searches before the fallback.
+var DIFF_DCAP = 1024;
+# Set in a line record's length word on a last line with no newline, so one
+# compare of the words checks the length and the final newline together:
+# `b` and `b\n` differ, as they do in git.
+var DIFF_LINE_NO_EOL   = 0x4000000000000000;
+var DIFF_LINE_LEN_MASK = 0x3FFFFFFFFFFFFFFF;
+
+# Split `len` bytes at `data` into a vec of 16-byte line records: +0 the
+# line's first byte, +8 its length, with DIFF_LINE_NO_EOL on a last line that
+# has no newline. Records point into `data`; nothing is copied.
+fn _diff_split(data, len) {
+    var lines = vec_new();
+    var pos = 0;
+    while (pos < len) {
+        var start = pos;
+        var scanning = 1;
+        while (scanning == 1) {
+            if (pos >= len) {
+                scanning = 0;
+            } else {
+                if (load8(data + pos) == 10) { scanning = 0; } else { pos = pos + 1; }
+            }
+        }
+        var rec = alloc(16);
+        store64(rec, data + start);
+        var word = pos - start;
+        if (pos == len) { word = word | DIFF_LINE_NO_EOL; }
+        store64(rec + 8, word);
+        vec_push(lines, rec);
+        if (pos < len) { pos = pos + 1; }
+    }
+    return lines;
+}
+
+# 1 if line records `a` and `b` hold the same bytes and the same final-newline
+# state, else 0.
+fn _diff_line_eq(a, b) {
+    var aw = load64(a + 8);
+    if (aw != load64(b + 8)) { return 0; }
+    return memeq(load64(a), load64(b), aw & DIFF_LINE_LEN_MASK);
+}
+
+# Append a raw op — `kind` (DIFF_KEEP / _DEL / _INS) and its line record — to
+# vec `v`. Returns 0.
+fn _diff_raw(v, kind, line) {
+    var op = alloc(16);
+    store64(op, kind);
+    store64(op + 8, line);
+    vec_push(v, op);
+    return 0;
+}
+
+# Read the trace slice for depth `d` at diagonal `kp`. A slice holds the
+# parity-(d-1) V entries on diagonals -(d-1)..d-1, which depth d read.
+fn _diff_sget(slice, d, kp) {
+    return load64(slice + ((kp + d - 1) / 2) * 8);
+}
+
+# Myers over lines a[alo .. alo+n) and b[blo .. blo+m), appending its ops to
+# `raw` in forward order. Returns 1, or 0 with nothing appended when the edit
+# distance exceeds DIFF_DCAP.
+fn _diff_myers(a, alo, n, b, blo, m, raw) {
+    var dcap = DIFF_DCAP;
+    var voff = dcap + 1;
+    var V = alloc((2 * dcap + 3) * 8);
+    if (V == 0) { return 0; }
+    store64(V + (1 + voff) * 8, 0);
+    var trace = vec_new();
+    var found_d = 0 - 1;
+    var searching = 1;
+    var d = 0;
+    while (searching == 1) {
+        if (d > dcap) {
+            searching = 0;
+        } else {
+            # Snapshot the V entries depth d reads, for the backtrack.
+            if (d >= 1) {
+                var slice = alloc(d * 8);
+                var kp = 0 - (d - 1);
+                while (kp <= d - 1) {
+                    store64(slice + ((kp + d - 1) / 2) * 8, load64(V + (kp + voff) * 8));
+                    kp = kp + 2;
+                }
+                vec_push(trace, slice);
+            }
+            var k = 0 - d;
+            while (k <= d) {
+                if (searching == 1) {
+                    # Step down (an insertion) from diagonal k+1, or right (a
+                    # deletion) from k-1 — whichever reached further.
+                    var down = 0;
+                    if (k == 0 - d) {
+                        down = 1;
+                    } else {
+                        if (k != d) {
+                            if (load64(V + (k - 1 + voff) * 8) < load64(V + (k + 1 + voff) * 8)) { down = 1; }
+                        }
+                    }
+                    var x = 0;
+                    if (down == 1) {
+                        x = load64(V + (k + 1 + voff) * 8);
+                    } else {
+                        x = load64(V + (k - 1 + voff) * 8) + 1;
+                    }
+                    var y = x - k;
+                    var snaking = 1;
+                    while (snaking == 1) {
+                        snaking = 0;
+                        if (x < n) {
+                            if (y < m) {
+                                if (_diff_line_eq(vec_get(a, alo + x), vec_get(b, blo + y)) == 1) {
+                                    x = x + 1;
+                                    y = y + 1;
+                                    snaking = 1;
+                                }
+                            }
+                        }
+                    }
+                    store64(V + (k + voff) * 8, x);
+                    if (x >= n) {
+                        if (y >= m) {
+                            found_d = d;
+                            searching = 0;
+                        }
+                    }
+                }
+                k = k + 2;
+            }
+            if (searching == 1) { d = d + 1; }
+        }
+    }
+    if (found_d < 0) { return 0; }
+
+    # Backtrack from (n, m) to the origin; ops come out in reverse.
+    var script = vec_new();
+    var bx = n;
+    var by = m;
+    var dd = found_d;
+    while (dd >= 1) {
+        var slice_b = vec_get(trace, dd - 1);
+        var kb = bx - by;
+        var down_b = 0;
+        if (kb == 0 - dd) {
+            down_b = 1;
+        } else {
+            if (kb != dd) {
+                if (_diff_sget(slice_b, dd, kb - 1) < _diff_sget(slice_b, dd, kb + 1)) { down_b = 1; }
+            }
+        }
+        var prev_k = kb - 1;
+        if (down_b == 1) { prev_k = kb + 1; }
+        var prev_x = _diff_sget(slice_b, dd, prev_k);
+        var prev_y = prev_x - prev_k;
+        var diag = 1;
+        while (diag == 1) {
+            diag = 0;
+            if (bx > prev_x) {
+                if (by > prev_y) {
+                    _diff_raw(script, DIFF_KEEP, vec_get(a, alo + bx - 1));
+                    bx = bx - 1;
+                    by = by - 1;
+                    diag = 1;
+                }
+            }
+        }
+        if (down_b == 1) {
+            _diff_raw(script, DIFF_INS, vec_get(b, blo + by - 1));
+        } else {
+            _diff_raw(script, DIFF_DEL, vec_get(a, alo + bx - 1));
+        }
+        bx = prev_x;
+        by = prev_y;
+        dd = dd - 1;
+    }
+    while (bx > 0) {
+        _diff_raw(script, DIFF_KEEP, vec_get(a, alo + bx - 1));
+        bx = bx - 1;
+    }
+    var si = vec_len(script) - 1;
+    while (si >= 0) {
+        vec_push(raw, vec_get(script, si));
+        si = si - 1;
+    }
+    return 1;
+}
+
+# The raw op sequence turning lines `a` into lines `b`: the common prefix and
+# suffix as keeps, and Myers (or its fallback) over the region between.
+fn _diff_ops(a, b) {
+    var n = vec_len(a);
+    var m = vec_len(b);
+    var pre = 0;
+    var go = 1;
+    while (go == 1) {
+        go = 0;
+        if (pre < n) {
+            if (pre < m) {
+                if (_diff_line_eq(vec_get(a, pre), vec_get(b, pre)) == 1) {
+                    pre = pre + 1;
+                    go = 1;
+                }
+            }
+        }
+    }
+    var suf = 0;
+    go = 1;
+    while (go == 1) {
+        go = 0;
+        if (suf < n - pre) {
+            if (suf < m - pre) {
+                if (_diff_line_eq(vec_get(a, n - 1 - suf), vec_get(b, m - 1 - suf)) == 1) {
+                    suf = suf + 1;
+                    go = 1;
+                }
+            }
+        }
+    }
+    var raw = vec_new();
+    var i = 0;
+    while (i < pre) {
+        _diff_raw(raw, DIFF_KEEP, vec_get(a, i));
+        i = i + 1;
+    }
+    var mn = n - pre - suf;
+    var mm = m - pre - suf;
+    # One empty side is a pure insertion or deletion: no search needed.
+    var direct = 0;
+    if (mn == 0) { direct = 1; }
+    if (mm == 0) { direct = 1; }
+    var done = 0;
+    if (direct == 0) {
+        if (_diff_myers(a, pre, mn, b, pre, mm, raw) == 1) { done = 1; }
+    }
+    if (done == 0) {
+        if (direct == 0) {
+            if (mn == mm) {
+                # Line for line: each differing pair is a deletion and an insertion.
+                var j = 0;
+                while (j < mn) {
+                    var la = vec_get(a, pre + j);
+                    var lb = vec_get(b, pre + j);
+                    if (_diff_line_eq(la, lb) == 1) {
+                        _diff_raw(raw, DIFF_KEEP, la);
+                    } else {
+                        _diff_raw(raw, DIFF_DEL, la);
+                        _diff_raw(raw, DIFF_INS, lb);
+                    }
+                    j = j + 1;
+                }
+                done = 1;
+            }
+        }
+    }
+    if (done == 0) {
+        # A pure insertion or deletion, or the fallback for unequal counts:
+        # the region's old lines out, its new lines in.
+        var p = 0;
+        while (p < mn) {
+            _diff_raw(raw, DIFF_DEL, vec_get(a, pre + p));
+            p = p + 1;
+        }
+        p = 0;
+        while (p < mm) {
+            _diff_raw(raw, DIFF_INS, vec_get(b, pre + p));
+            p = p + 1;
+        }
+    }
+    var s = 0;
+    while (s < suf) {
+        _diff_raw(raw, DIFF_KEEP, vec_get(a, n - suf + s));
+        s = s + 1;
+    }
+    return raw;
+}
+
+# A 32-byte annotated op: +0 kind, +8 line record, +16 old lines before it,
+# +24 new lines before it.
+fn _diff_ann(kind, line, oi, ni) {
+    var op = alloc(32);
+    store64(op, kind);
+    store64(op + 8, line);
+    store64(op + 16, oi);
+    store64(op + 24, ni);
+    return op;
+}
+
+# Number the raw ops and, within each run of changes, put the deletions
+# before the insertions. Returns a vec of annotated ops.
+fn _diff_annotate(raw) {
+    var out = vec_new();
+    var n = vec_len(raw);
+    var oi = 0;
+    var ni = 0;
+    var i = 0;
+    while (i < n) {
+        var r = vec_get(raw, i);
+        if (load64(r) == DIFF_KEEP) {
+            vec_push(out, _diff_ann(DIFF_KEEP, load64(r + 8), oi, ni));
+            oi = oi + 1;
+            ni = ni + 1;
+            i = i + 1;
+        } else {
+            var j = i;
+            var run = 1;
+            while (run == 1) {
+                run = 0;
+                if (j < n) {
+                    if (load64(vec_get(raw, j)) != DIFF_KEEP) {
+                        j = j + 1;
+                        run = 1;
+                    }
+                }
+            }
+            var p = i;
+            while (p < j) {
+                var rd = vec_get(raw, p);
+                if (load64(rd) == DIFF_DEL) {
+                    vec_push(out, _diff_ann(DIFF_DEL, load64(rd + 8), oi, ni));
+                    oi = oi + 1;
+                }
+                p = p + 1;
+            }
+            p = i;
+            while (p < j) {
+                var ri = vec_get(raw, p);
+                if (load64(ri) == DIFF_INS) {
+                    vec_push(out, _diff_ann(DIFF_INS, load64(ri + 8), oi, ni));
+                    ni = ni + 1;
+                }
+                p = p + 1;
+            }
+            i = j;
+        }
+    }
+    return out;
+}
+
+# Append `n` bytes at `p` to gap buffer `out`. Returns 0.
+fn _diff_put(out, p, n) {
+    if (n > 0) { buf_insert(out, p, n); }
+    return 0;
+}
+
+# Append the NUL-terminated string `str` to `out`. Returns 0.
+fn _diff_put_str(out, str) { return _diff_put(out, str, strlen(str)); }
+
+# Append the non-negative `v` to `out` in decimal. Returns 0.
+fn _diff_put_dec(out, v) {
+    var t[24];
+    var n = _buf_append_dec(&t, 0, v);
+    return _diff_put(out, &t, n);
+}
+
+# Append one side of a hunk header: `start` or `start,count`. `before` is the
+# number of that side's lines before the hunk; an empty side (count 0) starts
+# at the line before the change, as GNU diff and patch expect.
+fn _diff_put_range(out, before, count) {
+    var start = before + 1;
+    if (count == 0) { start = before; }
+    _diff_put_dec(out, start);
+    if (count != 1) {
+        _diff_put_str(out, ",");
+        _diff_put_dec(out, count);
+    }
+    return 0;
+}
+
+# Append the hunk made of annotated ops [hs, he): its header, then each line
+# prefixed ` `, `-` or `+`. Returns 0.
+fn _diff_put_hunk(out, ops, hs, he) {
+    var oc = 0;
+    var nc = 0;
+    var i = hs;
+    while (i < he) {
+        var kind = load64(vec_get(ops, i));
+        if (kind != DIFF_INS) { oc = oc + 1; }
+        if (kind != DIFF_DEL) { nc = nc + 1; }
+        i = i + 1;
+    }
+    var first = vec_get(ops, hs);
+    _diff_put_str(out, "@@ -");
+    _diff_put_range(out, load64(first + 16), oc);
+    _diff_put_str(out, " +");
+    _diff_put_range(out, load64(first + 24), nc);
+    _diff_put_str(out, " @@\n");
+    i = hs;
+    while (i < he) {
+        var op = vec_get(ops, i);
+        var kind_p = load64(op);
+        var line = load64(op + 8);
+        if (kind_p == DIFF_KEEP) { _diff_put_str(out, " "); }
+        if (kind_p == DIFF_DEL)  { _diff_put_str(out, "-"); }
+        if (kind_p == DIFF_INS)  { _diff_put_str(out, "+"); }
+        _diff_put(out, load64(line), load64(line + 8) & DIFF_LINE_LEN_MASK);
+        _diff_put_str(out, "\n");
+        if ((load64(line + 8) & DIFF_LINE_NO_EOL) != 0) {
+            _diff_put_str(out, "\\ No newline at end of file\n");
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Append to gap buffer `out` the unified diff turning `old` (`olen` bytes)
+# into `new` (`nlen` bytes), headed `--- path` / `+++ path`. Returns the
+# number of hunks; 0 means the two are identical, and nothing is appended.
+#
+# Hunks: each change gets DIFF_CONTEXT lines on either side, and two changes
+# separated by at most 2 * DIFF_CONTEXT unchanged lines share a hunk.
+fn diff_unified(out, path, old, olen, new, nlen) {
+    var a = _diff_split(old, olen);
+    var b = _diff_split(new, nlen);
+    var ops = _diff_annotate(_diff_ops(a, b));
+    var n = vec_len(ops);
+    var ctx = DIFF_CONTEXT;
+    var hunks = 0;
+    var last_end = 0;
+    var i = 0;
+    while (i < n) {
+        if (load64(vec_get(ops, i)) == DIFF_KEEP) {
+            i = i + 1;
+        } else {
+            var hs = i - ctx;
+            if (hs < last_end) { hs = last_end; }
+            var j = i;
+            var k = i + 1;
+            var go = 1;
+            while (go == 1) {
+                if (k >= n) {
+                    go = 0;
+                } else {
+                    if (load64(vec_get(ops, k)) != DIFF_KEEP) {
+                        j = k;
+                        k = k + 1;
+                    } else {
+                        if (k - j > 2 * ctx) { go = 0; } else { k = k + 1; }
+                    }
+                }
+            }
+            var he = j + ctx + 1;
+            if (he > n) { he = n; }
+            if (hunks == 0) {
+                _diff_put_str(out, "--- ");
+                _diff_put_str(out, path);
+                _diff_put_str(out, "\n+++ ");
+                _diff_put_str(out, path);
+                _diff_put_str(out, "\n");
+            }
+            _diff_put_hunk(out, ops, hs, he);
+            hunks = hunks + 1;
+            last_end = he;
+            i = he;
+        }
+    }
+    return hunks;
+}

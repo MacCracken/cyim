@@ -61,14 +61,14 @@ These rules apply to every cut in every version line below.
 
 agnos filed these after a ~60-edit session on its kernel tree, in a
 [proposal](proposals/2026-08-29-line-anchored-and-cyrius-aware-edits.md).
-(Its companion issue, on failure messages, closed at 1.12.0, and proposal
-§ 3, `--expect` on the replace verbs, shipped at 1.12.1.) Agents are a
-first-class consumer, and every item here only adds behaviour. Each cut
-updates CLAUDE.md § Consumers, `--help` and `tests/cli_smoke.sh`.
+(Its companion issue, on failure messages, closed at 1.12.0. Proposal § 3,
+`--expect` on the replace verbs, shipped at 1.12.1, and § 2, `--dry-run`, at
+1.12.2.) Agents are a first-class consumer, and every item here only adds
+behaviour. Each cut updates CLAUDE.md § Consumers, `--help` and
+`tests/cli_smoke.sh`.
 
 | Cut | Item | Notes |
 |---|---|---|
-| 1.12.x | **`--dry-run`** | Proposal § 2. Prints a unified diff to stdout, writes nothing, and exits non-zero if the edit would change nothing. The diff routine is the new code |
 | 1.12.x | **`--replace-lines A:B`** | Proposal § 1, and the filer's top ask. Replaces lines A–B, with a required content check (`--expect-first=`) so an edit that has already shifted the file cannot send it to the wrong lines. Then line-range pairs in `--batch`, resolved against the original buffer and applied from the bottom up. Decide where NEW comes from (a file, as proposed, or stdin) before writing code |
 
 Not scheduled from the same proposal: § 4, Cyrius-aware warnings
@@ -376,5 +376,5 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-10-31, at 1.12.1. Replace this line on each update; do not
+*Last updated: 2026-10-31, at 1.12.2. Replace this line on each update; do not
 add to it.*

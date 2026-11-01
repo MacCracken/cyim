@@ -4,6 +4,117 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.12.2] — 2026-10-31
+
+**`--dry-run` on every writing verb.** `--write`, `--batch`, `--replace`,
+`--replace-all`, `--replace-files` and `--replace-files-all` can now show
+what an edit would do as a unified diff, and write nothing. This is § 2 of
+agnos's
+[2026-08-29 proposal](docs/development/proposals/2026-08-29-line-anchored-and-cyrius-aware-edits.md):
+until now the only way to see a `--replace-all`'s effect was to run it.
+
+Audit: [`docs/audit/2026-10-31-1.12.2-audit.md`](docs/audit/2026-10-31-1.12.2-audit.md).
+
+### Added — `--dry-run`
+
+```sh
+cyim --replace-all --dry-run 'TODO_v1' 'TODO_v2' src/foo.cyr > change.diff
+patch -p0 < change.diff            # the same edit, after review
+```
+
+- **Exit 0:** the edit would change the file, and the diff is on stdout.
+- **Exit 1:** it would change nothing, and nothing is printed. This is
+  `--grep`'s convention for "nothing to show", so
+  `cyim --replace --dry-run … && cyim --replace …` applies only an edit that
+  does something. Exit 1 used to mean only "save failed" on these verbs, and a
+  dry run never saves.
+- **A dry run fails where the edit would:**
+  - OLD not found (4), not unique (5) and `--expect-N` (6) are checked first;
+  - `--expect` / `--expect-not` are checked on the result that would have been
+    saved (6), and the diff is still printed;
+  - `--wc` is refused (2), because stdout is the diff.
+- **`--write --dry-run` to a path that does not exist** diffs from empty and
+  creates nothing.
+
+### Added — `src/diff.cyr`
+
+A unified diff of two buffers, in the GNU `diff -u` shape that `patch -p0`
+applies:
+- `--- FILE` / `+++ FILE`;
+- hunks with three lines of context, merged across up to six unchanged lines;
+- an empty side starting at the line before the change, and counts of 1 left
+  out;
+- `\ No newline at end of file`;
+- deletions printed before insertions.
+
+**Where it comes from.** It is adapted from sit's `src/diff.cyr` (sit 1.13.0,
+GPL-3.0-only): the line split with its final-newline flag, and Myers' greedy
+search with a per-depth trace. It differs in three ways:
+- **Trimming.** Common leading and trailing lines are trimmed first.
+- **No refusal past the cap.** At edit distance 1024, sit refuses. Here it
+  falls back to a diff that still applies: line for line when both sides of
+  the changed region have the same number of lines, which is a replace-all of
+  a one-line OLD; otherwise one replacement region.
+- **It writes into a buffer,** so it can be tested.
+
+**Measured** on a 100,000-line, 2.4 MB file:
+
+| Edit | Time | Notes |
+|---|---:|---|
+| One change, `--dry-run` | 0.20 s | |
+| 2,000 scattered changes, `--dry-run` | 0.22 s | 2,000 hunks, past the cap |
+| The same replace-all, written | 0.14 s | |
+
+Peak RSS was 45 MB. Each time is the minimum of three runs at load ≈ 5.5 on
+16 cores.
+
+### Changed
+
+- **`--help`, the usage lines, `CLAUDE.md` § Consumers, the usage guide and
+  README** document `--dry-run`. Exit code 1's row now includes it.
+- **The CI fuzz step's comment** lists all six harnesses.
+
+### Tests
+
+- **`tests/diff.tcyr`** (new, 23 assertions) pins the exact output:
+  - context, edits at the top and bottom, and both empty sides;
+  - the final-newline marker;
+  - deletions before insertions;
+  - the merge boundary at 6 and 7 unchanged lines;
+  - all three shapes past the cap.
+- **`fuzz/diff.fcyr`** (new) is the round-trip property: applying the diff to
+  the old text gives the new text, byte for byte.
+  - **The applier is strict.** Every context and deletion line must match, and
+    each hunk must use exactly its header's counts.
+  - **400 pairs.** Lines repeat from a small alphabet, final newlines are
+    random, and 40 large rounds of distinct lines go past the cap down both
+    fallback paths.
+  - **Mutation-tested.** Four seeded bugs fail the fuzz. Three that still
+    produce applicable diffs fail `tests/diff.tcyr`.
+  - **The mutation testing caught the harness itself.** Its first version drew
+    edits from the generator's low bits, which in a power-of-two LCG alternate,
+    so the large rounds never reached the fallback.
+- **`tests/cli_smoke.sh`:** 172 → **201** cases.
+  - `--dry-run` on all six verbs.
+  - Every failure exit code under it.
+  - The `--expect` miss that still prints the diff, the `--wc` and duplicate
+    refusals, and a dry run to a new file creating nothing.
+  - A round-trip through GNU `patch` that must equal the real edit, on a file
+    whose last line has no newline.
+- **Totals:** `cyrius test` is 23 → **24** suites and 1363 → **1386**
+  assertions, the same under qemu-aarch64. `cyrius fuzz` runs 5 → **6**
+  harnesses.
+
+### Binary
+
+`CYRIUS_DCE=1`:
+
+| Target | 1.12.1 | 1.12.2 |
+|---|---:|---:|
+| x86_64 Linux | 1,065,688 B | **1,078,472 B** (+12,784) |
+| agnos | 1,041,600 B | **1,054,392 B** (+12,792) |
+| aarch64 Linux | 1,483,376 B | **1,483,872 B** (+496) |
+
 ## [1.12.1] — 2026-10-31
 
 **`--expect` / `--expect-not` on the replace verbs.** `--write` and

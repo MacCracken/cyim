@@ -2,30 +2,30 @@
 
 > **Volatile.** This file is the **live state** of the project — current version, sizes, test counts, in-flight slot, consumer build status. Refreshed every release. Don't put durable rules here (those live in [`CLAUDE.md`](../../CLAUDE.md)); don't put release history here (that lives in [`CHANGELOG.md`](../../CHANGELOG.md)); don't put sequencing here (that lives in [`roadmap.md`](roadmap.md)).
 
-*Last bumped: 2026-10-31 (v1.12.1 — **`--expect` / `--expect-not` on the replace verbs.** The post-save assertion `--write` and `--batch` had now works on `--replace[-all]` and `--replace-files[-all]`, composing with the pre-write `--expect-N`. One shared parser and checker serve all six verbs.)*
+*Last bumped: 2026-10-31 (v1.12.2 — **`--dry-run` on every writing verb.** A unified diff of the edit on stdout, nothing written; exit 0 = would change, 1 = would not, every other check unchanged. The diff is new: `src/diff.cyr`, adapted from sit, minimal to edit distance 1024 and still correct past it; round-trip fuzzed and checked against GNU `patch`.)*
 
 ---
 
 ## Version
 
-- **VERSION**: `1.12.1`
+- **VERSION**: `1.12.2`
 - **Cyrius toolchain pin**: `6.7.18`
-- **Last release**: `1.12.1` — **Patch; `--expect` on the replace verbs.** 2026-10-31. Full entry in CHANGELOG; audit at [`docs/audit/2026-10-31-1.12.1-audit.md`](../audit/2026-10-31-1.12.1-audit.md).
+- **Last release**: `1.12.2` — **Patch; `--dry-run`.** 2026-10-31. Full entry in CHANGELOG; audit at [`docs/audit/2026-10-31-1.12.2-audit.md`](../audit/2026-10-31-1.12.2-audit.md).
 
 ## Binary
 
-- **`build/cyim`** (CYRIUS_DCE=1): **1,065,688 B**
-  - Last delta: **+3,912 B** vs 1.12.0 (1,061,776 B); aarch64 moved −184 B, so most of the x86_64 delta is image alignment.
-  - **`build/cyim_agnos`**: 1,041,600 B — static x86-64 ELF64 (1.12.0: 1,037,688 B). Runs full-screen on the real agnos kernel under QEMU (`scripts/agnos-fullscreen-test.py` PASS at 1.11.2; not re-run for the CLI-only 1.12.x cuts). The `--agnos` build is a CI gate since 1.11.2.
-  - **`build/cyim_aarch64`**: 1,483,376 B — ARM aarch64 ELF64 (1.12.0: 1,483,560 B). The whole suite runs under qemu-aarch64 (`cyrius test --aarch64`, 1363 / 0), a CI gate since 1.11.2.
+- **`build/cyim`** (CYRIUS_DCE=1): **1,078,472 B**
+  - Last delta: **+12,784 B** vs 1.12.1 (1,065,688 B): `src/diff.cyr` and the `--dry-run` wiring.
+  - **`build/cyim_agnos`**: 1,054,392 B — static x86-64 ELF64 (1.12.1: 1,041,600 B). Runs full-screen on the real agnos kernel under QEMU (`scripts/agnos-fullscreen-test.py` PASS at 1.11.2; not re-run for the CLI-only 1.12.x cuts). The `--agnos` build is a CI gate since 1.11.2.
+  - **`build/cyim_aarch64`**: 1,483,872 B — ARM aarch64 ELF64 (1.12.1: 1,483,376 B). The whole suite runs under qemu-aarch64 (`cyrius test --aarch64`, 1386 / 0), a CI gate since 1.11.2.
   - Per-release size history is in CHANGELOG's per-version Binary sections.
 
 ## Tests
 
-- **`cyrius test`**: **23 suites, 1363 assertions** PASS, 0 failures, **0 warnings** *(measured at 1.11.2. +25: `tests/feed.tcyr` 52 → 66 for arrow dispatch, `tests/render.tcyr` 84 → 95 for the picker height, the status-row width and a `/dev/null`-based winsize fallback. The run also counts `src/test.cyr`, the `[build] test` entry, as a 24th unit; it asserts nothing)*
-- **`cyrius test --aarch64`** (qemu-aarch64): the same 23 suites / 1363 / 0. A CI step (`cross-targets`) since 1.11.2.
-- **`cyrius fuzz`**: **5 harnesses**, all PASS — `fuzz/{buffer,driver,tokenizer,feed}.fcyr` + `tests/cyim.fcyr`. New at 1.11.0: `fuzz/feed.fcyr`, the key-sequence decoder's **split-independence** property (300 random 64-byte streams; random 1–9-byte chunks must decode exactly as the whole stream does). The 1.10.1 decoder fails it.
-- **CLI smoke** (`tests/cli_smoke.sh`): **172 PASS** (+20 at 1.12.1: `--expect` / `--expect-not` across the four replace verbs; +24 at 1.12.0: failure-message content).
+- **`cyrius test`**: **24 suites, 1386 assertions** PASS, 0 failures, **0 warnings** *(measured at 1.12.2. +23: the new `tests/diff.tcyr`, exact unified-diff output for every shape `--dry-run` prints. The run also counts `src/test.cyr`, the `[build] test` entry, as a 25th unit; it asserts nothing)*
+- **`cyrius test --aarch64`** (qemu-aarch64): the same 24 suites / 1386 / 0. A CI step (`cross-targets`) since 1.11.2.
+- **`cyrius fuzz`**: **6 harnesses**, all PASS — `fuzz/{buffer,driver,tokenizer,feed,diff}.fcyr` + `tests/cyim.fcyr`. New at 1.12.2: `fuzz/diff.fcyr`, the diff's **round-trip** property (400 pairs, 40 of them past the Myers cap; a strict applier must turn every diff back into its new text). At 1.11.0: `fuzz/feed.fcyr`, the key decoder's split-independence.
+- **CLI smoke** (`tests/cli_smoke.sh`): **201 PASS** (+29 at 1.12.2: `--dry-run` on all six writing verbs, including a GNU `patch` round-trip; +20 at 1.12.1; +24 at 1.12.0).
 - **Integration smoke** (`tests/integration_smoke.py`): all PASS, **58 PASS lines** (+9 at 1.11.0: file-name escape, C1 in content, Delete in INSERT, ESC timeout ×2, language server dying mid-session, stdout to a dead pipe, two `--headless` split-read inputs). ⚠ Its new cases reset SIGPIPE to SIG_DFL in the child — Python starts with SIGPIPE ignored and an exec'd child inherits that, which hides exactly the SIGPIPE deaths those cases look for. The older `drive()` cases still run with it ignored. DCE parity build re-runs it green.
 - **LSP smoke** (`tests/smcyr/lsp_fold.smcyr`): **13 passed, 0 failed**. A CI gate since 1.9.1.
 - **agnos full-screen** (`scripts/agnos-fullscreen-test.py`, out-of-band, needs agnos / gnoboot / agnoshi builds): PASS at 1.11.2 — `ZED` typed through kbscan#42 and saved; the framebuffer screendump shows the full-screen render.
@@ -33,7 +33,7 @@
 - **Performance benches** (`tests/perf.bcyr`): run clean; **not re-baselined at 1.11.2 either** — the host was shared (load average ≈ 20 on 16 cores; every workload about 2× its 1.9.3 time). Three alternating rounds against 1.10.1 under the same load: highlighting −10 % (vyakarana 2.10.0), worst-case search +5.5 % (unchanged cyim code — the toolchain), the rest within noise. See CHANGELOG 1.11.2 § Benchmarks. A quiet-host baseline is a roadmap maintenance item; the last absolute baseline is [`BENCHMARKS.md`](../../BENCHMARKS.md)'s 1.8.6 table.
 - **Documentation**: `cyrius doc --check` reports **0 undocumented public fns** across `src/` + `src/plugins/`.
 - **Cleanliness**: `cyrius lint` 0 warnings and **0 untracked deferrals** across `src/`, `src/plugins/`, `tests/` and `fuzz/`. `cyrfmt --check` clean. Dead-code floor 27, every symbol with a caller; 0 unused globals.
-- **Security**: most recent pass is the [1.12.1 release audit](../audit/2026-10-31-1.12.1-audit.md) — nothing found; no input surface the CLI did not already parse for `--write` / `--batch`. Before it, [1.12.0](../audit/2026-10-31-1.12.0-audit.md) and the [1.11.x closeout](../audit/2026-10-31-1.11x-closeout.md). Residuals carried from the [1.11.0 release audit](../audit/2026-10-12-1.11.0-audit.md): the LSP child inherits blocked SIGWINCH / SIGPIPE (upstream fix), and the [1.8.x hardening](../audit/2026-08-23-1.8x-hardening.md)'s R-1a (xattrs / ACLs across the atomic save). 0day-corpus survey in [`docs/security/2026-04-25-0day-corpus.md`](../security/2026-04-25-0day-corpus.md); trust-model ADR at [`docs/adr/0001-trust-model.md`](../adr/0001-trust-model.md).
+- **Security**: most recent pass is the [1.12.2 release audit](../audit/2026-10-31-1.12.2-audit.md) — nothing found; the new diff reads only the two buffers the edit already held and writes only stdout, every index bounded by its own counts. Before it, [1.12.1](../audit/2026-10-31-1.12.1-audit.md), [1.12.0](../audit/2026-10-31-1.12.0-audit.md) and the [1.11.x closeout](../audit/2026-10-31-1.11x-closeout.md). Residuals carried from the [1.11.0 release audit](../audit/2026-10-12-1.11.0-audit.md): the LSP child inherits blocked SIGWINCH / SIGPIPE (upstream fix), and the [1.8.x hardening](../audit/2026-08-23-1.8x-hardening.md)'s R-1a (xattrs / ACLs across the atomic save). 0day-corpus survey in [`docs/security/2026-04-25-0day-corpus.md`](../security/2026-04-25-0day-corpus.md); trust-model ADR at [`docs/adr/0001-trust-model.md`](../adr/0001-trust-model.md).
 
 ## CI / Release
 
@@ -45,7 +45,7 @@
 
 ## Cycle in flight
 
-**Current cycle: 1.12.x — open.** 1.12.0: the agent CLI's failure messages. 1.12.1: `--expect` on the replace verbs. Remaining in the line, per [`roadmap.md`](roadmap.md): `--dry-run` and `--replace-lines A:B`.
+**Current cycle: 1.12.x — open.** 1.12.0: failure messages. 1.12.1: `--expect` on the replace verbs. 1.12.2: `--dry-run`. Remaining in the line, per [`roadmap.md`](roadmap.md): `--replace-lines A:B`, then the 1.12.x closeout.
 
 **Open bugs: two**, both planned for 1.13.0 and both a decision before code. BUG-007: SS3 keys (`ESC O P`..: F1–F4 on xterm-style terminals) arrive as Esc, `O` (open line above) and a letter. BUG-008: rxvt's `$`-final keys (`ESC [ 3 $`) leave the CSI open and swallow the next key.
 

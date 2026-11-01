@@ -241,6 +241,35 @@ cyim --replace --expect-1 --expect-not='old_name(' 'old_name(' 'new_name(' src/a
 After an `--expect-N=0` no-op, which writes nothing, the assertion is
 checked on the unchanged file.
 
+**`--dry-run`** (since 1.12.2) — on `--write`, `--batch`, `--replace`,
+`--replace-all`, `--replace-files` and `--replace-files-all`. It prints a
+unified diff of what the edit would do to stdout and writes nothing.
+
+- **Exit 0:** the edit would change the file, and the diff is printed.
+- **Exit 1:** it would change nothing, and nothing is printed. This is
+  `--grep`'s convention for "nothing to show", so
+  `cyim --replace --dry-run … && cyim --replace …` applies only an edit that
+  does something.
+- **Everything else runs as usual,** so a dry run fails exactly where the edit
+  would: OLD not found (4), not unique (5) and `--expect-N` (6) are checked
+  first. `--expect` / `--expect-not` are checked on the result that would have
+  been saved (6), and the diff is still printed. `--wc` is refused (2): stdout
+  is the diff.
+
+```sh
+cyim --replace-all --dry-run 'TODO_v1' 'TODO_v2' src/foo.cyr > change.diff
+patch -p0 < change.diff            # the same edit, applied after review
+printf 'new\n' | cyim --write --dry-run notes.txt   # also works for a file that does not exist yet
+```
+
+**The output format:**
+- It is GNU `diff -u`: `--- FILE` / `+++ FILE`, then hunks with three lines of
+  context, and `\ No newline at end of file` where it applies. `patch -p0`
+  applies it.
+- The file's own bytes are printed, as `--grep` prints them.
+- The diff is minimal up to an edit distance of 1024 lines. Past that it stays
+  correct, but is computed line for line, or as one replacement region.
+
 **`--expect-N=<n>` / `--expect-1`** (`--replace`/`--replace-all` only) —
 asserts `OLD` occurs *exactly* `<n>` times in the file *before*
 substitution. Mismatch returns **exit 6** without writing.
@@ -267,7 +296,7 @@ Exit codes (verb-disambiguated where noted):
 | Code | Meaning |
 |------|---------|
 | 0    | Success (or, for `--grep`, ≥1 match) |
-| 1    | Save failed (`--write`/`--replace[-all]`) \| no match (`--grep`) |
+| 1    | Save failed (`--write`/`--replace[-all]`) \| no match (`--grep`) \| `--dry-run`: the edit would change nothing |
 | 2    | Bad CLI args (missing positional, empty pattern, malformed `--expect-N`) |
 | 3    | File not found |
 | 4    | OLD not found in FILE (`--replace[-all]`; suppressed when `--expect-N=0`) |

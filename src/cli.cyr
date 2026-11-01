@@ -1010,7 +1010,7 @@ fn _cli_slurp_file(file_path, len_out) {
 #   5 — OLD content occurs more than once and not --replace-files-all
 #   6 — --expect-N / --expect-1 mismatch
 fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits,
-  expect_pat, expect_pol) {
+  expect_pat, expect_pol, dry) {
     if (old_file == 0)  { syscall(1, 2, "cyim --replace-files: missing OLD_FILE\n", 39); return 2; }
     if (new_file == 0)  { syscall(1, 2, "cyim --replace-files: missing NEW_FILE\n", 39); return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace-files: missing FILE\n",     35); return 2; }
@@ -1036,7 +1036,7 @@ fn run_replace_files(old_file, new_file, file_path, mode, wc_mode, expect_n, reg
     }
 
     return run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits,
-      expect_pat, expect_pol);
+      expect_pat, expect_pol, dry);
 }
 
 # `cyim --grep [--context=N] PATTERN FILE` — emit `FILE:N:LINE` for
@@ -1329,6 +1329,46 @@ fn _cli_check_expect(b, verb, pat, pol) {
     return 6;
 }
 
+# `--dry-run` (1.12.2): print the unified diff from `old_b` to `new_b` on
+# stdout instead of saving, then run the post-save assertion on what would
+# have been saved. Every check before the save has already run, so a dry run
+# fails exactly where the real edit would. Returns 6 if the assertion fails,
+# 1 if the edit would change nothing (and nothing is printed: the `--grep`
+# convention), else 0. The diff is the file's own bytes, unsanitized, as
+# `--grep` prints them: a diff that was altered for display would not apply.
+fn _cli_dry_run(old_b, new_b, file_path, verb, expect_pat, expect_pol) {
+    var ol[8];
+    var nl[8];
+    var o = _matcher_buf_to_cstr(old_b, &ol);
+    var n = _matcher_buf_to_cstr(new_b, &nl);
+    var out = buf_new();
+    var hunks = 0;
+    if (o != 0) {
+        if (n != 0) { hunks = diff_unified(out, file_path, o, load64(&ol), n, load64(&nl)); }
+    }
+    if (hunks > 0) {
+        var chunk[4096];
+        _cli_write_buf_range(out, 0, buf_len(out), &chunk, 4096);
+    }
+    if (_cli_check_expect(new_b, verb, expect_pat, expect_pol) != 0) { return 6; }
+    if (hunks == 0) { return 1; }
+    return 0;
+}
+
+# Refuse `--dry-run` together with `--wc`: the diff is stdout's whole content,
+# and a `wc` line after it would not apply. Prints the usage error and
+# returns 2 when both are set, else 0.
+fn _cli_dry_wc(verb, dry, wc_mode) {
+    if (dry == 0) { return 0; }
+    if (wc_mode == 0) { return 0; }
+    var msg[512];                       # must equal CLI_MSG_CAP
+    var p = _cli_msg_str(&msg, 0, "cyim ");
+    p = _cli_msg_str(&msg, p, verb);
+    p = _cli_msg_str(&msg, p, ": --dry-run prints a diff and does not combine with --wc\n");
+    syscall(1, 2, &msg, p);
+    return 2;
+}
+
 # `cyim --write FILE` — read stdin, replace FILE's contents with it.
 # `wc_mode`:    0 silent, 1 full wc, 2 wc -l (printed to stdout on success).
 # `expect_pat`: 0 = no assertion; otherwise C-string pattern to check
@@ -1336,13 +1376,24 @@ fn _cli_check_expect(b, verb, pat, pol) {
 # `expect_pol`: 0 none, 1 must contain (--expect), 2 must not contain
 #               (--expect-not). On mismatch, returns 6 (file is already
 #               saved — the assertion is a contract on the result).
-fn run_write(file_path, wc_mode, expect_pat, expect_pol) {
+fn run_write(file_path, wc_mode, expect_pat, expect_pol, dry) {
     if (file_path == 0) {
         syscall(1, 2, "cyim --write: missing FILE argument\n", 36);
         return 2;
     }
     var b = buf_new();
     _cli_drain_stdin(b);
+    if (dry == 1) {
+        # The file need not exist yet: then the diff is from empty.
+        var old_b = buf_new();
+        if (file_exists(file_path) == 1) {
+            if (buf_load_file(old_b, file_path) < 0) {
+                syscall(1, 2, "cyim --write: cannot read FILE\n", 31);
+                return 3;
+            }
+        }
+        return _cli_dry_run(old_b, b, file_path, "--write", expect_pat, expect_pol);
+    }
     var n = buf_save_file(b, file_path);
     if (n < 0) {
         syscall(1, 2, "cyim --write: save failed\n", 26);
@@ -1364,8 +1415,10 @@ fn run_write(file_path, wc_mode, expect_pat, expect_pol) {
 # `expect_pat` / `expect_pol` (1.12.1): the post-save assertion, as on
 #             --write and --batch — checked on the saved result (or, after
 #             an --expect-N=0 no-op, on the unchanged file); 6 on a miss.
+# `dry`:      1 = --dry-run (1.12.2): every check runs, then the diff is
+#             printed instead of saving (see _cli_dry_run).
 fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavor, fuzzy_edits,
-  expect_pat, expect_pol) {
+  expect_pat, expect_pol, dry) {
     if (old_str == 0)   { syscall(1, 2, "cyim --replace: missing OLD\n", 28);  return 2; }
     if (new_str == 0)   { syscall(1, 2, "cyim --replace: missing NEW\n", 28);  return 2; }
     if (file_path == 0) { syscall(1, 2, "cyim --replace: missing FILE\n", 29); return 2; }
@@ -1420,6 +1473,7 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavo
         # OLD" — the caller is using us as a defensive check, not an
         # edit. Honor --wc on the unchanged file and exit clean.
         if (expect_n == 0) {
+            if (dry == 1) { return _cli_dry_run(b, b, file_path, "--replace", expect_pat, expect_pol); }
             if (_cli_check_expect(b, "--replace", expect_pat, expect_pol) != 0) { return 6; }
             _cli_print_wc(b, file_path, wc_mode);
             return 0;
@@ -1448,6 +1502,7 @@ fn run_replace(old_str, new_str, file_path, mode, wc_mode, expect_n, regex_flavo
     }
 
     var out = _cli_substitute_m(b, m, new_str, mode);
+    if (dry == 1) { return _cli_dry_run(b, out, file_path, "--replace", expect_pat, expect_pol); }
     var rc = buf_save_file(out, file_path);
     if (rc < 0) {
         syscall(1, 2, "cyim --replace: save failed\n", 28);
@@ -1507,7 +1562,7 @@ fn _cli_drain_stdin_raw(len_out) {
 #               assertion on the final buffer; mismatch returns 6 (file
 #               is already saved at that point — assertion is a contract
 #               on the result).
-fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
+fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol, dry) {
     if (file_path == 0) {
         syscall(1, 2, "cyim --batch: missing FILE argument\n", 36);
         return 2;
@@ -1550,6 +1605,9 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
         syscall(1, 2, "cyim --batch: file not found\n", 29);
         return 3;
     }
+    # Each pair builds a new buffer, so the loaded one stays the original:
+    # what --dry-run diffs against.
+    var orig = b;
 
     # Walk the stream pair-by-pair. Each token is already NUL-terminated
     # in-place by the separators, so strlen() works directly on token
@@ -1607,6 +1665,7 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol) {
         t = t + 1;
     }
 
+    if (dry == 1) { return _cli_dry_run(orig, b, file_path, "--batch", expect_pat, expect_pol); }
     var rc = buf_save_file(b, file_path);
     if (rc < 0) {
         syscall(1, 2, "cyim --batch: save failed\n", 26);
@@ -1821,6 +1880,7 @@ fn _dispatch_replace(ac) {
     store64(&r_exp, 0);
     store64(&r_exp + 8, 0);
     store64(&r_exp + 16, 0);
+    var r_dry = 0;
     var r_idx = 2;
     while (r_idx < ac) {
         var arg = argv(r_idx);
@@ -1870,6 +1930,11 @@ fn _dispatch_replace(ac) {
                 consumed = 1;
             }
         }
+        if (streq(arg, "--dry-run") == 1) {
+            if (r_dry == 1) { syscall(1, 2, "cyim: duplicate flag: --dry-run\n", 32); return 2; }
+            r_dry = 1;
+            consumed = 1;
+        }
         if (consumed == 0) {
             var pe = _cli_parse_expect(arg, "--replace", &r_exp);
             if (pe < 0) { return 2; }
@@ -1902,7 +1967,7 @@ fn _dispatch_replace(ac) {
         r_idx = r_idx + 1;
     }
     if (r_npos < 3) {
-        syscall(1, 2, "usage: cyim --replace [--wc[=l]] [--expect-N=<n>|--expect-1] ", 61);
+        syscall(1, 2, "usage: cyim --replace [--wc[=l]|--dry-run] [--expect-N=<n>|--expect-1] ", 71);
         syscall(1, 2, "[--expect=<pat>|--expect-not=<pat>] <old> <new> <file>\n", 55);
         return 2;
     }
@@ -1912,8 +1977,9 @@ fn _dispatch_replace(ac) {
             return 2;
         }
     }
+    if (_cli_dry_wc("--replace", r_dry, r_wc) != 0) { return 2; }
     return run_replace(r_p0, r_p1, r_p2, REPLACE_FIRST_UNIQUE, r_wc, r_expect_n, r_regex_flavor, r_fuzzy_edits,
-      load64(&r_exp), load64(&r_exp + 8));
+      load64(&r_exp), load64(&r_exp + 8), r_dry);
 }
 
 fn _dispatch_replace_all(ac) {
@@ -1934,6 +2000,7 @@ fn _dispatch_replace_all(ac) {
     store64(&ra_exp, 0);
     store64(&ra_exp + 8, 0);
     store64(&ra_exp + 16, 0);
+    var ra_dry = 0;
     var ra_idx = 2;
     while (ra_idx < ac) {
         var arg = argv(ra_idx);
@@ -1983,6 +2050,11 @@ fn _dispatch_replace_all(ac) {
                 consumed = 1;
             }
         }
+        if (streq(arg, "--dry-run") == 1) {
+            if (ra_dry == 1) { syscall(1, 2, "cyim: duplicate flag: --dry-run\n", 32); return 2; }
+            ra_dry = 1;
+            consumed = 1;
+        }
         if (consumed == 0) {
             var pe = _cli_parse_expect(arg, "--replace-all", &ra_exp);
             if (pe < 0) { return 2; }
@@ -2015,7 +2087,7 @@ fn _dispatch_replace_all(ac) {
         ra_idx = ra_idx + 1;
     }
     if (ra_npos < 3) {
-        syscall(1, 2, "usage: cyim --replace-all [--wc[=l]] [--expect-N=<n>|--expect-1] ", 65);
+        syscall(1, 2, "usage: cyim --replace-all [--wc[=l]|--dry-run] [--expect-N=<n>|--expect-1] ", 75);
         syscall(1, 2, "[--expect=<pat>|--expect-not=<pat>] <old> <new> <file>\n", 55);
         return 2;
     }
@@ -2025,8 +2097,9 @@ fn _dispatch_replace_all(ac) {
             return 2;
         }
     }
+    if (_cli_dry_wc("--replace-all", ra_dry, ra_wc) != 0) { return 2; }
     return run_replace(ra_p0, ra_p1, ra_p2, REPLACE_ALL, ra_wc, ra_expect_n, ra_regex_flavor, ra_fuzzy_edits,
-      load64(&ra_exp), load64(&ra_exp + 8));
+      load64(&ra_exp), load64(&ra_exp + 8), ra_dry);
 }
 
 fn _dispatch_replace_files(ac) {
@@ -2051,6 +2124,7 @@ fn _dispatch_replace_files(ac) {
     store64(&rf_exp, 0);
     store64(&rf_exp + 8, 0);
     store64(&rf_exp + 16, 0);
+    var rf_dry = 0;
     var rf_idx = 2;
     while (rf_idx < ac) {
         var arg = argv(rf_idx);
@@ -2100,6 +2174,11 @@ fn _dispatch_replace_files(ac) {
                 consumed = 1;
             }
         }
+        if (streq(arg, "--dry-run") == 1) {
+            if (rf_dry == 1) { syscall(1, 2, "cyim: duplicate flag: --dry-run\n", 32); return 2; }
+            rf_dry = 1;
+            consumed = 1;
+        }
         if (consumed == 0) {
             var pe = _cli_parse_expect(arg, "--replace-files", &rf_exp);
             if (pe < 0) { return 2; }
@@ -2132,7 +2211,7 @@ fn _dispatch_replace_files(ac) {
         rf_idx = rf_idx + 1;
     }
     if (rf_npos < 3) {
-        syscall(1, 2, "usage: cyim --replace-files [--wc[=l]] [--expect-N=<n>|--expect-1] ", 67);
+        syscall(1, 2, "usage: cyim --replace-files [--wc[=l]|--dry-run] [--expect-N=<n>|--expect-1] ", 77);
         syscall(1, 2, "[--expect=<pat>|--expect-not=<pat>] <old-file> <new-file> <file>\n", 65);
         return 2;
     }
@@ -2142,8 +2221,9 @@ fn _dispatch_replace_files(ac) {
             return 2;
         }
     }
+    if (_cli_dry_wc("--replace-files", rf_dry, rf_wc) != 0) { return 2; }
     return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor, rf_fuzzy_edits,
-      load64(&rf_exp), load64(&rf_exp + 8));
+      load64(&rf_exp), load64(&rf_exp + 8), rf_dry);
 }
 
 fn _dispatch_replace_files_all(ac) {
@@ -2164,6 +2244,7 @@ fn _dispatch_replace_files_all(ac) {
     store64(&rfa_exp, 0);
     store64(&rfa_exp + 8, 0);
     store64(&rfa_exp + 16, 0);
+    var rfa_dry = 0;
     var rfa_idx = 2;
     while (rfa_idx < ac) {
         var arg = argv(rfa_idx);
@@ -2213,6 +2294,11 @@ fn _dispatch_replace_files_all(ac) {
                 consumed = 1;
             }
         }
+        if (streq(arg, "--dry-run") == 1) {
+            if (rfa_dry == 1) { syscall(1, 2, "cyim: duplicate flag: --dry-run\n", 32); return 2; }
+            rfa_dry = 1;
+            consumed = 1;
+        }
         if (consumed == 0) {
             var pe = _cli_parse_expect(arg, "--replace-files-all", &rfa_exp);
             if (pe < 0) { return 2; }
@@ -2245,7 +2331,7 @@ fn _dispatch_replace_files_all(ac) {
         rfa_idx = rfa_idx + 1;
     }
     if (rfa_npos < 3) {
-        syscall(1, 2, "usage: cyim --replace-files-all [--wc[=l]] ", 43);
+        syscall(1, 2, "usage: cyim --replace-files-all [--wc[=l]|--dry-run] ", 53);
         syscall(1, 2, "[--expect-N=<n>|--expect-1] [--expect=<pat>|--expect-not=<pat>] ", 64);
         syscall(1, 2, "<old-file> <new-file> <file>\n", 29);
         return 2;
@@ -2256,7 +2342,8 @@ fn _dispatch_replace_files_all(ac) {
             return 2;
         }
     }
+    if (_cli_dry_wc("--replace-files-all", rfa_dry, rfa_wc) != 0) { return 2; }
     return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor, rfa_fuzzy_edits,
-      load64(&rfa_exp), load64(&rfa_exp + 8));
+      load64(&rfa_exp), load64(&rfa_exp + 8), rfa_dry);
 }
 

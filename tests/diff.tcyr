@@ -1,0 +1,160 @@
+# tests/diff.tcyr — src/diff.cyr, the unified diff behind `--dry-run` (1.12.2)
+#
+# Exact output for the shapes a reviewer and `patch` both depend on: context,
+# hunk merging at the 2 * DIFF_CONTEXT boundary, empty sides, the final-newline
+# marker, deletions before insertions, and the fallback past DIFF_DCAP. That
+# every diff applies back to its input is fuzz/diff.fcyr's property.
+
+include "src/buffer.cyr"
+include "src/diff.cyr"
+
+# 1 if gap buffer `b` holds exactly the NUL-terminated `expected`, else 0.
+fn buf_is(b, expected) {
+    var n = strlen(expected);
+    if (buf_len(b) != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (buf_get(b, i) != load8(expected + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# 1 if gap buffer `b` contains the NUL-terminated `needle`, else 0.
+fn buf_has(b, needle) {
+    var n = strlen(needle);
+    var len = buf_len(b);
+    var i = 0;
+    while (i + n <= len) {
+        var j = 0;
+        var same = 1;
+        while (j < n) {
+            if (buf_get(b, i + j) != load8(needle + j)) {
+                same = 0;
+                j = n;
+            } else {
+                j = j + 1;
+            }
+        }
+        if (same == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The diff of two NUL-terminated strings into a fresh buffer at `out_slot`.
+# Returns the hunk count.
+fn dif(old, new, out_slot) {
+    var out = buf_new();
+    store64(out_slot, out);
+    return diff_unified(out, "f", old, strlen(old), new, strlen(new));
+}
+
+# `count` lines of `text` (NUL-terminated, newline included), as one string.
+fn repeat_lines(text, count) {
+    var tl = strlen(text);
+    var s = alloc(tl * count + 1);
+    var i = 0;
+    while (i < count) {
+        var j = 0;
+        while (j < tl) {
+            store8(s + i * tl + j, load8(text + j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    store8(s + tl * count, 0);
+    return s;
+}
+
+# Lines "1\n" .. "<count>\n", with line `at` replaced by "X\n" (0: none) and
+# line `at2` likewise.
+fn numbered(count, at, at2) {
+    var s = alloc(count * 8 + 1);
+    var p = 0;
+    var i = 1;
+    while (i <= count) {
+        var mark = 0;
+        if (i == at) { mark = 1; }
+        if (i == at2) { mark = 1; }
+        if (mark == 1) {
+            store8(s + p, 88);
+            p = p + 1;
+        } else {
+            p = _buf_append_dec(s, p, i);
+        }
+        store8(s + p, 10);
+        p = p + 1;
+        i = i + 1;
+    }
+    store8(s + p, 0);
+    return s;
+}
+
+# Run every group; the exit code is the number of failed assertions.
+fn main() {
+    alloc_init();
+    var o[8];
+
+    test_group("Identical input: no hunks, nothing written");
+    assert_eq(dif("a\nb\n", "a\nb\n", &o), 0, "0 hunks");
+    assert_eq(buf_len(load64(&o)), 0, "no headers either");
+    assert_eq(dif("", "", &o), 0, "two empty files: 0 hunks");
+
+    test_group("One changed line, with 3 lines of context each side");
+    assert_eq(dif(numbered(9, 0, 0), numbered(9, 5, 0), &o), 1, "1 hunk");
+    assert_eq(buf_is(load64(&o),
+        "--- f\n+++ f\n@@ -2,7 +2,7 @@\n 2\n 3\n 4\n-5\n+X\n 6\n 7\n 8\n"), 1, "exact text");
+
+    test_group("Insertion at the top: context only after it");
+    dif("a\nb\n", "z\na\nb\n", &o);
+    assert_eq(buf_is(load64(&o), "--- f\n+++ f\n@@ -1,2 +1,3 @@\n+z\n a\n b\n"), 1, "exact text");
+
+    test_group("Deletion at the end");
+    dif("a\nb\nc\n", "a\nb\n", &o);
+    assert_eq(buf_is(load64(&o), "--- f\n+++ f\n@@ -1,3 +1,2 @@\n a\n b\n-c\n"), 1, "exact text");
+
+    test_group("Empty sides start at the line before the change");
+    dif("", "a\nb\n", &o);
+    assert_eq(buf_is(load64(&o), "--- f\n+++ f\n@@ -0,0 +1,2 @@\n+a\n+b\n"), 1, "from empty");
+    dif("a\nb\n", "", &o);
+    assert_eq(buf_is(load64(&o), "--- f\n+++ f\n@@ -1,2 +0,0 @@\n-a\n-b\n"), 1, "to empty");
+
+    test_group("A last line with no newline is marked");
+    dif("a\nb", "a\nc", &o);
+    assert_eq(buf_is(load64(&o),
+        "--- f\n+++ f\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n"),
+      1, "both sides unterminated");
+    assert_eq(dif("a", "a\n", &o), 1, "adding only the final newline is a change");
+    assert_eq(buf_is(load64(&o), "--- f\n+++ f\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+a\n"), 1,
+      "and a count of 1 is left out");
+
+    test_group("Deletions print before insertions within a run");
+    dif("a\nb\n", "c\nd\n", &o);
+    assert_eq(buf_is(load64(&o), "--- f\n+++ f\n@@ -1,2 +1,2 @@\n-a\n-b\n+c\n+d\n"), 1, "exact text");
+
+    test_group("Hunks merge across up to 2 * DIFF_CONTEXT unchanged lines");
+    assert_eq(dif(numbered(20, 0, 0), numbered(20, 3, 10), &o), 1, "6 lines between: one hunk");
+    assert_eq(dif(numbered(20, 0, 0), numbered(20, 3, 11), &o), 2, "7 lines between: two hunks");
+    assert_eq(buf_has(load64(&o), "@@ -1,6 +1,6 @@\n"), 1, "first hunk has 2 lines of context before");
+    assert_eq(buf_has(load64(&o), "@@ -8,7 +8,7 @@\n"), 1, "second hunk starts 3 before its change");
+
+    test_group("Past DIFF_DCAP: line for line when the counts match");
+    assert_eq(dif(repeat_lines("x\n", 1100), repeat_lines("y\n", 1100), &o), 1, "one hunk");
+    assert_eq(buf_has(load64(&o), "@@ -1,1100 +1,1100 @@\n"), 1, "covers every line");
+
+    test_group("Past DIFF_DCAP: the region as one replacement when they do not");
+    assert_eq(dif(repeat_lines("x\n", 1100), repeat_lines("y\n", 1200), &o), 1, "one hunk");
+    assert_eq(buf_has(load64(&o), "@@ -1,1100 +1,1200 @@\n"), 1, "old out, new in");
+
+    test_group("Past DIFF_DCAP with unchanged lines between: they stay context");
+    var many_old = repeat_lines("k\nx\n", 700);
+    var many_new = repeat_lines("k\ny\n", 700);
+    assert_eq(dif(many_old, many_new, &o), 1, "changes 1 line apart share one hunk");
+    assert_eq(buf_has(load64(&o), "\n k\n-x\n+y\n k\n"), 1, "unchanged lines are kept as context");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

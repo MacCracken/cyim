@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.12.1 — released.** The 1.x series shipped:
+**1.12.2 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -106,6 +106,8 @@ for humanity. Consumers:
   Exit codes unchanged.
 - **v1.12.1** — `--expect` / `--expect-not` on `--replace[-all]` and
   `--replace-files[-all]`: a single edit can assert the file it produced.
+- **v1.12.2** — `--dry-run` on every writing verb: a unified diff of the
+  edit, nothing written, which `patch -p0` applies after review.
 
 Current pins: cyrius `6.7.18`, vyakarana `2.10.0`, cyim-lsp `1.5.4`,
 darshana `1.7.0`.
@@ -215,6 +217,7 @@ Modifiers (parsed in any order between the verb and its positional args):
 | `--expect=<pat>` / `--expect-not=<pat>` | `--write`, `--batch`, `--replace[-all]`, `--replace-files[-all]` | Post-save shape assertion, literal substring (exit **6** on mismatch) |
 | `--expect-N=<n>` / `--expect-1` | `--replace[-all]` | Pre-substitution count assertion |
 | `--all` | `--batch` | Apply each pair via `--replace-all` semantics |
+| `--dry-run` | `--write`, `--batch`, `--replace[-all]`, `--replace-files[-all]` | Print a unified diff of the edit, write nothing (exit **0** = would change, **1** = would not) |
 | `--context=<n>` | `--grep`, `--grepfiles` | `grep -C N` shape with overlap-merge + `--` separators |
 | `--regex=<flavor>` | `--grep`, `--grepfiles`, `--replace[-all]`, `--replace-files[-all]` | Treat pattern as regex; flavor: `ere` / `bre` / `re2` / `pcre` / `vim` / `fuzzy` |
 | `--fuzzy-edits=<n>` | (any verb with `--regex=fuzzy`) | Max edit distance (Levenshtein) |
@@ -224,7 +227,7 @@ Exit codes (verb-disambiguated where noted):
 | Code | Meaning |
 |------|---------|
 | 0 | Success (or, for `--grep[files]`, ≥1 match) |
-| 1 | Save failed (`--write`/`--replace`) \| no match (`--grep[files]`) |
+| 1 | Save failed (`--write`/`--replace`) \| no match (`--grep[files]`) \| `--dry-run`: no change |
 | 2 | Bad CLI args |
 | 3 | File not found |
 | 4 | OLD not found in FILE (`--replace[-all]`) |

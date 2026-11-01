@@ -130,9 +130,10 @@ jobs:
         run: cyrius test
 
       - name: Fuzz
-        # Runs every fuzz/*.fcyr harness. Each is bounded
-        # (10K iters in buffer.fcyr, 100×1KB in tokenizer.fcyr,
-        # 5K iters in driver.fcyr) so the job stays under a minute.
+        # Runs every fuzz/*.fcyr harness. Each is bounded (10K ops in
+        # buffer.fcyr, 100×1KB in tokenizer.fcyr, 5K keys in driver.fcyr,
+        # 300 streams in feed.fcyr, 400 diff pairs in diff.fcyr), so the
+        # whole step takes seconds.
         run: cyrius fuzz
 
       - name: Benchmark (smoke run)

@@ -1142,5 +1142,94 @@ printf 'beta beta\n' > "$EXP"
 assert_rc '--replace-files-all --expect-not=PAT (present)' 6 $?
 rm -f "$EXP" "$EXP_OLD" "$EXP_NEW"
 
+# ── 1.12.2: --dry-run ─────────────────────────────────────────────────
+# Proposal § 2. Prints a unified diff of what the edit would do and writes
+# nothing: exit 0 when it would change the file, 1 when it would not (the
+# --grep convention for "nothing to show"). Every other check runs as usual,
+# so a dry run that would fail fails the same way.
+DRY=/tmp/cyim-cli-smoke-dry.txt
+printf 'alpha beta\ngamma\n' > "$DRY"
+out=$("$BIN" --replace beta BETA "$DRY" --dry-run 2>/dev/null); rc=$?
+assert_rc '--replace --dry-run (would change)' 0 $rc
+assert_err_has '--dry-run prints the old line' '-alpha beta' "$out"
+assert_err_has '--dry-run prints the new line' '+alpha BETA' "$out"
+assert_err_has '--dry-run names the file' "--- $DRY" "$out"
+assert_file '--dry-run writes nothing' "$DRY" "$(printf 'alpha beta\ngamma')"
+
+out=$("$BIN" --replace beta beta "$DRY" --dry-run 2>/dev/null); rc=$?
+assert_rc '--replace --dry-run (would change nothing)' 1 $rc
+if [ -z "$out" ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: no-op dry run printed: $out"; fi
+
+"$BIN" --replace absent X "$DRY" --dry-run >/dev/null 2>&1
+assert_rc '--replace --dry-run: OLD missing still exits 4' 4 $?
+printf 'dup dup\n' > "$DRY"
+"$BIN" --replace dup D "$DRY" --dry-run >/dev/null 2>&1
+assert_rc '--replace --dry-run: OLD not unique still exits 5' 5 $?
+"$BIN" --replace-all dup D "$DRY" --dry-run --expect-N=3 >/dev/null 2>&1
+assert_rc '--replace-all --dry-run: --expect-N mismatch still exits 6' 6 $?
+
+printf 'alpha beta\ngamma\n' > "$DRY"
+out=$("$BIN" --replace beta BETA "$DRY" --dry-run --expect=MISSING 2>/dev/null); rc=$?
+assert_rc '--dry-run --expect miss: exit 6' 6 $rc
+assert_err_has '--dry-run --expect miss still shows the diff' '+alpha BETA' "$out"
+assert_file '--dry-run --expect miss writes nothing' "$DRY" "$(printf 'alpha beta\ngamma')"
+
+"$BIN" --replace beta BETA "$DRY" --dry-run --wc >/dev/null 2>&1
+assert_rc '--dry-run with --wc refused' 2 $?
+"$BIN" --replace beta BETA "$DRY" --dry-run --dry-run >/dev/null 2>&1
+assert_rc '--dry-run twice refused' 2 $?
+
+printf 'a1\na2\nb\n' > "$DRY"
+out=$(printf 'a1\0A1\0b\0B\0' | "$BIN" --batch "$DRY" --dry-run 2>/dev/null); rc=$?
+assert_rc '--batch --dry-run' 0 $rc
+assert_err_has '--batch --dry-run shows the first pair' '+A1' "$out"
+assert_err_has '--batch --dry-run shows the second pair' '+B' "$out"
+assert_file '--batch --dry-run writes nothing' "$DRY" "$(printf 'a1\na2\nb')"
+
+out=$(printf 'new text\n' | "$BIN" --write "$DRY" --dry-run 2>/dev/null); rc=$?
+assert_rc '--write --dry-run' 0 $rc
+assert_err_has '--write --dry-run shows the new content' '+new text' "$out"
+assert_file '--write --dry-run writes nothing' "$DRY" "$(printf 'a1\na2\nb')"
+printf 'a1\na2\nb\n' | "$BIN" --write "$DRY" --dry-run >/dev/null 2>&1
+assert_rc '--write --dry-run, same content' 1 $?
+
+DRY_NEW=/tmp/cyim-cli-smoke-dry-new.txt
+rm -f "$DRY_NEW"
+out=$(printf 'fresh\n' | "$BIN" --write "$DRY_NEW" --dry-run 2>/dev/null); rc=$?
+assert_rc '--write --dry-run to a new file' 0 $rc
+assert_err_has '--write --dry-run to a new file diffs from empty' '@@ -0,0 +1 @@' "$out"
+if [ ! -e "$DRY_NEW" ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: --write --dry-run created $DRY_NEW"; fi
+
+DRY_OLD=/tmp/cyim-cli-smoke-dry.old
+DRY_NEWF=/tmp/cyim-cli-smoke-dry.new
+printf 'gamma' > "$DRY_OLD"
+printf 'GAMMA' > "$DRY_NEWF"
+printf 'alpha\ngamma\n' > "$DRY"
+"$BIN" --replace-files "$DRY_OLD" "$DRY_NEWF" "$DRY" --dry-run >/dev/null 2>&1
+assert_rc '--replace-files --dry-run' 0 $?
+
+printf 'foo boo\n' > "$DRY"
+"$BIN" --replace-all --regex=ere 'o+' 0 "$DRY" --dry-run >/dev/null 2>&1
+assert_rc '--replace-all --regex --dry-run' 0 $?
+
+# The diff applies: patching a copy gives what the real edit writes.
+if command -v patch >/dev/null 2>&1; then
+    i=1; : > "$DRY"
+    while [ $i -le 40 ]; do printf 'line %s\n' "$i" >> "$DRY"; i=$((i + 1)); done
+    printf 'tail without newline' >> "$DRY"
+    cp "$DRY" "$DRY.copy"
+    "$BIN" --replace-all 'line 1' 'LINE 1' "$DRY" --dry-run > "$DRY.diff" 2>/dev/null
+    patch -s "$DRY.copy" < "$DRY.diff" >/dev/null 2>&1
+    PRC=$?
+    "$BIN" --replace-all 'line 1' 'LINE 1' "$DRY" >/dev/null 2>&1
+    if [ "$PRC" = "0" ] && cmp -s "$DRY" "$DRY.copy"; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1)); echo "FAIL: patch(1) did not turn the dry-run diff into the real edit (patch rc=$PRC)"
+    fi
+    rm -f "$DRY.copy" "$DRY.diff"
+fi
+rm -f "$DRY" "$DRY_NEW" "$DRY_OLD" "$DRY_NEWF"
+
 echo "$PASS passed, $FAIL failed ($((PASS + FAIL)) total)"
 [ "$FAIL" = "0" ] || exit 1
