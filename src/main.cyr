@@ -249,52 +249,53 @@ fn _pipe_guard_close(pfd) {
 # Print `cyim X.Y.Z` to stdout. The literal comes from the auto-generated
 # `src/version_str.cyr` — never hardcode it here; see CLAUDE.md § Work Loop.
 fn print_version() {
-    syscall(1, 1, _VERSION_STR_CYIM, _VERSION_LEN_CYIM);
+    _cli_out(_VERSION_STR_CYIM, _VERSION_LEN_CYIM);
     return 0;
 }
 
-# Print the usage block: the three interactive shapes, the six agent CLI
-# verbs, every modifier, and the regex flavors. Kept in sync by hand with
+# Print the usage block: the interactive shapes, the agent CLI verbs, every
+# modifier, and the regex flavors. Written through _cli_out, so a stdout that
+# cannot take it makes `--help` exit 7 (1.13.0). Kept in sync by hand with
 # docs/guides/usage.md and CLAUDE.md § Consumers.
 fn print_help() {
-    syscall(1, 1, "usage: cyim [<file>]                         (interactive)\n", 59);
-    syscall(1, 1, "       cyim --version\n", 22);
-    syscall(1, 1, "       cyim --help\n", 19);
-    syscall(1, 1, "       cyim --probe                          (TTY round-trip diagnostic)\n", 73);
-    syscall(1, 1, "       cyim --headless [<file>]              (read keystrokes from stdin; no TTY)\n", 82);
-    syscall(1, 1, "       cyim --write <file>                   (replace <file> with stdin)\n", 73);
-    syscall(1, 1, "       cyim --replace <old> <new> <file>     (substitute first; OLD must be unique)\n", 84);
-    syscall(1, 1, "       cyim --replace-all <old> <new> <file> (substitute every occurrence)\n", 75);
-    syscall(1, 1, "       cyim --replace-files <old-file> <new-file> <file>     ", 61);
-    syscall(1, 1, "(substitute first; OLD/NEW read from files; OLD must be unique)\n", 64);
-    syscall(1, 1, "       cyim --replace-files-all <old-file> <new-file> <file> ", 61);
-    syscall(1, 1, "(substitute every occurrence; OLD/NEW read from files)\n", 55);
-    syscall(1, 1, "       cyim --grep <pattern> <file>          (read-only; ", 57);
-    syscall(1, 1, "literal substring by default; --regex=<flavor> for regex; emit FILE:N:LINE)\n", 76);
-    syscall(1, 1, "       cyim --grepfiles <pattern> <file...> (read-only multi-file ", 66);
-    syscall(1, 1, "grep; same FILE:N:LINE shape)\n", 30);
-    syscall(1, 1, "       cyim --batch <file>                   (apply NUL-separated ", 66);
-    syscall(1, 1, "OLD/NEW pairs from stdin; atomic)\n", 34);
-    syscall(1, 1, "       cyim --replace-lines A:B <new-file|-> <file> --expect-first=<line A>\n", 76);
-    syscall(1, 1, "                                             (replace lines A..B; line A must match)\n", 85);
-    syscall(1, 1, "       cyim --batch-lines <file>             (apply NUL-separated A:B/FIRST/NEW ", 80);
-    syscall(1, 1, "triples from stdin, all against the original; atomic)\n", 54);
-    syscall(1, 1, "       Writing verbs: --write, --batch, --replace[-all], --replace-files[-all],\n", 80);
-    syscall(1, 1, "                      --replace-lines, --batch-lines\n", 53);
-    syscall(1, 1, "       --wc[=l|=long]      on the writing verbs: print wc(1) on success\n", 72);
+    _cli_out("usage: cyim [<file>]                         (interactive)\n", 59);
+    _cli_out("       cyim --version\n", 22);
+    _cli_out("       cyim --help\n", 19);
+    _cli_out("       cyim --probe                          (TTY round-trip diagnostic)\n", 73);
+    _cli_out("       cyim --headless [<file>]              (read keystrokes from stdin; no TTY)\n", 82);
+    _cli_out("       cyim --write <file>                   (replace <file> with stdin)\n", 73);
+    _cli_out("       cyim --replace <old> <new> <file>     (substitute first; OLD must be unique)\n", 84);
+    _cli_out("       cyim --replace-all <old> <new> <file> (substitute every occurrence)\n", 75);
+    _cli_out("       cyim --replace-files <old-file> <new-file> <file>     ", 61);
+    _cli_out("(substitute first; OLD/NEW read from files; OLD must be unique)\n", 64);
+    _cli_out("       cyim --replace-files-all <old-file> <new-file> <file> ", 61);
+    _cli_out("(substitute every occurrence; OLD/NEW read from files)\n", 55);
+    _cli_out("       cyim --grep <pattern> <file>          (read-only; ", 57);
+    _cli_out("literal substring by default; --regex=<flavor> for regex; emit FILE:N:LINE)\n", 76);
+    _cli_out("       cyim --grepfiles <pattern> <file...> (read-only multi-file ", 66);
+    _cli_out("grep; same FILE:N:LINE shape)\n", 30);
+    _cli_out("       cyim --batch <file>                   (apply NUL-separated ", 66);
+    _cli_out("OLD/NEW pairs from stdin; atomic)\n", 34);
+    _cli_out("       cyim --replace-lines A:B <new-file|-> <file> --expect-first=<line A>\n", 76);
+    _cli_out("                                             (replace lines A..B; line A must match)\n", 85);
+    _cli_out("       cyim --batch-lines <file>             (apply NUL-separated A:B/FIRST/NEW ", 80);
+    _cli_out("triples from stdin, all against the original; atomic)\n", 54);
+    _cli_out("       Writing verbs: --write, --batch, --replace[-all], --replace-files[-all],\n", 80);
+    _cli_out("                      --replace-lines, --batch-lines\n", 53);
+    _cli_out("       --wc[=l|=long]      on the writing verbs: print wc(1) on success\n", 72);
     _help_line("       --expect=<pat>      on the writing verbs: post-save assertion, literal (exit 6 on miss)\n");
     _help_line("       --expect-not=<pat>  on the writing verbs: post-save assertion, literal (exit 6 on hit)\n");
     _help_line("       --expect-first=<l>  on --replace-lines (required): line A must be exactly <l> (exit 6)\n");
-    syscall(1, 1, "       --expect-N=<n>      on --replace[-all]/--replace-files[-all]: ", 69);
-    syscall(1, 1, "pre-sub count must equal N\n", 27);
-    syscall(1, 1, "       --expect-1          same verbs: alias for --expect-N=1\n", 62);
-    syscall(1, 1, "       --all               on --batch: each pair runs --replace-all\n", 68);
-    syscall(1, 1, "       --dry-run           on the writing verbs: print a unified diff, write nothing\n", 85);
-    syscall(1, 1, "                           (exit 0 = would change, 1 = would not; not with --wc)\n", 81);
-    syscall(1, 1, "       --context=<n>       on --grep/--grepfiles: ", 50);
-    syscall(1, 1, "emit N lines before+after each match (grep -C)\n", 47);
-    syscall(1, 1, "       --regex=<flavor>    on ", 30);
-    syscall(1, 1, "--grep/--grepfiles/--replace[-all]/--replace-files[-all]: ", 58);
+    _cli_out("       --expect-N=<n>      on --replace[-all]/--replace-files[-all]: ", 69);
+    _cli_out("pre-sub count must equal N\n", 27);
+    _cli_out("       --expect-1          same verbs: alias for --expect-N=1\n", 62);
+    _cli_out("       --all               on --batch: each pair runs --replace-all\n", 68);
+    _cli_out("       --dry-run           on the writing verbs: print a unified diff, write nothing\n", 85);
+    _cli_out("                           (exit 0 = would change, 1 = would not; not with --wc)\n", 81);
+    _cli_out("       --context=<n>       on --grep/--grepfiles: ", 50);
+    _cli_out("emit N lines before+after each match (grep -C)\n", 47);
+    _cli_out("       --regex=<flavor>    on ", 30);
+    _cli_out("--grep/--grepfiles/--replace[-all]/--replace-files[-all]: ", 58);
     _help_line("pattern is a regex. Flavors:\n");
     _help_line("                                ere   POSIX-ERE-ish (cyrius stdlib Pike NFA)\n");
     _help_line("                                bre   POSIX-BRE (\\+, \\? are GNU exts)\n");
@@ -313,7 +314,7 @@ fn print_help() {
 # count accurate without hand-counting per line. Used for the
 # --regex flavor table, where each engine's caveats vary in length.
 fn _help_line(s) {
-    syscall(1, 1, s, strlen(s));
+    _cli_out(s, strlen(s));
     return 0;
 }
 
@@ -593,8 +594,8 @@ fn main() {
     var fpath = 0;
     if (ac > 1) {
         var a1 = argv(1);
-        if (streq(a1, "--version")  == 1) { return print_version(); }
-        if (streq(a1, "--help")     == 1) { return print_help(); }
+        if (streq(a1, "--version")  == 1) { return _cli_finish("--version", print_version()); }
+        if (streq(a1, "--help")     == 1) { return _cli_finish("--help", print_help()); }
         if (streq(a1, "--probe")    == 1) { return tty_probe(); }
         if (streq(a1, "--headless") == 1) {
             var hfp = 0;
@@ -611,10 +612,10 @@ fn main() {
         }
         #endif
         if (streq(a1, "--grep") == 1) {
-            return _dispatch_grep(ac);
+            return _cli_finish("--grep", _dispatch_grep(ac));
         }
         if (streq(a1, "--grepfiles") == 1) {
-            return _dispatch_grepfiles(ac);
+            return _cli_finish("--grepfiles", _dispatch_grepfiles(ac));
         }
         if (streq(a1, "--write") == 1) {
             # Modifiers (--wc[=l|=long], --expect=<pat>, --expect-not=<pat>)
@@ -644,26 +645,27 @@ fn main() {
                 w_idx = w_idx + 1;
             }
             if (_cli_dry_wc("--write", &w_mods) != 0) { return 2; }
-            return run_write(w_pos0, _cli_mods_wc(&w_mods), _cli_mods_pat(&w_mods), _cli_mods_pol(&w_mods),
+            var w_rc = run_write(w_pos0, _cli_mods_wc(&w_mods), _cli_mods_pat(&w_mods), _cli_mods_pol(&w_mods),
               _cli_mods_dry(&w_mods));
+            return _cli_finish("--write", w_rc);
         }
         if (streq(a1, "--replace") == 1) {
-            return _dispatch_replace(ac);
+            return _cli_finish("--replace", _dispatch_replace(ac));
         }
         if (streq(a1, "--replace-all") == 1) {
-            return _dispatch_replace_all(ac);
+            return _cli_finish("--replace-all", _dispatch_replace_all(ac));
         }
         if (streq(a1, "--replace-files") == 1) {
-            return _dispatch_replace_files(ac);
+            return _cli_finish("--replace-files", _dispatch_replace_files(ac));
         }
         if (streq(a1, "--replace-files-all") == 1) {
-            return _dispatch_replace_files_all(ac);
+            return _cli_finish("--replace-files-all", _dispatch_replace_files_all(ac));
         }
         if (streq(a1, "--replace-lines") == 1) {
-            return _dispatch_replace_lines(ac);
+            return _cli_finish("--replace-lines", _dispatch_replace_lines(ac));
         }
         if (streq(a1, "--batch-lines") == 1) {
-            return _dispatch_batch_lines(ac);
+            return _cli_finish("--batch-lines", _dispatch_batch_lines(ac));
         }
         if (streq(a1, "--batch") == 1) {
             # Modifiers and the FILE positional may interleave in any
@@ -701,8 +703,9 @@ fn main() {
                 return 2;
             }
             if (_cli_dry_wc("--batch", &ba_mods) != 0) { return 2; }
-            return run_batch(ba_pos0, ba_mode, _cli_mods_wc(&ba_mods), _cli_mods_pat(&ba_mods),
+            var ba_rc = run_batch(ba_pos0, ba_mode, _cli_mods_wc(&ba_mods), _cli_mods_pat(&ba_mods),
               _cli_mods_pol(&ba_mods), _cli_mods_dry(&ba_mods));
+            return _cli_finish("--batch", ba_rc);
         }
         fpath = a1;
     }

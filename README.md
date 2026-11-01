@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.12.3 — released.** The 1.x series shipped:
+**1.13.0 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -111,6 +111,8 @@ for humanity. Consumers:
 - **v1.12.3** — line-addressed edits: `--replace-lines A:B` (guarded by a
   mandatory `--expect-first`) and `--batch-lines` for many ranges at once,
   all resolved against the original file. Closeout for the 1.12.x line.
+- **v1.13.0** — a failed write to stdout is exit 7: `--grep`, `--wc`,
+  `--dry-run` and `--help` no longer report success having printed nothing.
 
 Current pins: cyrius `6.7.18`, vyakarana `2.10.0`, cyim-lsp `1.5.4`,
 darshana `1.7.0`.
@@ -240,6 +242,7 @@ Exit codes (verb-disambiguated where noted):
 | 4 | OLD not found in FILE (`--replace[-all]`) \| line range past the end (`--replace-lines`, `--batch-lines`) |
 | 5 | OLD non-unique under `--replace` |
 | 6 | Assertion failed (`--expect`/`--expect-not`/`--expect-N`/`--expect-first`) |
+| 7 | Output to stdout failed (`--grep`, `--wc`, `--dry-run`, `--help`; since 1.13.0) |
 
 Full guide: [`docs/guides/usage.md`](docs/guides/usage.md).
 Keymap reference: [`docs/guides/keymap.md`](docs/guides/keymap.md).

@@ -313,9 +313,8 @@ unified diff of what the edit would do to stdout and writes nothing.
   - A directory, device or FIFO is refused (exit 3): there is nothing to diff,
     and reading a FIFO would consume it.
   - An existing file that cannot be read exits 3.
-- **Known gap.** If stdout cannot take the diff (a full disk, `> /dev/full`),
-  the dry run still exits 0. `--grep` and `--wc` have the same gap. Choosing
-  the exit code for it is an open decision in the roadmap.
+- **If stdout cannot take the diff** (a full disk, `> /dev/full`, a closed
+  stdout), the dry run exits 7 (since 1.13.0), not 0.
 
 ```sh
 cyim --replace-all --dry-run 'TODO_v1' 'TODO_v2' src/foo.cyr > change.diff
@@ -364,6 +363,7 @@ Exit codes (verb-disambiguated where noted):
 | 4    | OLD not found in FILE (`--replace[-all]`; suppressed when `--expect-N=0`) \| line range past the end (`--replace-lines`, `--batch-lines`) |
 | 5    | OLD occurs more than once and `--replace-all` not used |
 | 6    | Assertion failed (`--expect`/`--expect-not`/`--expect-N` mismatch, or `--expect-first`) |
+| 7    | The output could not be written to stdout (since 1.13.0). It replaces a success: matches from `--grep`, the `--wc` report or the `--dry-run` diff were lost. The file edit itself, if any, did happen. A closed pipe still ends the verb with SIGPIPE, as for any filter |
 
 **What stderr says.** The exit code is the contract. The stderr text is
 for whoever acts on the failure. Since 1.12.0 it names what failed:

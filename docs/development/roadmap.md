@@ -57,14 +57,16 @@ These rules apply to every cut in every version line below.
 
 ---
 
-## Next: 1.13.x — Keyboard input and paste
+## Next: 1.13.x — Input and output
 
-All items land in the input decoder (`editor_feed`, `src/driver.cyr`),
-and all need a decision before any code.
+The line opens on the output side: 1.13.0 makes the agent verbs report a
+failed write to stdout (exit 7), a gap the 1.12.x closeout review found. The
+rest of the line is the input decoder (`editor_feed`, `src/driver.cyr`), and
+each of those items needs a decision before any code.
 
 | Cut | Item | Notes |
 |---|---|---|
-| 1.13.0 | **BUG-007 and BUG-008 — keys outside CSI's grammar** | See § Open Bugs. Both are the same decision: whether to recognise a sequence a terminal sends but ECMA-48 does not define as a key. For SS3, pick a risk: decode only the final bytes a terminal sends, or use inter-byte timing. Or decide not to decode either, and document that |
+| 1.13.x | **BUG-007 and BUG-008 — keys outside CSI's grammar** | See § Open Bugs. Both are the same decision: whether to recognise a sequence a terminal sends but ECMA-48 does not define as a key. For SS3, pick a risk: decode only the final bytes a terminal sends, or use inter-byte timing. Or decide not to decode either, and document that |
 | 1.13.x | **Bracketed paste** | darshana ships `tty_paste_enable` / `_disable`, and since 1.11.0 the decoder already swallows the paste markers, so turning them on changes nothing by itself. The work is deciding what a paste *does*. In INSERT and on the command line it inserts literally, so a pasted ESC cannot run commands (the pastejacking case). It also needs a NORMAL-mode behaviour, one undo unit per paste, and a dot-repeat rule. Design first, and write an ADR if the NORMAL-mode answer is not obvious |
 
 ---
@@ -94,7 +96,6 @@ open.
 | Item | Why | What closes it |
 |---|---|---|
 | **One language table** — next in this track | Two if-chains have to stay in step: `src/lang.cyr` (`lang_name`, `lang_exts`, `lang_basenames`) and `src/highlight.cyr` (`hl_grammar_name`). When they drifted, 34 languages lost highlighting from 1.6.2 to 1.8.2. The CLAUDE.md "third instance" trigger fired at 1.8.2, and 1.11.1 grew both chains again. `tests/lang.tcyr` makes drift loud, so this is debt rather than risk, but every vyakarana bump pays for it with a `grammars/` re-sync | An ADR picks one of three options, then the refactor follows. (1) Parallel global string arrays. (2) Derive the load list from vyakarana (`grammar_count()` / `grammar_name_at(i)`). (3) Drop cyim's on-disk `grammars/` for vyakarana's embedded set and `detect_language_registered` (2.9.8). Option 3 loses cyim's routing overrides: `.asm` → `asm_x86_64`, the `.tcyr` / `.bcyr` / `.fcyr` extensions, and the shell rc basenames. See [architecture note 002](../architecture/002-routing-and-loading-are-two-tables.md) |
-| **Agent verbs: stdout write failures** | Found by the 1.12.x closeout review. `--grep`, `--wc` and `--dry-run` ignore `write(2)`'s result on stdout, so `cyim --replace --dry-run … > /dev/full` exits 0, "diff printed", when it printed nothing. Every existing code already means something else on these verbs. Under `--dry-run`, 1 means "would change nothing" | Decide the code first, a new one (additive) or a documented reuse. Then check every stdout write in `src/cli.cyr` and report the failure |
 | **Plugin-ABI snapshot in CI** | ADR 0004's freeze is written down but not enforced. With a snapshot, 2.0.0's list of breaks is a diff instead of a recollection | A test or CI step that fails when a frozen symbol changes, as ADR 0004 § Neutral suggests |
 
 ---
@@ -293,7 +294,7 @@ deferrals.
 
 ### BUG-007 — SS3 keys (F1–F4 on xterm-style terminals) arrive as Esc, `O`, a letter
 
-Filed 2026-10-12 (cyim 1.11.0) and planned for **1.13.0**. xterm-style
+Filed 2026-10-12 (cyim 1.11.0) and planned for **1.13.x**. xterm-style
 terminals send F1–F4 as SS3 sequences, `ESC O P` through `ESC O S`. The
 decoder handles only CSI (`ESC [`), so F1 arrives as three keys: Esc,
 then `O`, which opens a line above in INSERT, then `P`, which is typed.
@@ -311,9 +312,27 @@ then `O`, which opens a line above in INSERT, then `P`, which is typed.
 - So the first step is deciding which risk to take, before writing code.
   CSI has no such conflict, because `[` is unbound in NORMAL.
 
+**Proposed (1.13.0, awaiting the owner's decision): decode SS3 only when a
+single read is exactly the sequence.**
+- **The rule.** In the interactive loop, a `read()` (8 bytes at most) that
+  returns exactly the three bytes `ESC O <final>` is the key.
+- **Why it works.** A terminal sends F1–F4 in one write, which arrives as one
+  such read. A human typing Esc, `O`, `P` produces three reads, one per
+  keystroke.
+- **What is decoded.** P / Q / R / S, which are F1–F4 and unbound, are
+  swallowed. A / B / C / D, the arrows in application-cursor mode, become the
+  arrow keys. Anything else stays three keystrokes.
+- **`--headless` never decodes SS3.** An agent's `<Esc>O` is always the
+  command.
+- **The remaining risk.** The editor is busy (a full re-highlight of a large
+  file takes about 0.25 s per frame) while a human types exactly Esc, `O`,
+  `P` and nothing after. Those keys queue into one 3-byte read, and the command
+  would be swallowed as F1. That is unlikely, and it loses keys rather than
+  running the wrong command.
+
 ### BUG-008 — rxvt's `$`-final keys swallow the next key
 
-Filed 2026-10-31 at the 1.11.2 closeout, planned for **1.13.0** with
+Filed 2026-10-31 at the 1.11.2 closeout, planned for **1.13.x** with
 BUG-007. rxvt and urxvt send Shift-modified Insert / Delete / Home / End /
 PgUp / PgDn as a CSI that ends in `$`, for example `ESC [ 3 $`. In
 ECMA-48, `$` (0x24) is an intermediate byte, not a final one. The decoder
@@ -327,6 +346,17 @@ byte: in INSERT, `ESC [ 3 $` followed by `x` inserts nothing.
   would misparse a genuine `CSI … $ <final>` sequence, such as a DECRPM
   reply. cyim sends no query that would produce one today. That is the
   same trade as BUG-007, so decide both together.
+
+**Proposed (1.13.0, awaiting the owner's decision): `$` ends a CSI when the
+parameters before it are digits only.**
+- **The rule.** No `;` and no private marker (`?` `>` `<` `=`) before the `$`.
+- **Why it is safe.** rxvt's keys are exactly `ESC [ <digit> $`. A DECRPM reply
+  always has a `;` before its `$`, so the rule cannot mistake one for a key.
+- **What is decoded.** `ESC [ 3 $` (Shift-Delete) becomes Delete, as
+  `ESC [ 3 ; 2 ~` already does. The rest (Insert, Home, End, PgUp, PgDn) are
+  swallowed, like their `~` forms.
+- **The remaining risk.** None that cyim can reach: it sends no query whose
+  reply has a digits-only `$`.
 
 Closed bugs are recorded in CHANGELOG.md. The next ID is **BUG-009**.
 
@@ -357,5 +387,5 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-10-31, at 1.12.3. Replace this line on each update; do not
+*Last updated: 2026-10-31, at 1.13.0. Replace this line on each update; do not
 add to it.*

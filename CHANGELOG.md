@@ -4,6 +4,70 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.13.0] — 2026-10-31
+
+**A failed write to stdout is now exit 7.** This opens the 1.13.x line, input
+and output. Through 1.12.3 the CLI never checked its stdout writes:
+`cyim --grep x f > /dev/full` exited 0, meaning "matches printed", having
+printed nothing, and `--wc` and `--dry-run` did the same. Found by the 1.12.x
+closeout review (CR-4).
+
+Audit: [`docs/audit/2026-10-31-1.13.0-audit.md`](docs/audit/2026-10-31-1.13.0-audit.md).
+
+### Added — exit code 7
+
+**When it fires:** a verb that would have exited 0 could not write its stdout
+output: the `--grep` / `--grepfiles` matches, the `--wc` report, the
+`--dry-run` diff, `--help` or `--version`.
+
+- **On stderr:** `cyim <verb>: could not write to stdout`.
+- **Any file edit did happen.** For example, `--write --wc > /dev/full` saves
+  the file and exits 7, because only the report was lost.
+- **A verb's own failure code wins.** Exit 7 replaces only a success. Under
+  `--dry-run`, an `--expect` miss is still 6.
+- **A closed pipe is unchanged.** It still ends the verb with SIGPIPE, as for
+  any filter, so `cyim --grep x f | head -1` stays quiet. Exit 7 is for errors
+  such as a full disk, EIO, or a closed stdout.
+- **No existing code changed meaning.** `~/.local/bin/cyim-edit`, which mirrors
+  the exit codes, needs to learn 7.
+
+### Changed
+
+- **One checked writer.** Every stdout write in the CLI goes through
+  `_cli_out`, which writes all the bytes (looping on short writes) and records
+  a failure. Every verb returns through `_cli_finish` at the dispatch, so a
+  verb added later inherits both. `--wc` no longer uses `fmt_int`.
+- **Success output is byte-identical to 1.12.3.** Compared against a 1.12.3
+  build on `--help`, `--grep` (with and without `--context`), `--grepfiles`,
+  `--dry-run` and `--write --wc`.
+- **Docs.** The usage guide, README and `CLAUDE.md` § Consumers list exit 7.
+- **Roadmap.** The roadmap's 1.13.x line is now "input and output": this cut,
+  then BUG-007 / BUG-008 and bracketed paste. The stdout item moved there from
+  Maintenance.
+
+### Tests
+
+`tests/cli_smoke.sh`: 255 → **272** cases.
+- **Exit 7 for each verb:** `/dev/full` for `--grep`, `--grepfiles`,
+  `--grep --context`, `--write --wc`, `--dry-run`, `--help` and `--version`,
+  and a closed stdout for `--grep`.
+- **Paths that must not change:** no match is still 1; `--write` without `--wc`
+  is still 0; an `--expect` miss is still 6; normal output is still 0 with
+  `FILE:N:LINE`.
+- **Fail before the fix:** 9 of them fail against 1.12.3.
+
+`cyrius test` is unchanged at 1387.
+
+### Binary
+
+`CYRIUS_DCE=1`:
+
+| Target | 1.12.3 | 1.13.0 |
+|---|---:|---:|
+| x86_64 Linux | 1,088,456 B | **1,088,496 B** (+40) |
+| agnos | 1,064,368 B | **1,064,400 B** (+32) |
+| aarch64 Linux | 1,551,200 B | **1,551,240 B** (+40) |
+
 ## [1.12.3] — 2026-10-31
 
 **Line-addressed edits, and the closeout for the 1.12.x line.** This adds

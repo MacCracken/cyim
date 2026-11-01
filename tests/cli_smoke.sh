@@ -1366,5 +1366,47 @@ if command -v patch >/dev/null 2>&1; then
 fi
 rm -rf "$REV"
 
+# ── 1.13.0: a failed write to stdout is exit 7 ──────────────────────────
+# Through 1.12.3 stdout writes were unchecked: `--grep x f > /dev/full` exited
+# 0, "matches printed", having printed nothing. Exit 7 replaces a success the
+# output did not deliver; a verb's own failure code still wins.
+OUTF=/tmp/cyim-cli-smoke-out.txt
+printf 'alpha\nbeta\n' > "$OUTF"
+err=$("$BIN" --grep alpha "$OUTF" 2>&1 >/dev/full); rc=$?
+assert_rc '--grep to a full device' 7 $rc
+assert_err_has '--grep names the stdout failure' 'could not write to stdout' "$err"
+"$BIN" --grep alpha "$OUTF" >&- 2>/dev/null
+assert_rc '--grep with stdout closed' 7 $?
+"$BIN" --grep NOPE "$OUTF" >/dev/full 2>/dev/null
+assert_rc '--grep with no match prints nothing: still 1' 1 $?
+"$BIN" --grepfiles alpha "$OUTF" "$OUTF" >/dev/full 2>/dev/null
+assert_rc '--grepfiles to a full device' 7 $?
+"$BIN" --grep --context=1 alpha "$OUTF" >/dev/full 2>/dev/null
+assert_rc '--grep --context to a full device' 7 $?
+
+printf 'x\n' | "$BIN" --write "$OUTF" --wc >/dev/full 2>/dev/null
+assert_rc '--write --wc to a full device: saved, report lost' 7 $?
+assert_file '--write --wc to a full device still saved' "$OUTF" 'x'
+printf 'x\n' | "$BIN" --write "$OUTF" >/dev/full 2>/dev/null
+assert_rc '--write without --wc prints nothing: still 0' 0 $?
+
+printf 'alpha\n' > "$OUTF"
+"$BIN" --replace alpha ALPHA "$OUTF" --dry-run >/dev/full 2>/dev/null
+assert_rc '--dry-run to a full device' 7 $?
+assert_file '--dry-run to a full device writes nothing' "$OUTF" 'alpha'
+"$BIN" --replace alpha ALPHA "$OUTF" --dry-run --expect=MISSING >/dev/full 2>/dev/null
+assert_rc '--dry-run --expect miss to a full device: 6 wins' 6 $?
+
+"$BIN" --help >/dev/full 2>/dev/null
+assert_rc '--help to a full device' 7 $?
+"$BIN" --version >/dev/full 2>/dev/null
+assert_rc '--version to a full device' 7 $?
+"$BIN" --help >/dev/null 2>&1
+assert_rc '--help normally' 0 $?
+out=$("$BIN" --grep alpha "$OUTF" 2>/dev/null); rc=$?
+assert_rc '--grep normally' 0 $rc
+assert_err_has '--grep normally prints FILE:N:LINE' "$OUTF:1:alpha" "$out"
+rm -f "$OUTF"
+
 echo "$PASS passed, $FAIL failed ($((PASS + FAIL)) total)"
 [ "$FAIL" = "0" ] || exit 1

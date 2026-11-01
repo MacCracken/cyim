@@ -2,22 +2,22 @@
 
 > **Volatile.** This file is the **live state** of the project — current version, sizes, test counts, in-flight slot, consumer build status. Refreshed every release. Don't put durable rules here (those live in [`CLAUDE.md`](../../CLAUDE.md)); don't put release history here (that lives in [`CHANGELOG.md`](../../CHANGELOG.md)); don't put sequencing here (that lives in [`roadmap.md`](roadmap.md)).
 
-*Last bumped: 2026-10-31 (v1.12.3 — **line-addressed edits, and the 1.12.x closeout.** `--replace-lines A:B` with a mandatory `--expect-first`, and `--batch-lines` for N ranges resolved against the original file. The closeout consolidated the writing verbs' shared modifiers into one parser and took the first quiet-host benchmark baseline since 1.8.6.)*
+*Last bumped: 2026-10-31 (v1.13.0 — **a failed write to stdout is exit 7.** `--grep`, `--wc`, `--dry-run`, `--help` and `--version` used to exit 0 having printed nothing (`> /dev/full`, a closed stdout); every stdout write now goes through `_cli_out` and every verb returns through `_cli_finish`. Success output byte-identical to 1.12.3.)*
 
 ---
 
 ## Version
 
-- **VERSION**: `1.12.3`
+- **VERSION**: `1.13.0`
 - **Cyrius toolchain pin**: `6.7.18`
-- **Last release**: `1.12.3` — **Patch; line-addressed edits, and the closeout for the 1.12.x line.** 2026-10-31. Full entry in CHANGELOG; audit at [`docs/audit/2026-10-31-1.12x-closeout.md`](../audit/2026-10-31-1.12x-closeout.md).
+- **Last release**: `1.13.0` — **Minor; exit 7 for a failed stdout write.** 2026-10-31. Full entry in CHANGELOG; audit at [`docs/audit/2026-10-31-1.13.0-audit.md`](../audit/2026-10-31-1.13.0-audit.md).
 
 ## Binary
 
-- **`build/cyim`** (CYRIUS_DCE=1): **1,088,456 B**
-  - Last delta: **+9,984 B** vs 1.12.2 (1,078,472 B): the line verbs (~13.8 KB), less the modifier refactor (−4,096 B).
-  - **`build/cyim_agnos`**: 1,064,368 B — static x86-64 ELF64 (1.12.2: 1,054,392 B). Runs full-screen on the real agnos kernel under QEMU (`scripts/agnos-fullscreen-test.py` PASS at 1.12.3). The `--agnos` build is a CI gate since 1.11.2.
-  - **`build/cyim_aarch64`**: 1,551,200 B — ARM aarch64 ELF64 (1.12.2: 1,483,872 B; +64 KiB of that is the data segment's alignment, after the code segment passed 1 MiB — aarch64 DCE blanks dead code without compacting it). The whole suite runs under qemu-aarch64 (`cyrius test --aarch64`, 1387 / 0), a CI gate since 1.11.2.
+- **`build/cyim`** (CYRIUS_DCE=1): **1,088,496 B**
+  - Last delta: **+40 B** vs 1.12.3 (1,088,456 B).
+  - **`build/cyim_agnos`**: 1,064,400 B — static x86-64 ELF64 (1.12.3: 1,064,368 B). Runs full-screen on the real agnos kernel under QEMU (`scripts/agnos-fullscreen-test.py` PASS at 1.12.3; 1.13.0 changes only CLI output). The `--agnos` build is a CI gate since 1.11.2.
+  - **`build/cyim_aarch64`**: 1,551,240 B — ARM aarch64 ELF64 (1.12.3: 1,551,200 B; the 64 KiB step at 1.12.3 is data-segment alignment — aarch64 DCE blanks dead code without compacting it). The whole suite runs under qemu-aarch64 (`cyrius test --aarch64`, 1387 / 0), a CI gate since 1.11.2.
   - Per-release size history is in CHANGELOG's per-version Binary sections.
 
 ## Tests
@@ -25,7 +25,7 @@
 - **`cyrius test`**: **24 suites, 1387 assertions** PASS, 0 failures, **0 warnings** *(measured at 1.12.3. +1: `tests/roundtrip.tcyr`, a read error is a failed load — a directory loaded as an empty file through 1.12.2. The run also counts `src/test.cyr`, the `[build] test` entry, as a 25th unit; it asserts nothing)*
 - **`cyrius test --aarch64`** (qemu-aarch64): the same 24 suites / 1387 / 0. A CI step (`cross-targets`) since 1.11.2.
 - **`cyrius fuzz`**: **6 harnesses**, all PASS — `fuzz/{buffer,driver,tokenizer,feed,diff}.fcyr` + `tests/cyim.fcyr`. New at 1.12.2: `fuzz/diff.fcyr`, the diff's **round-trip** property (400 pairs, 40 of them past the Myers cap; a strict applier must turn every diff back into its new text). At 1.11.0: `fuzz/feed.fcyr`, the key decoder's split-independence.
-- **CLI smoke** (`tests/cli_smoke.sh`): **255 PASS** (+54 at 1.12.3: the line verbs, and the closeout review's fixes; +29 at 1.12.2; +20 at 1.12.1; +24 at 1.12.0).
+- **CLI smoke** (`tests/cli_smoke.sh`): **272 PASS** (+17 at 1.13.0: exit 7 on `/dev/full` and a closed stdout for each verb, and the paths it must not change; +54 at 1.12.3; +29 at 1.12.2; +20 at 1.12.1; +24 at 1.12.0).
 - **Integration smoke** (`tests/integration_smoke.py`): all PASS. Since 1.12.3 it includes `line_verbs_model`, 300 random `--replace-lines` / `--batch-lines` cases against an independent Python model (invalid ones must be refused with the file byte-identical). ⚠ Its PTY cases since 1.11.0 reset SIGPIPE to SIG_DFL in the child — Python starts with SIGPIPE ignored and an exec'd child inherits that, which hides exactly the SIGPIPE deaths those cases look for. DCE parity build re-runs it green.
 - **LSP smoke** (`tests/smcyr/lsp_fold.smcyr`): **13 passed, 0 failed**. A CI gate since 1.9.1.
 - **agnos full-screen** (`scripts/agnos-fullscreen-test.py`, out-of-band, needs agnos / gnoboot / agnoshi builds): PASS at 1.12.3 — `ZED` typed through kbscan#42 and saved.
@@ -33,7 +33,7 @@
 - **Performance benches** (`tests/perf.bcyr`): **re-baselined at 1.12.3 on a quiet host** (load 0.7–0.9) — the current table in [`BENCHMARKS.md`](../../BENCHMARKS.md). Against 1.8.6: highlighting −7 %, `render_build_line` +16 % (all of it at 1.11.0, ~20 ns per line), everything else within 2.5 %.
 - **Documentation**: `cyrius doc --check` reports **0 undocumented public fns** across `src/` + `src/plugins/`.
 - **Cleanliness**: `cyrius lint` 0 warnings and **0 untracked deferrals** across `src/`, `src/plugins/`, `tests/` and `fuzz/`. `cyrfmt --check` clean. Dead-code floor 27, every symbol with a caller; 0 unused globals.
-- **Security**: most recent pass is the [1.12.x closeout](../audit/2026-10-31-1.12x-closeout.md), which is also 1.12.3's release audit — its review found four defects: three fixed (a read error loaded as an empty or truncated file, and `--replace-lines` could then delete lines; `--write --dry-run` misjudged unreadable and non-regular targets; dry-run diffs for paths with spaces), one recorded for a contract decision (failed stdout writes are not reported — roadmap § Maintenance). Residuals carried from the [1.11.0 release audit](../audit/2026-10-12-1.11.0-audit.md): the LSP child inherits blocked SIGWINCH / SIGPIPE (upstream fix), and the [1.8.x hardening](../audit/2026-08-23-1.8x-hardening.md)'s R-1a (xattrs / ACLs across the atomic save). 0day-corpus survey in [`docs/security/2026-04-25-0day-corpus.md`](../security/2026-04-25-0day-corpus.md); trust-model ADR at [`docs/adr/0001-trust-model.md`](../adr/0001-trust-model.md).
+- **Security**: most recent pass is the [1.13.0 release audit](../audit/2026-10-31-1.13.0-audit.md) — nothing found; it closes CR-4 from the [1.12.x closeout](../audit/2026-10-31-1.12x-closeout.md), whose other three findings were fixed at 1.12.3. Residuals carried from the [1.11.0 release audit](../audit/2026-10-12-1.11.0-audit.md): the LSP child inherits blocked SIGWINCH / SIGPIPE (upstream fix), and the [1.8.x hardening](../audit/2026-08-23-1.8x-hardening.md)'s R-1a (xattrs / ACLs across the atomic save). 0day-corpus survey in [`docs/security/2026-04-25-0day-corpus.md`](../security/2026-04-25-0day-corpus.md); trust-model ADR at [`docs/adr/0001-trust-model.md`](../adr/0001-trust-model.md).
 
 ## CI / Release
 
@@ -45,7 +45,7 @@
 
 ## Cycle in flight
 
-**Current cycle: 1.12.x — closed at 1.12.3.** 1.12.0 failure messages, 1.12.1 `--expect` on the replace verbs, 1.12.2 `--dry-run`, 1.12.3 line-addressed edits and the closeout. Next: 1.13.x (keyboard input and paste: BUG-007, BUG-008, bracketed paste), per [`roadmap.md`](roadmap.md).
+**Current cycle: 1.13.x — open.** 1.13.0 opened it on the output side: a failed stdout write is exit 7. Next in the line, per [`roadmap.md`](roadmap.md): BUG-007 / BUG-008 (keys outside CSI's grammar — a decision first) and bracketed paste.
 
 **Open bugs: two**, both planned for 1.13.0 and both a decision before code. BUG-007: SS3 keys (`ESC O P`..: F1–F4 on xterm-style terminals) arrive as Esc, `O` (open line above) and a letter. BUG-008: rxvt's `$`-final keys (`ESC [ 3 $`) leave the CSI open and swallow the next key.
 

@@ -99,6 +99,7 @@ requests instead)
 - [2026-10-31 — 1.12.1 release audit](docs/audit/2026-10-31-1.12.1-audit.md)
 - [2026-10-31 — 1.12.2 release audit](docs/audit/2026-10-31-1.12.2-audit.md)
 - [2026-10-31 — 1.12.x closeout audit](docs/audit/2026-10-31-1.12x-closeout.md)
+- [2026-10-31 — 1.13.0 release audit](docs/audit/2026-10-31-1.13.0-audit.md)
   (**most recent**)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
@@ -217,3 +218,7 @@ The fourth is recorded for a contract decision: a failed write to stdout is not
 reported by `--grep`, `--wc` or `--dry-run`. The new line verbs read only input
 the CLI already accepted, and echo it only through the sanitized 60-byte
 excerpt.
+
+State at v1.13.0: the [1.13.0 release audit](docs/audit/2026-10-31-1.13.0-audit.md)
+found nothing. The cut closes the 1.12.x review's fourth finding: a failed write
+to stdout is now exit 7 instead of a false success.
