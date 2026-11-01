@@ -13,7 +13,8 @@
 #     GNU diff prints them.
 #   - Output goes into a gap buffer rather than to stdout, so it can be tested.
 #
-# The output is GNU `diff -u`'s shape: `--- PATH` and `+++ PATH`, then
+# The output is GNU `diff -u`'s shape: `--- PATH` and `+++ PATH`, each path
+# ended by a tab where GNU diff puts its timestamp, then
 # `@@ -a,b +c,d @@` hunks with DIFF_CONTEXT lines of context. A count of 1
 # is left out, an empty side starts at the line before the change, and a last
 # line with no newline is followed by `\ No newline at end of file`.
@@ -433,7 +434,7 @@ fn _diff_put_hunk(out, ops, hs, he) {
 }
 
 # Append to gap buffer `out` the unified diff turning `old` (`olen` bytes)
-# into `new` (`nlen` bytes), headed `--- path` / `+++ path`. Returns the
+# into `new` (`nlen` bytes), headed `--- path\t` / `+++ path\t`. Returns the
 # number of hunks; 0 means the two are identical, and nothing is appended.
 #
 # Hunks: each change gets DIFF_CONTEXT lines on either side, and two changes
@@ -471,11 +472,14 @@ fn diff_unified(out, path, old, olen, new, nlen) {
             var he = j + ctx + 1;
             if (he > n) { he = n; }
             if (hunks == 0) {
+                # The path ends at a tab, where GNU diff puts its timestamp:
+                # patch reads the name up to the tab, so a path with a space
+                # (1.12.3) still names the file.
                 _diff_put_str(out, "--- ");
                 _diff_put_str(out, path);
-                _diff_put_str(out, "\n+++ ");
+                _diff_put_str(out, "\t\n+++ ");
                 _diff_put_str(out, path);
-                _diff_put_str(out, "\n");
+                _diff_put_str(out, "\t\n");
             }
             _diff_put_hunk(out, ops, hs, he);
             hunks = hunks + 1;

@@ -98,6 +98,7 @@ requests instead)
 - [2026-10-31 — 1.12.0 release audit](docs/audit/2026-10-31-1.12.0-audit.md)
 - [2026-10-31 — 1.12.1 release audit](docs/audit/2026-10-31-1.12.1-audit.md)
 - [2026-10-31 — 1.12.2 release audit](docs/audit/2026-10-31-1.12.2-audit.md)
+- [2026-10-31 — 1.12.x closeout audit](docs/audit/2026-10-31-1.12x-closeout.md)
   (**most recent**)
 
 State at v1.0: 0 CRITICAL / 0 HIGH / 0 MEDIUM; 8 LOW findings
@@ -201,3 +202,18 @@ the two buffers the edit already held and writes only stdout. Every index in it
 is bounded by its own line counts, and a cap bounds both its time and its
 memory. The diff carries the file's bytes unsanitized, as `--grep` does, because
 a sanitized diff would not apply. A dry run never opens its target for writing.
+
+State at v1.12.3: the [1.12.x closeout](docs/audit/2026-10-31-1.12x-closeout.md)
+reviewed the whole line and found four defects, none memory-unsafe. Three are
+fixed with tests:
+- **A file read error loaded as success.** It came back as empty or truncated
+  content, so `--replace-lines` given a directory as its new-content file
+  deleted lines and exited 0. A mid-file I/O error could have let a replace
+  verb save over a half-read file.
+- **`--write --dry-run` misjudged unreadable and non-regular targets.**
+- **Dry-run diffs for paths with a space did not apply.**
+
+The fourth is recorded for a contract decision: a failed write to stdout is not
+reported by `--grep`, `--wc` or `--dry-run`. The new line verbs read only input
+the CLI already accepted, and echo it only through the sanitized 60-byte
+excerpt.

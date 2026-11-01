@@ -87,6 +87,13 @@ fn main() {
     assert_eq(miss, 0 - 1, "buf_load_file returns -1 on ENOENT");
     assert_eq(buf_len(b3), 0, "buffer untouched on failed load");
 
+    # 1.12.3: a directory opens read-only but fails on read (EISDIR). Through
+    # 1.12.2 that read failure ended the load like EOF, so a directory loaded
+    # as an empty file.
+    test_group("a read error is a failed load, not an empty file");
+    var b_dir = buf_new();
+    assert_eq(buf_load_file(b_dir, "tests"), 0 - 1, "buf_load_file returns -1 for a directory (1.12.2: 0)");
+
     test_group("save-then-load survives growth");
     # Build a buffer past initial cap (>64 bytes), save, reload, compare.
     var b4 = buf_new();

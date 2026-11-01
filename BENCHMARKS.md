@@ -13,6 +13,46 @@ the source of truth for what's measured.
 
 ---
 
+## v1.12.3 — 2026-10-31 (current baseline, quiet host)
+
+The first absolute numbers since 1.8.6, taken at the 1.12.x closeout on an idle
+machine (load average 0.7–0.9 on 16 cores, cyrius 6.7.18). Each value is the
+median of three runs' averages. The ranges are tight: the widest is
+`highlight_buf_1MB_cyrius` at 256–279 ms.
+
+| Bench | 1.8.6 | 1.12.3 | Δ |
+|---|---:|---:|---:|
+| `buf_fill_1MB` | 11.9 ms | 11.9 ms | — |
+| `buf_fill_10MB` | 122 ms | 123 ms | +1 % |
+| `buf_fill_100MB` | 1.166 s | 1.184 s | +2 % |
+| `buf_move_10K_cycles_10MB` | 43.6 ms | 44.3 ms | +2 % |
+| `search_forward_10MB_best_case` | 0.4 µs | 3.3 µs | not comparable: below the timer floor (~1.5 µs per read) |
+| `search_forward_10MB_worst_case` | 101 ms | 103 ms | +2 % |
+| `search_forward_10MB_worst_case_ic` | 161 ms | 165 ms | +2.5 % |
+| `render_build_line_80c_x1000` | 251 µs | **292 µs** | **+16 %** |
+| `highlight_buf_1MB_cyrius` | 279 ms | **259 ms** | **−7 %** |
+| `highlight_buf_cache_hit_x1000` | 17.4 µs | 16.9 µs | −3 % |
+
+- **Highlighting** is faster because of vyakarana 2.10.0, adopted at 1.11.1.
+- **`render_build_line`** is the one real slowdown, and it arrived in a single
+  step. Two alternating rounds on the same idle host, each tree at its own pin:
+
+  | Tree | `render_build_line_80c_x1000` |
+  |---|---:|
+  | 1.10.1 (cyrius 6.6.2) | 258–263 µs |
+  | 1.11.0 (cyrius 6.7.9) | 281–282 µs |
+  | 1.12.3 (cyrius 6.7.18) | 281–287 µs |
+
+  So the step is 1.11.0, which changed both the toolchain and the render path:
+  C1 classification by UTF-8 decoding (BUG-005), and 256-colour indices
+  validated through darshana's `tty_fg_256_buf` (BUG-006). The cost is about
+  20 ns per rendered line, or about 1 µs for a 50-line frame. Recorded, not
+  pursued.
+- **Search worst case** is flat at 103–104 ms across all three trees, so the
+  +5.5 % in the v1.11.2 table below was load noise.
+
+---
+
 ## v1.11.2 — 2026-10-31 (A/B under load, not a baseline)
 
 The 1.11.x closeout ran on a shared host, at load average ≈ 20 on 16 cores,
@@ -35,11 +75,11 @@ the same load, each value the median of the per-run minimums.
   toolchain.
 - **Render:** the change is inside the run-to-run spread.
 
-The 1.8.6 table below remains the last absolute baseline.
+The v1.12.3 table above replaced the 1.8.6 one as the baseline.
 
 ---
 
-## v1.8.6 — 2026-08-23 (last absolute baseline)
+## v1.8.6 — 2026-08-23 (previous baseline)
 
 First re-bench since v1.6.0. The 1.8.x line added bounds checks to the
 per-frame render path (1.8.3) and reworked the save path twice (1.8.3

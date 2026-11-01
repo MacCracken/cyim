@@ -1188,9 +1188,11 @@ fn _cli_msg_dec(m, pos, v) {
     return _buf_append_dec(m, pos, v);
 }
 
-# Start a `--batch` pair failure: `cyim --batch: pair K/N: `. Returns the position.
-fn _cli_msg_pair(m, k, n) {
-    var p = _cli_msg_str(m, 0, "cyim --batch: pair ");
+# Start a failure that names item `k` of `n`: `<head>K/N: `, where `head` is
+# `cyim --batch: pair ` or (1.12.3) `cyim --batch-lines: triple `. Returns the
+# position.
+fn _cli_msg_nth(m, head, k, n) {
+    var p = _cli_msg_str(m, 0, head);
     p = _cli_msg_dec(m, p, k);
     p = _cli_msg_str(m, p, "/");
     p = _cli_msg_dec(m, p, n);
@@ -1300,6 +1302,56 @@ fn _cli_parse_expect(arg, verb, st) {
     return 1;
 }
 
+# The modifiers every writing verb shares (consolidated at 1.12.3, the 1.12.x
+# closeout, from eight parsers that each spelled them out): --wc[=l|=long],
+# --dry-run, --expect= and --expect-not=. `st` is a 48-byte record set up by
+# _cli_mods_init: +0 the --wc mode (0 none, 1 full, 2 lines), +8 --wc seen,
+# +16 --dry-run, +24 _cli_parse_expect's record. Returns 1 if `arg` was one of
+# them, 0 if not, or -1 after printing a usage error (the caller exits 2).
+fn _cli_parse_mods(arg, verb, st) {
+    var wc = 0;
+    if (streq(arg, "--wc") == 1) { wc = 1; }
+    if (streq(arg, "--wc=l") == 1) { wc = 2; }
+    if (streq(arg, "--wc=long") == 1) { wc = 2; }
+    if (wc != 0) {
+        if (load64(st + 8) == 1) {
+            syscall(1, 2, "cyim: duplicate flag: --wc\n", 27);
+            return 0 - 1;
+        }
+        store64(st, wc);
+        store64(st + 8, 1);
+        return 1;
+    }
+    if (streq(arg, "--dry-run") == 1) {
+        if (load64(st + 16) == 1) {
+            syscall(1, 2, "cyim: duplicate flag: --dry-run\n", 32);
+            return 0 - 1;
+        }
+        store64(st + 16, 1);
+        return 1;
+    }
+    return _cli_parse_expect(arg, verb, st + 24);
+}
+
+# Zero a _cli_parse_mods record. Returns 0.
+fn _cli_mods_init(st) {
+    var i = 0;
+    while (i < 6) {
+        store64(st + i * 8, 0);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# The --wc mode a _cli_parse_mods record holds: 0 none, 1 full, 2 lines only.
+fn _cli_mods_wc(st)  { return load64(st); }
+# 1 if the record holds --dry-run.
+fn _cli_mods_dry(st) { return load64(st + 16); }
+# The --expect / --expect-not pattern, or 0.
+fn _cli_mods_pat(st) { return load64(st + 24); }
+# The assertion's polarity: 0 none, 1 --expect, 2 --expect-not.
+fn _cli_mods_pol(st) { return load64(st + 32); }
+
 # Check a post-save assertion against the result `b`: `pat` is a literal
 # substring (also under --regex), `pol` as in _cli_parse_expect. Returns 0
 # when it holds or there is none; otherwise prints `cyim <verb>: --expect
@@ -1355,18 +1407,28 @@ fn _cli_dry_run(old_b, new_b, file_path, verb, expect_pat, expect_pol) {
     return 0;
 }
 
-# Refuse `--dry-run` together with `--wc`: the diff is stdout's whole content,
-# and a `wc` line after it would not apply. Prints the usage error and
-# returns 2 when both are set, else 0.
-fn _cli_dry_wc(verb, dry, wc_mode) {
-    if (dry == 0) { return 0; }
-    if (wc_mode == 0) { return 0; }
+# Refuse `--dry-run` together with `--wc` in the _cli_parse_mods record `st`:
+# the diff is stdout's whole content, and a `wc` line after it would not
+# apply. Prints the usage error and returns 2 when both are set, else 0.
+fn _cli_dry_wc(verb, st) {
+    if (_cli_mods_dry(st) == 0) { return 0; }
+    if (_cli_mods_wc(st) == 0) { return 0; }
     var msg[512];                       # must equal CLI_MSG_CAP
     var p = _cli_msg_str(&msg, 0, "cyim ");
     p = _cli_msg_str(&msg, p, verb);
     p = _cli_msg_str(&msg, p, ": --dry-run prints a diff and does not combine with --wc\n");
     syscall(1, 2, &msg, p);
     return 2;
+}
+
+# What is at `path` (1.12.3): 0 nothing, 1 a regular file, 2 something else
+# (a directory, a device, a FIFO). Asks stat, so a file this process cannot
+# read still counts as there.
+fn _cli_path_kind(path) {
+    var st[256];
+    if (xstat(path, &st) != 0) { return 0; }
+    if ((load32(&st + STAT_MODE) & 0xF000) != 0x8000) { return 2; }
+    return 1;
 }
 
 # `cyim --write FILE` — read stdin, replace FILE's contents with it.
@@ -1384,15 +1446,29 @@ fn run_write(file_path, wc_mode, expect_pat, expect_pol, dry) {
     var b = buf_new();
     _cli_drain_stdin(b);
     if (dry == 1) {
-        # The file need not exist yet: then the diff is from empty.
+        # Ask stat, not open (1.12.3): through 1.12.2 a file that could not be
+        # opened for reading counted as missing, so it was diffed from empty;
+        # and a directory loaded as empty. A missing FILE would be CREATED,
+        # which is a change even when the new content is empty, so it never
+        # reports 1. Anything but a regular file is refused: there is nothing
+        # to diff, and reading a FIFO would consume it.
+        var kind = _cli_path_kind(file_path);
+        if (kind == 2) {
+            syscall(1, 2, "cyim --write: --dry-run needs FILE to be a regular file, or not to exist yet\n", 77);
+            return 3;
+        }
         var old_b = buf_new();
-        if (file_exists(file_path) == 1) {
+        if (kind == 1) {
             if (buf_load_file(old_b, file_path) < 0) {
                 syscall(1, 2, "cyim --write: cannot read FILE\n", 31);
                 return 3;
             }
         }
-        return _cli_dry_run(old_b, b, file_path, "--write", expect_pat, expect_pol);
+        var drc = _cli_dry_run(old_b, b, file_path, "--write", expect_pat, expect_pol);
+        if (kind == 0) {
+            if (drc == 1) { return 0; }
+        }
+        return drc;
     }
     var n = buf_save_file(b, file_path);
     if (n < 0) {
@@ -1636,7 +1712,7 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol, dry) {
             # "not found" alone points at nothing the caller can find.
             var count = _cli_count_matches(b, old_ptr);
             if (count == 0) {
-                var bp = _cli_msg_pair(&msg, t / 2 + 1, num_tokens / 2);
+                var bp = _cli_msg_nth(&msg, "cyim --batch: pair ", t / 2 + 1, num_tokens / 2);
                 bp = _cli_msg_str(&msg, bp, "OLD not found in file");
                 bp = _cli_msg_excerpt(&msg, bp, old_ptr, strlen(old_ptr));
                 if (_cli_looks_applied(b, tok_ptr, mode) == 1) {
@@ -1648,7 +1724,7 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol, dry) {
             }
             if (mode == REPLACE_FIRST_UNIQUE) {
                 if (count > 1) {
-                    var bu = _cli_msg_pair(&msg, t / 2 + 1, num_tokens / 2);
+                    var bu = _cli_msg_nth(&msg, "cyim --batch: pair ", t / 2 + 1, num_tokens / 2);
                     bu = _cli_msg_str(&msg, bu, "OLD occurs ");
                     bu = _cli_msg_dec(&msg, bu, count);
                     bu = _cli_msg_str(&msg, bu, " times — not unique; use --all or specify more");
@@ -1674,6 +1750,369 @@ fn run_batch(file_path, mode, wc_mode, expect_pat, expect_pol, dry) {
     if (_cli_check_expect(b, "--batch", expect_pat, expect_pol) != 0) { return 6; }
     _cli_print_wc(b, file_path, wc_mode);
     return 0;
+}
+
+# ── Line-addressed edits (1.12.3) ────────────────────────
+#
+# `--replace-lines A:B NEWFILE FILE` and `--batch-lines FILE`: § 1 of agnos's
+# proposal (docs/development/proposals/2026-08-29-line-anchored-and-cyrius-
+# aware-edits.md), the filer's top ask. An agent that read lines 138..149 by
+# number had to invent a unique content anchor for a region it already knew,
+# and for 25 identical `return 0 - 1;` lines in one file no anchor existed.
+# These address lines directly. The guard is mandatory: `--expect-first` must
+# equal line A, so an edit that has already shifted the file cannot land on
+# the wrong lines.
+#
+# NEW is lines: when it does not end in a newline, one is added, so the line
+# after the range is not joined onto it. The exception is a range through a
+# last line that has no newline: NEW then goes in exactly as given.
+
+# Parse "A:B" (1-based, inclusive, 1 <= A <= B) into out+0 / out+8.
+# Returns 1, or 0 for anything else — signs, spaces, a missing half.
+fn _cli_parse_range(str, out) {
+    var p = 0;
+    var a = 0;
+    var da = 0;
+    var go = 1;
+    while (go == 1) {
+        go = 0;
+        var c = load8(str + p);
+        if (c >= 48) {
+            if (c <= 57) {
+                if (da < 18) {
+                    a = a * 10 + (c - 48);
+                    p = p + 1;
+                    da = da + 1;
+                    go = 1;
+                }
+            }
+        }
+    }
+    if (da == 0) { return 0; }
+    if (load8(str + p) != 58) { return 0; }
+    p = p + 1;
+    var bl = 0;
+    var db = 0;
+    go = 1;
+    while (go == 1) {
+        go = 0;
+        var d = load8(str + p);
+        if (d >= 48) {
+            if (d <= 57) {
+                if (db < 18) {
+                    bl = bl * 10 + (d - 48);
+                    p = p + 1;
+                    db = db + 1;
+                    go = 1;
+                }
+            }
+        }
+    }
+    if (db == 0) { return 0; }
+    if (load8(str + p) != 0) { return 0; }
+    if (a < 1) { return 0; }
+    if (bl < a) { return 0; }
+    store64(out, a);
+    store64(out + 8, bl);
+    return 1;
+}
+
+# Locate lines `a`..`bl` in the `len` bytes at `t`. Writes to `out` (32
+# bytes): +0 where line a starts, +8 just past line bl (its newline included),
+# +16 where line a ends (before its newline), +24 1 when line bl is the last
+# line and has no newline. Returns the number of lines in `t`; the range is
+# inside the file only when bl <= that number.
+fn _cli_line_span(t, len, a, bl, out) {
+    store64(out, 0);
+    store64(out + 8, 0);
+    store64(out + 16, 0);
+    store64(out + 24, 0);
+    var line = 1;
+    var i = 0;
+    while (i < len) {
+        if (load8(t + i) == 10) {
+            if (line == a) { store64(out + 16, i); }
+            if (line == bl) { store64(out + 8, i + 1); }
+            line = line + 1;
+            if (line == a) { store64(out, i + 1); }
+        }
+        i = i + 1;
+    }
+    var count = line - 1;
+    if (len > 0) {
+        if (load8(t + len - 1) != 10) {
+            count = line;
+            if (line == a) { store64(out + 16, len); }
+            if (line == bl) {
+                store64(out + 8, len);
+                store64(out + 24, 1);
+            }
+        }
+    }
+    return count;
+}
+
+# 1 if bytes [s, e) of `t` are exactly the NUL-terminated `want`, else 0.
+fn _cli_line_is(t, s, e, want) {
+    var n = strlen(want);
+    if (e - s != n) { return 0; }
+    return memeq(t + s, want, n);
+}
+
+# Append one range's replacement to gap buffer `out`: NEW (`nlen` bytes at
+# `nw`), and a newline after it when NEW is not empty, does not end in one,
+# and the range did not end at a final line with no newline (`noeol`).
+fn _cli_put_lines(out, nw, nlen, noeol) {
+    if (nlen > 0) {
+        buf_insert(out, nw, nlen);
+        if (load8(nw + nlen - 1) != 10) {
+            if (noeol == 0) { buf_insert(out, "\n", 1); }
+        }
+    }
+    return 0;
+}
+
+# The tail every line-addressed edit shares: --dry-run, or save, then the
+# post-save assertion and --wc. `orig` is FILE as loaded, `out` the result.
+fn _cli_lines_finish(orig, out, file_path, verb, wc_mode, expect_pat, expect_pol, dry) {
+    if (dry == 1) { return _cli_dry_run(orig, out, file_path, verb, expect_pat, expect_pol); }
+    if (buf_save_file(out, file_path) < 0) {
+        var msg[512];                   # must equal CLI_MSG_CAP
+        var p = _cli_msg_str(&msg, 0, "cyim ");
+        p = _cli_msg_str(&msg, p, verb);
+        p = _cli_msg_str(&msg, p, ": save failed\n");
+        syscall(1, 2, &msg, p);
+        return 1;
+    }
+    if (_cli_check_expect(out, verb, expect_pat, expect_pol) != 0) { return 6; }
+    _cli_print_wc(out, file_path, wc_mode);
+    return 0;
+}
+
+# `cyim --replace-lines A:B NEWFILE FILE` (1.12.3): replace lines A..B of FILE
+# with NEWFILE's contents; NEWFILE `-` reads stdin. `expect_first` (required
+# by the parser) must equal line A exactly. `wc_mode`, `expect_pat` /
+# `expect_pol` and `dry` as on run_replace. Exit codes: 1 save failed (or
+# --dry-run: no change), 2 malformed range, 3 FILE or NEWFILE unreadable, 4
+# the range runs past the end of FILE, 6 --expect-first, --expect or
+# --expect-not failed.
+fn run_replace_lines(range, new_file, file_path, expect_first, wc_mode, expect_pat, expect_pol, dry) {
+    var r[16];
+    if (_cli_parse_range(range, &r) == 0) {
+        syscall(1, 2, "cyim --replace-lines: the range must be A:B, line numbers with 1 <= A <= B\n", 75);
+        return 2;
+    }
+    var a = load64(&r);
+    var bl = load64(&r + 8);
+    var b = buf_new();
+    if (buf_load_file(b, file_path) < 0) {
+        syscall(1, 2, "cyim --replace-lines: file not found\n", 37);
+        return 3;
+    }
+    var nl_slot[8];
+    store64(&nl_slot, 0);
+    var nw = 0;
+    if (streq(new_file, "-") == 1) {
+        nw = _cli_drain_stdin_raw(&nl_slot);
+    } else {
+        nw = _cli_slurp_file(new_file, &nl_slot);
+        if (nw == 0) {
+            syscall(1, 2, "cyim --replace-lines: cannot read NEWFILE\n", 42);
+            return 3;
+        }
+    }
+    var tl_slot[8];
+    var t = _matcher_buf_to_cstr(b, &tl_slot);
+    if (t == 0) {
+        syscall(1, 2, "cyim --replace-lines: alloc failed\n", 35);
+        return 1;
+    }
+    var tl = load64(&tl_slot);
+    var sp[32];
+    var count = _cli_line_span(t, tl, a, bl, &sp);
+    var msg[512];                       # must equal CLI_MSG_CAP
+    if (bl > count) {
+        var ep = _cli_msg_str(&msg, 0, "cyim --replace-lines: the range runs past the end of FILE (it has ");
+        ep = _cli_msg_dec(&msg, ep, count);
+        ep = _cli_msg_str(&msg, ep, " lines)\n");
+        syscall(1, 2, &msg, ep);
+        return 4;
+    }
+    if (_cli_line_is(t, load64(&sp), load64(&sp + 16), expect_first) == 0) {
+        var fp = _cli_msg_str(&msg, 0, "cyim --replace-lines: line ");
+        fp = _cli_msg_dec(&msg, fp, a);
+        fp = _cli_msg_str(&msg, fp, " does not match --expect-first; it is");
+        fp = _cli_msg_excerpt(&msg, fp, t + load64(&sp), load64(&sp + 16) - load64(&sp));
+        fp = _cli_msg_str(&msg, fp, "\n");
+        syscall(1, 2, &msg, fp);
+        return 6;
+    }
+    var out = buf_new();
+    if (load64(&sp) > 0) { buf_insert(out, t, load64(&sp)); }
+    _cli_put_lines(out, nw, load64(&nl_slot), load64(&sp + 24));
+    var end = load64(&sp + 8);
+    if (end < tl) { buf_insert(out, t + end, tl - end); }
+    return _cli_lines_finish(b, out, file_path, "--replace-lines", wc_mode, expect_pat, expect_pol, dry);
+}
+
+# `cyim --batch-lines FILE` (1.12.3): N line-range replacements in one call.
+# Stdin is NUL-separated triples `A:B\0FIRST\0NEW\0`, the stream ending in a
+# NUL. Every range is resolved against the ORIGINAL file, so the order the
+# triples arrive in does not matter, and ranges may not overlap. Each FIRST
+# must equal its line A. Everything is checked before anything is written,
+# and FILE is saved once. Exit codes as --replace-lines, plus 2 for an
+# incomplete triple or overlapping ranges; failures name the triple as K/N.
+fn run_batch_lines(file_path, wc_mode, expect_pat, expect_pol, dry) {
+    var len_slot[8];
+    store64(&len_slot, 0);
+    var sb = _cli_drain_stdin_raw(&len_slot);
+    var sl = load64(&len_slot);
+    if (sl == 0) {
+        syscall(1, 2, "cyim --batch-lines: empty stdin\n", 32);
+        return 2;
+    }
+    if (load8(sb + sl - 1) != 0) {
+        syscall(1, 2, "cyim --batch-lines: stdin must end with NUL after the final NEW\n", 64);
+        return 2;
+    }
+    var ntok = 0;
+    var q = 0;
+    while (q < sl) {
+        if (load8(sb + q) == 0) { ntok = ntok + 1; }
+        q = q + 1;
+    }
+    if ((ntok / 3) * 3 != ntok) {
+        syscall(1, 2, "cyim --batch-lines: incomplete triple (each is A:B, FIRST, NEW)\n", 64);
+        return 2;
+    }
+    var nt = ntok / 3;
+    var b = buf_new();
+    if (buf_load_file(b, file_path) < 0) {
+        syscall(1, 2, "cyim --batch-lines: file not found\n", 35);
+        return 3;
+    }
+    var tl_slot[8];
+    var t = _matcher_buf_to_cstr(b, &tl_slot);
+    if (t == 0) {
+        syscall(1, 2, "cyim --batch-lines: alloc failed\n", 33);
+        return 1;
+    }
+    var tl = load64(&tl_slot);
+    # Per triple: range start / end in FILE, its line numbers, NEW, and
+    # whether the range ends at a final line with no newline.
+    var t_s = alloc(nt * 8);
+    var t_e = alloc(nt * 8);
+    var t_a = alloc(nt * 8);
+    var t_b = alloc(nt * 8);
+    var t_nw = alloc(nt * 8);
+    var t_ne = alloc(nt * 8);
+    var order = alloc(nt * 8);
+    var msg[512];                       # must equal CLI_MSG_CAP
+    var r[16];
+    var sp[32];
+    var tok = 0;
+    var k = 0;
+    while (k < nt) {
+        var rng = sb + tok;
+        tok = tok + strlen(rng) + 1;
+        var first = sb + tok;
+        tok = tok + strlen(first) + 1;
+        var nw = sb + tok;
+        tok = tok + strlen(nw) + 1;
+        if (_cli_parse_range(rng, &r) == 0) {
+            var mp = _cli_msg_nth(&msg, "cyim --batch-lines: triple ", k + 1, nt);
+            mp = _cli_msg_str(&msg, mp, "not a line range A:B with 1 <= A <= B");
+            mp = _cli_msg_excerpt(&msg, mp, rng, strlen(rng));
+            mp = _cli_msg_str(&msg, mp, "\n");
+            syscall(1, 2, &msg, mp);
+            return 2;
+        }
+        var count = _cli_line_span(t, tl, load64(&r), load64(&r + 8), &sp);
+        if (load64(&r + 8) > count) {
+            var op = _cli_msg_nth(&msg, "cyim --batch-lines: triple ", k + 1, nt);
+            op = _cli_msg_str(&msg, op, "the range runs past the end of FILE (it has ");
+            op = _cli_msg_dec(&msg, op, count);
+            op = _cli_msg_str(&msg, op, " lines)\n");
+            syscall(1, 2, &msg, op);
+            return 4;
+        }
+        if (_cli_line_is(t, load64(&sp), load64(&sp + 16), first) == 0) {
+            var fp = _cli_msg_nth(&msg, "cyim --batch-lines: triple ", k + 1, nt);
+            fp = _cli_msg_str(&msg, fp, "line ");
+            fp = _cli_msg_dec(&msg, fp, load64(&r));
+            fp = _cli_msg_str(&msg, fp, " does not match its FIRST; it is");
+            fp = _cli_msg_excerpt(&msg, fp, t + load64(&sp), load64(&sp + 16) - load64(&sp));
+            fp = _cli_msg_str(&msg, fp, "\n");
+            syscall(1, 2, &msg, fp);
+            return 6;
+        }
+        store64(t_s + k * 8, load64(&sp));
+        store64(t_e + k * 8, load64(&sp + 8));
+        store64(t_a + k * 8, load64(&r));
+        store64(t_b + k * 8, load64(&r + 8));
+        store64(t_nw + k * 8, nw);
+        store64(t_ne + k * 8, load64(&sp + 24));
+        store64(order + k * 8, k);
+        k = k + 1;
+    }
+    # Order the triples by line (insertion sort: batches are tens, not
+    # millions), then refuse any range that starts inside the one before it.
+    var i = 1;
+    while (i < nt) {
+        var cur = load64(order + i * 8);
+        var j = i - 1;
+        var sliding = 1;
+        while (sliding == 1) {
+            sliding = 0;
+            if (j >= 0) {
+                if (load64(t_a + load64(order + j * 8) * 8) > load64(t_a + cur * 8)) {
+                    store64(order + (j + 1) * 8, load64(order + j * 8));
+                    j = j - 1;
+                    sliding = 1;
+                }
+            }
+        }
+        store64(order + (j + 1) * 8, cur);
+        i = i + 1;
+    }
+    i = 1;
+    while (i < nt) {
+        var prev = load64(order + (i - 1) * 8);
+        var this = load64(order + i * 8);
+        if (load64(t_a + this * 8) <= load64(t_b + prev * 8)) {
+            var vp = _cli_msg_str(&msg, 0, "cyim --batch-lines: triples ");
+            vp = _cli_msg_dec(&msg, vp, prev + 1);
+            vp = _cli_msg_str(&msg, vp, " and ");
+            vp = _cli_msg_dec(&msg, vp, this + 1);
+            vp = _cli_msg_str(&msg, vp, " overlap (");
+            vp = _cli_msg_dec(&msg, vp, load64(t_a + prev * 8));
+            vp = _cli_msg_str(&msg, vp, ":");
+            vp = _cli_msg_dec(&msg, vp, load64(t_b + prev * 8));
+            vp = _cli_msg_str(&msg, vp, " and ");
+            vp = _cli_msg_dec(&msg, vp, load64(t_a + this * 8));
+            vp = _cli_msg_str(&msg, vp, ":");
+            vp = _cli_msg_dec(&msg, vp, load64(t_b + this * 8));
+            vp = _cli_msg_str(&msg, vp, ")\n");
+            syscall(1, 2, &msg, vp);
+            return 2;
+        }
+        i = i + 1;
+    }
+    # One pass over the original: the text between ranges, then each NEW.
+    var out = buf_new();
+    var pos = 0;
+    i = 0;
+    while (i < nt) {
+        var x = load64(order + i * 8);
+        var xs = load64(t_s + x * 8);
+        if (xs > pos) { buf_insert(out, t + pos, xs - pos); }
+        var xn = load64(t_nw + x * 8);
+        _cli_put_lines(out, xn, strlen(xn), load64(t_ne + x * 8));
+        pos = load64(t_e + x * 8);
+        i = i + 1;
+    }
+    if (pos < tl) { buf_insert(out, t + pos, tl - pos); }
+    return _cli_lines_finish(b, out, file_path, "--batch-lines", wc_mode, expect_pat, expect_pol, dry);
 }
 
 # === per-verb dispatch helpers (v1.2.0) =========================
@@ -1864,39 +2303,25 @@ fn _dispatch_replace(ac) {
     # arg, so a trailing modifier (e.g. `--replace OLD NEW
     # --expect-1 FILE`) was misread as FILE, and the actual FILE
     # was dropped — surfacing as exit-3 "file not found".
-    var r_wc = 0;
     var r_expect_n = 0 - 1;
     var r_p0 = 0;
     var r_p1 = 0;
     var r_p2 = 0;
     var r_npos = 0;
-    var r_wc_seen = 0;
     var r_expect_seen = 0;
     var r_regex_flavor = FLAVOR_LITERAL;
     var r_regex_seen = 0;
     var r_fuzzy_edits = 0 - 1;
     var r_fz_seen = 0;
-    var r_exp[24];                  # _cli_parse_expect's record (1.12.1)
-    store64(&r_exp, 0);
-    store64(&r_exp + 8, 0);
-    store64(&r_exp + 16, 0);
-    var r_dry = 0;
+    var r_mods[48];        # _cli_parse_mods's record
+    _cli_mods_init(&r_mods);
     var r_idx = 2;
     while (r_idx < ac) {
         var arg = argv(r_idx);
         var consumed = 0;
-        if (streq(arg, "--wc")        == 1) {
-            if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            r_wc = 1; r_wc_seen = 1; consumed = 1;
-        }
-        if (streq(arg, "--wc=l")      == 1) {
-            if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            r_wc = 2; r_wc_seen = 1; consumed = 1;
-        }
-        if (streq(arg, "--wc=long")   == 1) {
-            if (r_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            r_wc = 2; r_wc_seen = 1; consumed = 1;
-        }
+        var pm = _cli_parse_mods(arg, "--replace", &r_mods);
+        if (pm < 0) { return 2; }
+        if (pm == 1) { consumed = 1; }
         if (streq(arg, "--expect-1")  == 1) {
             if (r_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
             r_expect_n = 1; r_expect_seen = 1; consumed = 1;
@@ -1929,16 +2354,6 @@ fn _dispatch_replace(ac) {
                 r_fz_seen = 1;
                 consumed = 1;
             }
-        }
-        if (streq(arg, "--dry-run") == 1) {
-            if (r_dry == 1) { syscall(1, 2, "cyim: duplicate flag: --dry-run\n", 32); return 2; }
-            r_dry = 1;
-            consumed = 1;
-        }
-        if (consumed == 0) {
-            var pe = _cli_parse_expect(arg, "--replace", &r_exp);
-            if (pe < 0) { return 2; }
-            if (pe == 1) { consumed = 1; }
         }
         if (consumed == 0) {
             var s = _cli_argprefix(arg, "--expect-N=");
@@ -1977,46 +2392,32 @@ fn _dispatch_replace(ac) {
             return 2;
         }
     }
-    if (_cli_dry_wc("--replace", r_dry, r_wc) != 0) { return 2; }
-    return run_replace(r_p0, r_p1, r_p2, REPLACE_FIRST_UNIQUE, r_wc, r_expect_n, r_regex_flavor, r_fuzzy_edits,
-      load64(&r_exp), load64(&r_exp + 8), r_dry);
+    if (_cli_dry_wc("--replace", &r_mods) != 0) { return 2; }
+    return run_replace(r_p0, r_p1, r_p2, REPLACE_FIRST_UNIQUE, _cli_mods_wc(&r_mods), r_expect_n, r_regex_flavor,
+      r_fuzzy_edits, _cli_mods_pat(&r_mods), _cli_mods_pol(&r_mods), _cli_mods_dry(&r_mods));
 }
 
 fn _dispatch_replace_all(ac) {
     # Same interspersed-modifier semantics as --replace.
-    var ra_wc = 0;
     var ra_expect_n = 0 - 1;
     var ra_p0 = 0;
     var ra_p1 = 0;
     var ra_p2 = 0;
     var ra_npos = 0;
-    var ra_wc_seen = 0;
     var ra_expect_seen = 0;
     var ra_regex_flavor = FLAVOR_LITERAL;
     var ra_regex_seen = 0;
     var ra_fuzzy_edits = 0 - 1;
     var ra_fz_seen = 0;
-    var ra_exp[24];                  # _cli_parse_expect's record (1.12.1)
-    store64(&ra_exp, 0);
-    store64(&ra_exp + 8, 0);
-    store64(&ra_exp + 16, 0);
-    var ra_dry = 0;
+    var ra_mods[48];        # _cli_parse_mods's record
+    _cli_mods_init(&ra_mods);
     var ra_idx = 2;
     while (ra_idx < ac) {
         var arg = argv(ra_idx);
         var consumed = 0;
-        if (streq(arg, "--wc")        == 1) {
-            if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            ra_wc = 1; ra_wc_seen = 1; consumed = 1;
-        }
-        if (streq(arg, "--wc=l")      == 1) {
-            if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            ra_wc = 2; ra_wc_seen = 1; consumed = 1;
-        }
-        if (streq(arg, "--wc=long")   == 1) {
-            if (ra_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            ra_wc = 2; ra_wc_seen = 1; consumed = 1;
-        }
+        var pm = _cli_parse_mods(arg, "--replace-all", &ra_mods);
+        if (pm < 0) { return 2; }
+        if (pm == 1) { consumed = 1; }
         if (streq(arg, "--expect-1")  == 1) {
             if (ra_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
             ra_expect_n = 1; ra_expect_seen = 1; consumed = 1;
@@ -2049,16 +2450,6 @@ fn _dispatch_replace_all(ac) {
                 ra_fz_seen = 1;
                 consumed = 1;
             }
-        }
-        if (streq(arg, "--dry-run") == 1) {
-            if (ra_dry == 1) { syscall(1, 2, "cyim: duplicate flag: --dry-run\n", 32); return 2; }
-            ra_dry = 1;
-            consumed = 1;
-        }
-        if (consumed == 0) {
-            var pe = _cli_parse_expect(arg, "--replace-all", &ra_exp);
-            if (pe < 0) { return 2; }
-            if (pe == 1) { consumed = 1; }
         }
         if (consumed == 0) {
             var s = _cli_argprefix(arg, "--expect-N=");
@@ -2097,9 +2488,9 @@ fn _dispatch_replace_all(ac) {
             return 2;
         }
     }
-    if (_cli_dry_wc("--replace-all", ra_dry, ra_wc) != 0) { return 2; }
-    return run_replace(ra_p0, ra_p1, ra_p2, REPLACE_ALL, ra_wc, ra_expect_n, ra_regex_flavor, ra_fuzzy_edits,
-      load64(&ra_exp), load64(&ra_exp + 8), ra_dry);
+    if (_cli_dry_wc("--replace-all", &ra_mods) != 0) { return 2; }
+    return run_replace(ra_p0, ra_p1, ra_p2, REPLACE_ALL, _cli_mods_wc(&ra_mods), ra_expect_n, ra_regex_flavor,
+      ra_fuzzy_edits, _cli_mods_pat(&ra_mods), _cli_mods_pol(&ra_mods), _cli_mods_dry(&ra_mods));
 }
 
 fn _dispatch_replace_files(ac) {
@@ -2108,39 +2499,25 @@ fn _dispatch_replace_files(ac) {
     # positional order match --replace exactly so callers can
     # one-line port a `--replace OLD NEW FILE` invocation by
     # writing OLD/NEW to disk and switching the verb.
-    var rf_wc = 0;
     var rf_expect_n = 0 - 1;
     var rf_p0 = 0;
     var rf_p1 = 0;
     var rf_p2 = 0;
     var rf_npos = 0;
-    var rf_wc_seen = 0;
     var rf_expect_seen = 0;
     var rf_regex_flavor = FLAVOR_LITERAL;
     var rf_regex_seen = 0;
     var rf_fuzzy_edits = 0 - 1;
     var rf_fz_seen = 0;
-    var rf_exp[24];                  # _cli_parse_expect's record (1.12.1)
-    store64(&rf_exp, 0);
-    store64(&rf_exp + 8, 0);
-    store64(&rf_exp + 16, 0);
-    var rf_dry = 0;
+    var rf_mods[48];        # _cli_parse_mods's record
+    _cli_mods_init(&rf_mods);
     var rf_idx = 2;
     while (rf_idx < ac) {
         var arg = argv(rf_idx);
         var consumed = 0;
-        if (streq(arg, "--wc")        == 1) {
-            if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            rf_wc = 1; rf_wc_seen = 1; consumed = 1;
-        }
-        if (streq(arg, "--wc=l")      == 1) {
-            if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            rf_wc = 2; rf_wc_seen = 1; consumed = 1;
-        }
-        if (streq(arg, "--wc=long")   == 1) {
-            if (rf_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            rf_wc = 2; rf_wc_seen = 1; consumed = 1;
-        }
+        var pm = _cli_parse_mods(arg, "--replace-files", &rf_mods);
+        if (pm < 0) { return 2; }
+        if (pm == 1) { consumed = 1; }
         if (streq(arg, "--expect-1")  == 1) {
             if (rf_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
             rf_expect_n = 1; rf_expect_seen = 1; consumed = 1;
@@ -2173,16 +2550,6 @@ fn _dispatch_replace_files(ac) {
                 rf_fz_seen = 1;
                 consumed = 1;
             }
-        }
-        if (streq(arg, "--dry-run") == 1) {
-            if (rf_dry == 1) { syscall(1, 2, "cyim: duplicate flag: --dry-run\n", 32); return 2; }
-            rf_dry = 1;
-            consumed = 1;
-        }
-        if (consumed == 0) {
-            var pe = _cli_parse_expect(arg, "--replace-files", &rf_exp);
-            if (pe < 0) { return 2; }
-            if (pe == 1) { consumed = 1; }
         }
         if (consumed == 0) {
             var s = _cli_argprefix(arg, "--expect-N=");
@@ -2221,46 +2588,32 @@ fn _dispatch_replace_files(ac) {
             return 2;
         }
     }
-    if (_cli_dry_wc("--replace-files", rf_dry, rf_wc) != 0) { return 2; }
-    return run_replace_files(rf_p0, rf_p1, rf_p2, 0, rf_wc, rf_expect_n, rf_regex_flavor, rf_fuzzy_edits,
-      load64(&rf_exp), load64(&rf_exp + 8), rf_dry);
+    if (_cli_dry_wc("--replace-files", &rf_mods) != 0) { return 2; }
+    return run_replace_files(rf_p0, rf_p1, rf_p2, 0, _cli_mods_wc(&rf_mods), rf_expect_n, rf_regex_flavor,
+      rf_fuzzy_edits, _cli_mods_pat(&rf_mods), _cli_mods_pol(&rf_mods), _cli_mods_dry(&rf_mods));
 }
 
 fn _dispatch_replace_files_all(ac) {
     # Same shape as --replace-files, mode = REPLACE_ALL.
-    var rfa_wc = 0;
     var rfa_expect_n = 0 - 1;
     var rfa_p0 = 0;
     var rfa_p1 = 0;
     var rfa_p2 = 0;
     var rfa_npos = 0;
-    var rfa_wc_seen = 0;
     var rfa_expect_seen = 0;
     var rfa_regex_flavor = FLAVOR_LITERAL;
     var rfa_regex_seen = 0;
     var rfa_fuzzy_edits = 0 - 1;
     var rfa_fz_seen = 0;
-    var rfa_exp[24];                  # _cli_parse_expect's record (1.12.1)
-    store64(&rfa_exp, 0);
-    store64(&rfa_exp + 8, 0);
-    store64(&rfa_exp + 16, 0);
-    var rfa_dry = 0;
+    var rfa_mods[48];        # _cli_parse_mods's record
+    _cli_mods_init(&rfa_mods);
     var rfa_idx = 2;
     while (rfa_idx < ac) {
         var arg = argv(rfa_idx);
         var consumed = 0;
-        if (streq(arg, "--wc")        == 1) {
-            if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            rfa_wc = 1; rfa_wc_seen = 1; consumed = 1;
-        }
-        if (streq(arg, "--wc=l")      == 1) {
-            if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            rfa_wc = 2; rfa_wc_seen = 1; consumed = 1;
-        }
-        if (streq(arg, "--wc=long")   == 1) {
-            if (rfa_wc_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --wc\n", 27); return 2; }
-            rfa_wc = 2; rfa_wc_seen = 1; consumed = 1;
-        }
+        var pm = _cli_parse_mods(arg, "--replace-files-all", &rfa_mods);
+        if (pm < 0) { return 2; }
+        if (pm == 1) { consumed = 1; }
         if (streq(arg, "--expect-1")  == 1) {
             if (rfa_expect_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-1\n", 33); return 2; }
             rfa_expect_n = 1; rfa_expect_seen = 1; consumed = 1;
@@ -2293,16 +2646,6 @@ fn _dispatch_replace_files_all(ac) {
                 rfa_fz_seen = 1;
                 consumed = 1;
             }
-        }
-        if (streq(arg, "--dry-run") == 1) {
-            if (rfa_dry == 1) { syscall(1, 2, "cyim: duplicate flag: --dry-run\n", 32); return 2; }
-            rfa_dry = 1;
-            consumed = 1;
-        }
-        if (consumed == 0) {
-            var pe = _cli_parse_expect(arg, "--replace-files-all", &rfa_exp);
-            if (pe < 0) { return 2; }
-            if (pe == 1) { consumed = 1; }
         }
         if (consumed == 0) {
             var s = _cli_argprefix(arg, "--expect-N=");
@@ -2342,8 +2685,95 @@ fn _dispatch_replace_files_all(ac) {
             return 2;
         }
     }
-    if (_cli_dry_wc("--replace-files-all", rfa_dry, rfa_wc) != 0) { return 2; }
-    return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, rfa_wc, rfa_expect_n, rfa_regex_flavor, rfa_fuzzy_edits,
-      load64(&rfa_exp), load64(&rfa_exp + 8), rfa_dry);
+    if (_cli_dry_wc("--replace-files-all", &rfa_mods) != 0) { return 2; }
+    return run_replace_files(rfa_p0, rfa_p1, rfa_p2, 1, _cli_mods_wc(&rfa_mods), rfa_expect_n, rfa_regex_flavor,
+      rfa_fuzzy_edits, _cli_mods_pat(&rfa_mods), _cli_mods_pol(&rfa_mods), _cli_mods_dry(&rfa_mods));
 }
 
+# Argument parsing for `--replace-lines` (1.12.3): the range, NEWFILE and
+# FILE in any order with --expect-first=<line A> (required), --wc[=l|=long],
+# --expect= / --expect-not= and --dry-run.
+fn _dispatch_replace_lines(ac) {
+    var rl_first = 0;
+    var rl_first_seen = 0;
+    var rl_p0 = 0;
+    var rl_p1 = 0;
+    var rl_p2 = 0;
+    var rl_npos = 0;
+    var rl_mods[48];        # _cli_parse_mods's record
+    _cli_mods_init(&rl_mods);
+    var rl_idx = 2;
+    while (rl_idx < ac) {
+        var arg = argv(rl_idx);
+        var consumed = 0;
+        var pm = _cli_parse_mods(arg, "--replace-lines", &rl_mods);
+        if (pm < 0) { return 2; }
+        if (pm == 1) { consumed = 1; }
+        if (consumed == 0) {
+            var ef = _cli_argprefix(arg, "--expect-first=");
+            if (ef != 0) {
+                if (rl_first_seen == 1) { syscall(1, 2, "cyim: duplicate flag: --expect-first\n", 37); return 2; }
+                rl_first = ef;
+                rl_first_seen = 1;
+                consumed = 1;
+            }
+        }
+        if (consumed == 0) {
+            if (rl_npos == 0) { rl_p0 = arg; }
+            if (rl_npos == 1) { rl_p1 = arg; }
+            if (rl_npos == 2) { rl_p2 = arg; }
+            if (rl_npos >= 3) {
+                syscall(1, 2, "cyim --replace-lines: unexpected extra argument\n", 48);
+                return 2;
+            }
+            rl_npos = rl_npos + 1;
+        }
+        rl_idx = rl_idx + 1;
+    }
+    if (rl_npos < 3) {
+        syscall(1, 2, "usage: cyim --replace-lines A:B <new-file|-> <file> --expect-first=<line A> ", 76);
+        syscall(1, 2, "[--wc[=l]|--dry-run] [--expect=<pat>|--expect-not=<pat>]\n", 57);
+        return 2;
+    }
+    if (rl_first_seen == 0) {
+        syscall(1, 2, "cyim --replace-lines: --expect-first=<the text of line A> is required\n", 70);
+        return 2;
+    }
+    if (_cli_dry_wc("--replace-lines", &rl_mods) != 0) { return 2; }
+    return run_replace_lines(rl_p0, rl_p1, rl_p2, rl_first, _cli_mods_wc(&rl_mods), _cli_mods_pat(&rl_mods),
+      _cli_mods_pol(&rl_mods), _cli_mods_dry(&rl_mods));
+}
+
+# Argument parsing for `--batch-lines` (1.12.3): FILE, with --wc[=l|=long],
+# --expect= / --expect-not= and --dry-run in any order.
+fn _dispatch_batch_lines(ac) {
+    var bl_p0 = 0;
+    var bl_npos = 0;
+    var bl_mods[48];        # _cli_parse_mods's record
+    _cli_mods_init(&bl_mods);
+    var bl_idx = 2;
+    while (bl_idx < ac) {
+        var arg = argv(bl_idx);
+        var consumed = 0;
+        var pm = _cli_parse_mods(arg, "--batch-lines", &bl_mods);
+        if (pm < 0) { return 2; }
+        if (pm == 1) { consumed = 1; }
+        if (consumed == 0) {
+            if (bl_npos > 0) {
+                syscall(1, 2, "cyim --batch-lines: unexpected extra argument\n", 46);
+                return 2;
+            }
+            bl_p0 = arg;
+            bl_npos = 1;
+        }
+        bl_idx = bl_idx + 1;
+    }
+    if (bl_npos < 1) {
+        syscall(1, 2, "usage: cyim --batch-lines [--wc[=l]|--dry-run] ", 47);
+        syscall(1, 2, "[--expect=<pat>|--expect-not=<pat>] <file>\n", 43);
+        return 2;
+    }
+    if (_cli_dry_wc("--batch-lines", &bl_mods) != 0) { return 2; }
+    return run_batch_lines(bl_p0, _cli_mods_wc(&bl_mods), _cli_mods_pat(&bl_mods), _cli_mods_pol(&bl_mods),
+      _cli_mods_dry(&bl_mods));
+}

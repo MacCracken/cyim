@@ -4,6 +4,185 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.12.3] — 2026-10-31
+
+**Line-addressed edits, and the closeout for the 1.12.x line.** This adds
+`--replace-lines` and `--batch-lines`, § 1 of agnos's
+[2026-08-29 proposal](docs/development/proposals/2026-08-29-line-anchored-and-cyrius-aware-edits.md)
+and the last item scheduled for 1.12.x. It also runs the 11 CLAUDE.md
+closeout steps over 1.12.0 – 1.12.3, as the line's last patch.
+
+Audit: [`docs/audit/2026-10-31-1.12x-closeout.md`](docs/audit/2026-10-31-1.12x-closeout.md).
+
+### Added — `--replace-lines A:B <new-file|-> <file> --expect-first=<line A>`
+
+Replace lines A to B (1-based, inclusive) with the new file's contents, or
+with stdin when the new file is `-`. The filer's case was 25 identical
+`return 0 - 1;` lines in one file: `--replace` could not tell them apart, and
+widening the anchor made consecutive pairs overlap.
+
+```sh
+cyim --replace-lines 138:149 - elf.cyr --expect-first='            if (p_offset < 0) {' < new.txt
+```
+
+- **The guard is mandatory.** `--expect-first` must equal line A exactly, or
+  the edit is refused (exit 6) and the message quotes what line A is. An
+  earlier edit that shifted the file therefore cannot send this one to the
+  wrong lines. `--expect-first=` (empty) asserts an empty line.
+- **NEW is lines.** A missing final newline is added, so the next line is not
+  joined on. The exception is a range through a last line that has no newline,
+  where NEW goes in as given. An empty NEW deletes the lines.
+- **Errors.** Past the end of the file: exit 4, naming the line count.
+  Anything but `A:B` with `1 <= A <= B`: exit 2. Missing `--expect-first`:
+  exit 2.
+- **Modifiers.** `--wc`, `--expect` / `--expect-not` and `--dry-run` work as
+  on the other verbs.
+
+### Added — `--batch-lines <file>`
+
+N line ranges in one call. Stdin carries NUL-separated triples,
+`A:B\0FIRST\0NEW\0`.
+
+- **Resolved against the original.** Every range refers to the original file,
+  so the order of the triples does not matter.
+- **No overlaps.** Overlapping ranges are refused (exit 2) and both triples
+  are named.
+- **Checked like `--expect-first`.** Each FIRST must equal its line A.
+- **Atomic.** Everything is checked before anything is written, and the file
+  is saved once.
+- **Failures name `triple K/N`.**
+- **Why a new verb.** The proposal suggested line pairs inside `--batch`.
+  `--batch` applies its pairs one after another to the evolving text, while
+  these ranges must all refer to the original, so mixing the two in one stream
+  would give one verb two meanings.
+
+### Changed — one parser for the shared modifiers (closeout refactor)
+
+The 1.12.x line added `--dry-run` and `--expect` handling to every writing
+verb. By 1.12.3, eight parsers each spelled out `--wc[=l|=long]`, `--dry-run`,
+`--expect=` and `--expect-not=`, with their duplicate checks. That is far past
+CLAUDE.md's third-instance trigger.
+
+- **`_cli_parse_mods`** now handles all four into one 48-byte record. Each
+  parser keeps only its own flags: `--expect-N`, `--regex`, `--all`,
+  `--expect-first`.
+- **Size:** −259 / +120 lines across `src/cli.cyr` and `src/main.cyr`, and
+  4,096 B off the x86_64 binary.
+- **Nothing changed for callers.** The messages and exit codes are identical,
+  and all 245 CLI smoke cases at that point pass unchanged.
+
+### Fixed — found by the closeout review
+
+An independent review of the whole 1.12.x CLI diff, confirmed by running each
+case:
+
+- **A read error loaded as an empty or truncated file** (`src/buffer.cyr`,
+  `buf_load_file`).
+  - **The cause.** `read()` failing ended the load like end-of-file, and
+    returned the bytes read so far as success.
+  - **Directories.** A directory, which opens read-only but fails on read,
+    loaded as empty. So `cyim --replace-lines 1:2 sub f --expect-first=a`, with
+    `sub` a directory, took it as an empty NEW, deleted lines 1–2 and exited 0.
+    `--replace-files old sub f` deleted OLD the same way. That path predates
+    1.12.
+  - **Mid-file I/O errors.** An error part way through a read gave a
+    truncated buffer, which a replace verb could then have saved over the whole
+    file.
+  - **The fix.** A read error is now a failed load: exit 3 on the CLI, an error
+    on `:e`. `tests/roundtrip.tcyr` +1, which fails on 1.12.2.
+- **`--write --dry-run` misjudged its target.**
+  - **An existing file it could not read** counted as missing, so it was diffed
+    from empty with a diff `patch` will not apply.
+  - **A missing file with empty stdin** exited 1, "would change nothing",
+    although the real write creates the file.
+  - **A directory** produced a diff where the real write fails.
+  - **The fix.** The target is now checked with `stat`. A missing file always
+    counts as a change. A directory, device or FIFO is refused (exit 3), and so
+    is an unreadable file (exit 3).
+- **A dry-run diff could not be applied to a path with a space.** The `---` /
+  `+++` lines now end the path with a tab, where GNU diff puts its timestamp.
+  `patch` reads the name up to the tab.
+- **Not fixed, recorded instead.** `--dry-run`, `--grep` and `--wc` ignore a
+  failed write to stdout, so `… --dry-run > /dev/full` exits 0. Every exit code
+  already means something else on these verbs, so the fix needs a contract
+  decision first. It is a roadmap maintenance item.
+- **Documented.** On a CRLF file, `--expect-first` must include the `\r`
+  (`$'a\r'`). The mismatch message shows it as `?`, like any control byte.
+
+`tests/cli_smoke.sh` +10 for these.
+
+### Changed — docs and `--help`
+
+- **One name for the verb list.** `--help` now names the *writing verbs*
+  once, and `--wc`, `--expect` / `--expect-not` and `--dry-run` refer to it,
+  in place of verb lists that had drifted. `--expect-first` is listed.
+  README's modifier table and `CLAUDE.md` § Consumers use the same wording.
+- **`CLAUDE.md` § Consumers lists surfaces 7 and 8.** It used to say "Six CLI
+  surfaces" and never listed `--replace-files` or `--grepfiles`. They are now
+  named as the file-sourced and multi-file forms of the replace and grep verbs.
+- **Usage guide** (`docs/guides/usage.md`): both new verbs, the exit-code
+  table, and a note on the `printf` octal trap when building NUL-separated
+  input. In `printf '…\0002:2…'`, `\0002` is one escape, byte 0x02, not a
+  NUL and then `2`. The smoke test fell into exactly that while it was being
+  written.
+
+### Closeout results
+
+- **Benchmarks.** These are the first absolute numbers since 1.8.6. The host
+  was idle, at load 0.7–0.9, so they are a real baseline, recorded as the
+  current table in [`BENCHMARKS.md`](BENCHMARKS.md).
+  - **Highlighting is 7 % faster** (vyakarana 2.10.0).
+  - **`render_build_line` is 16 % slower.** Alternating 1.10.1, 1.11.0 and
+    1.12.3 on the same host puts the whole step at 1.11.0, whose render changes
+    were BUG-005 and BUG-006, plus the 6.7.9 toolchain. That is about 20 ns per
+    line, about 1 µs per frame. Recorded, not pursued.
+  - **Everything else is within 2.5 %.** The "+5.5 % search" measured under
+    load at 1.11.2 was noise.
+- **Dead code.** The floor is still 27 functions, each with a caller. No
+  unused globals.
+- **Security re-scan.** No shell-out. No constant-offset overrun in 136 fixed
+  buffers. Every message buffer matches `CLI_MSG_CAP`.
+- **AGNOS.** The full-screen QEMU test passes at 1.12.3.
+- **Downstream.** `agnoshi` 2.0.3 and `aethersafha` 0.17.7 still do not
+  reference cyim.
+
+### Tests
+
+- **`tests/cli_smoke.sh`:** 201 → **255** cases.
+  - 44 cover the line verbs: every exit code, the newline rules, the
+    empty-line guard, out-of-order and identical-line batches, overlaps, and
+    `--dry-run`.
+  - 10 cover the review fixes.
+- **`tests/integration_smoke.py`** gains a random model check. It runs 300
+  cases of `--replace-lines` and `--batch-lines` against an independent Python
+  model:
+  - empty lines, tabs and random final newlines;
+  - batches sent in shuffled order;
+  - invalid edits, which must exit 4 / 6 / 2 and leave the file byte-identical.
+
+  Mutation-tested: a newline added at a no-newline end, and an overlap check
+  that misses ranges that only touch, each fail it.
+- **`cyrius test`:** 24 suites, 1386 → **1387** assertions (the loader test),
+  the same under qemu-aarch64. Fuzz 6 / 6.
+
+### Binary
+
+`CYRIUS_DCE=1`:
+
+| Target | 1.12.2 | 1.12.3 |
+|---|---:|---:|
+| x86_64 Linux | 1,078,472 B | **1,088,456 B** (+9,984) |
+| agnos | 1,054,392 B | **1,064,368 B** (+9,976) |
+| aarch64 Linux | 1,483,872 B | **1,551,200 B** (+67,328) |
+
+**About the aarch64 jump.** The aarch64 image grows by +10,624 B of code and
++1,792 B of data. It also crosses a boundary: the code segment passed 1 MiB, so
+the 64 KiB-aligned data segment's file offset moved from `0x100000` to
+`0x110000`. Separately, aarch64 dead-code elimination blanks unreachable
+functions in place but does not compact them ("compaction declined"), so that
+image always carries all 769 of them. The line verbs add about 13.8 KB; the
+modifier refactor takes 4,096 B off.
+
 ## [1.12.2] — 2026-10-31
 
 **`--dry-run` on every writing verb.** `--write`, `--batch`, `--replace`,

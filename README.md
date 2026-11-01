@@ -20,7 +20,7 @@ for humanity. Consumers:
 
 ## Status
 
-**1.12.2 — released.** The 1.x series shipped:
+**1.12.3 — released.** The 1.x series shipped:
 
 - **v1.0** (2026-04-25) — M0–M7 landed: gap-buffer + raw-mode TTY,
   modal dispatch, vyakarana syntax highlighting, multi-buffer +
@@ -108,6 +108,9 @@ for humanity. Consumers:
   `--replace-files[-all]`: a single edit can assert the file it produced.
 - **v1.12.2** — `--dry-run` on every writing verb: a unified diff of the
   edit, nothing written, which `patch -p0` applies after review.
+- **v1.12.3** — line-addressed edits: `--replace-lines A:B` (guarded by a
+  mandatory `--expect-first`) and `--batch-lines` for many ranges at once,
+  all resolved against the original file. Closeout for the 1.12.x line.
 
 Current pins: cyrius `6.7.18`, vyakarana `2.10.0`, cyim-lsp `1.5.4`,
 darshana `1.7.0`.
@@ -207,17 +210,21 @@ cyim --replace-files-all <old-file> <new-file> <file> # same, every occurrence
 cyim --grep <pattern> <file>                          # FILE:N:LINE per hit
 cyim --grepfiles <pattern> <file...>                  # multi-file grep
 cyim --batch <file>                                   # NUL-separated OLD/NEW pairs from stdin
+cyim --replace-lines A:B <new-file|-> <file> --expect-first=<line A>  # lines A..B, by number
+cyim --batch-lines <file>                             # NUL-separated A:B/FIRST/NEW triples
 ```
 
-Modifiers (parsed in any order between the verb and its positional args):
+Modifiers (parsed in any order between the verb and its positional args). The *writing verbs* are
+`--write`, `--batch`, `--replace[-all]`, `--replace-files[-all]`, `--replace-lines` and `--batch-lines`:
 
 | Modifier | Applies to | Effect |
 |---|---|---|
-| `--wc[=l\|=long]` | `--write`, `--replace[-all]`, `--batch` | Print `wc(1)` for the resulting file on success |
-| `--expect=<pat>` / `--expect-not=<pat>` | `--write`, `--batch`, `--replace[-all]`, `--replace-files[-all]` | Post-save shape assertion, literal substring (exit **6** on mismatch) |
+| `--wc[=l\|=long]` | every writing verb | Print `wc(1)` for the resulting file on success |
+| `--expect=<pat>` / `--expect-not=<pat>` | every writing verb | Post-save shape assertion, literal substring (exit **6** on mismatch) |
 | `--expect-N=<n>` / `--expect-1` | `--replace[-all]` | Pre-substitution count assertion |
 | `--all` | `--batch` | Apply each pair via `--replace-all` semantics |
-| `--dry-run` | `--write`, `--batch`, `--replace[-all]`, `--replace-files[-all]` | Print a unified diff of the edit, write nothing (exit **0** = would change, **1** = would not) |
+| `--expect-first=<text>` | `--replace-lines` (required) | Line A must be exactly `<text>` (exit **6** if not) |
+| `--dry-run` | every writing verb | Print a unified diff of the edit, write nothing (exit **0** = would change, **1** = would not) |
 | `--context=<n>` | `--grep`, `--grepfiles` | `grep -C N` shape with overlap-merge + `--` separators |
 | `--regex=<flavor>` | `--grep`, `--grepfiles`, `--replace[-all]`, `--replace-files[-all]` | Treat pattern as regex; flavor: `ere` / `bre` / `re2` / `pcre` / `vim` / `fuzzy` |
 | `--fuzzy-edits=<n>` | (any verb with `--regex=fuzzy`) | Max edit distance (Levenshtein) |
@@ -229,10 +236,10 @@ Exit codes (verb-disambiguated where noted):
 | 0 | Success (or, for `--grep[files]`, ≥1 match) |
 | 1 | Save failed (`--write`/`--replace`) \| no match (`--grep[files]`) \| `--dry-run`: no change |
 | 2 | Bad CLI args |
-| 3 | File not found |
-| 4 | OLD not found in FILE (`--replace[-all]`) |
+| 3 | File not found, or not readable as a file (a directory, a read error) |
+| 4 | OLD not found in FILE (`--replace[-all]`) \| line range past the end (`--replace-lines`, `--batch-lines`) |
 | 5 | OLD non-unique under `--replace` |
-| 6 | Assertion failed (`--expect`/`--expect-not`/`--expect-N`) |
+| 6 | Assertion failed (`--expect`/`--expect-not`/`--expect-N`/`--expect-first`) |
 
 Full guide: [`docs/guides/usage.md`](docs/guides/usage.md).
 Keymap reference: [`docs/guides/keymap.md`](docs/guides/keymap.md).

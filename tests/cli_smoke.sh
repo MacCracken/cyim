@@ -1231,5 +1231,140 @@ if command -v patch >/dev/null 2>&1; then
 fi
 rm -f "$DRY" "$DRY_NEW" "$DRY_OLD" "$DRY_NEWF"
 
+# ── 1.12.3: --replace-lines / --batch-lines ───────────────────────────
+# Proposal § 1: line-addressed edits that pair with a line-addressed read.
+# --expect-first is mandatory and must equal line A exactly, so an earlier
+# edit that shifted the file cannot send the replacement to the wrong lines.
+RL=/tmp/cyim-cli-smoke-lines.txt
+RLN=/tmp/cyim-cli-smoke-lines.new
+fresh5() { printf 'l1\nl2\nl3\nl4\nl5\n' > "$RL"; }
+
+fresh5
+printf 'X\nY\n' | "$BIN" --replace-lines 2:3 - "$RL" --expect-first=l2 >/dev/null 2>&1
+assert_rc '--replace-lines A:B - FILE (stdin NEW)' 0 $?
+assert_file '--replace-lines replaces lines 2-3' "$RL" "$(printf 'l1\nX\nY\nl4\nl5')"
+
+fresh5
+printf 'Z' > "$RLN"
+"$BIN" --replace-lines --expect-first=l2 2:2 "$RLN" "$RL" >/dev/null 2>&1
+assert_rc '--replace-lines with a NEWFILE, flag first' 0 $?
+assert_file '--replace-lines adds the missing newline so l3 stays its own line' "$RL" "$(printf 'l1\nZ\nl3\nl4\nl5')"
+
+fresh5
+err=$(printf 'X\n' | "$BIN" --replace-lines 2:2 - "$RL" --expect-first=WRONG 2>&1 >/dev/null); rc=$?
+assert_rc '--replace-lines --expect-first mismatch' 6 $rc
+assert_err_has '--expect-first mismatch quotes line A' '"l2"' "$err"
+assert_file '--expect-first mismatch writes nothing' "$RL" "$(printf 'l1\nl2\nl3\nl4\nl5')"
+
+printf 'X\n' | "$BIN" --replace-lines 2:2 - "$RL" >/dev/null 2>&1
+assert_rc '--replace-lines without --expect-first' 2 $?
+printf 'X\n' | "$BIN" --replace-lines 2:2 - "$RL" --expect-first=l2 --expect-first=l2 >/dev/null 2>&1
+assert_rc '--replace-lines --expect-first twice' 2 $?
+
+err=$(printf 'X\n' | "$BIN" --replace-lines 5:9 - "$RL" --expect-first=l5 2>&1 >/dev/null); rc=$?
+assert_rc '--replace-lines past the end' 4 $rc
+assert_err_has '--replace-lines past the end says how many lines' '5 lines' "$err"
+for bad in 3-4 0:2 4:3 a:b 2: :3; do
+    printf 'X\n' | "$BIN" --replace-lines "$bad" - "$RL" --expect-first=l2 >/dev/null 2>&1
+    assert_rc "--replace-lines malformed range '$bad'" 2 $?
+done
+
+fresh5
+printf '' | "$BIN" --replace-lines 2:4 - "$RL" --expect-first=l2 >/dev/null 2>&1
+assert_rc '--replace-lines with empty NEW deletes' 0 $?
+assert_file '--replace-lines 2:4 deleted' "$RL" "$(printf 'l1\nl5')"
+
+printf 'a\nb' > "$RL"
+printf 'c' | "$BIN" --replace-lines 2:2 - "$RL" --expect-first=b >/dev/null 2>&1
+assert_rc '--replace-lines through a last line with no newline' 0 $?
+if [ "$(od -An -c "$RL" | tr -d ' \n')" = 'a\nc' ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: no-newline last line: $(od -c "$RL")"; fi
+
+printf 'a\n\nb\n' > "$RL"
+printf 'X\n' | "$BIN" --replace-lines 2:2 - "$RL" --expect-first= >/dev/null 2>&1
+assert_rc '--expect-first= matches an empty line' 0 $?
+assert_file '--expect-first= replaced the empty line' "$RL" "$(printf 'a\nX\nb')"
+
+fresh5
+out=$(printf 'X\n' | "$BIN" --replace-lines 3:3 - "$RL" --expect-first=l3 --dry-run 2>/dev/null); rc=$?
+assert_rc '--replace-lines --dry-run' 0 $rc
+assert_err_has '--replace-lines --dry-run shows the change' '+X' "$out"
+assert_file '--replace-lines --dry-run writes nothing' "$RL" "$(printf 'l1\nl2\nl3\nl4\nl5')"
+printf 'X\n' | "$BIN" --replace-lines 3:3 - "$RL" --expect-first=l3 --expect=MISSING >/dev/null 2>&1
+assert_rc '--replace-lines --expect miss' 6 $?
+fresh5
+out=$(printf 'X\n' | "$BIN" --replace-lines 3:3 - "$RL" --expect-first=l3 --wc=l 2>/dev/null)
+assert_err_has '--replace-lines --wc=l' "5 $RL" "$out"
+"$BIN" --replace-lines 3:3 /nonexistent/new.txt "$RL" --expect-first=X >/dev/null 2>&1
+assert_rc '--replace-lines NEWFILE missing' 3 $?
+
+# --batch-lines: triples A:B\0FIRST\0NEW\0, every range resolved against the
+# ORIGINAL file, so the order they arrive in does not matter.
+fresh10() { : > "$RL"; i=1; while [ $i -le 10 ]; do printf 'l%s\n' $i >> "$RL"; i=$((i + 1)); done; }
+fresh10
+{ printf '7:7\0l7\0C\n\0'; printf '2:3\0l2\0A\nB\n\0'; } | "$BIN" --batch-lines "$RL" >/dev/null 2>&1
+assert_rc '--batch-lines (two triples, out of order)' 0 $?
+assert_file '--batch-lines applied both against the original' "$RL" "$(printf 'l1\nA\nB\nl4\nl5\nl6\nC\nl8\nl9\nl10')"
+
+printf 'dup\ndup\ndup\ndup\ndup\ndup\n' > "$RL"
+{ printf '2:2\0dup\0X\n\0'; printf '5:5\0dup\0Y\n\0'; } | "$BIN" --batch-lines "$RL" >/dev/null 2>&1
+assert_rc '--batch-lines on identical lines --replace cannot tell apart' 0 $?
+assert_file '--batch-lines hit exactly lines 2 and 5' "$RL" "$(printf 'dup\nX\ndup\ndup\nY\ndup')"
+
+fresh10
+err=$({ printf '2:4\0l2\0A\n\0'; printf '4:5\0l4\0B\n\0'; } | "$BIN" --batch-lines "$RL" 2>&1 >/dev/null); rc=$?
+assert_rc '--batch-lines overlapping ranges' 2 $rc
+assert_err_has '--batch-lines names the overlap' 'overlap' "$err"
+err=$({ printf '2:2\0l2\0A\n\0'; printf '4:4\0WRONG\0B\n\0'; } | "$BIN" --batch-lines "$RL" 2>&1 >/dev/null); rc=$?
+assert_rc '--batch-lines --expect-first mismatch in triple 2' 6 $rc
+assert_err_has '--batch-lines names the triple' 'triple 2/2' "$err"
+assert_file '--batch-lines failure writes nothing' "$RL" "$(printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10')"
+printf '9:12\0l9\0A\n\0' | "$BIN" --batch-lines "$RL" >/dev/null 2>&1
+assert_rc '--batch-lines past the end' 4 $?
+printf '2:2\0l2\0' | "$BIN" --batch-lines "$RL" >/dev/null 2>&1
+assert_rc '--batch-lines incomplete triple' 2 $?
+printf '2:2\0l2\0A' | "$BIN" --batch-lines "$RL" >/dev/null 2>&1
+assert_rc '--batch-lines missing trailing NUL' 2 $?
+out=$(printf '2:2\0l2\0A\n\0' | "$BIN" --batch-lines "$RL" --dry-run 2>/dev/null); rc=$?
+assert_rc '--batch-lines --dry-run' 0 $rc
+assert_err_has '--batch-lines --dry-run shows the change' '+A' "$out"
+assert_file '--batch-lines --dry-run writes nothing' "$RL" "$(printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10')"
+rm -f "$RL" "$RLN"
+
+# ── 1.12.3 closeout review: load errors, --write --dry-run targets, paths ──
+REV=/tmp/cyim-cli-smoke-review
+rm -rf "$REV"; mkdir -p "$REV/sub"
+printf 'a\nb\nc\n' > "$REV/f"
+printf 'X\n' > "$REV/old"
+"$BIN" --replace-lines 1:2 "$REV/sub" "$REV/f" --expect-first=a >/dev/null 2>&1
+assert_rc '--replace-lines with a directory as NEWFILE (1.12.2: 0, lines deleted)' 3 $?
+assert_file '--replace-lines with a directory as NEWFILE writes nothing' "$REV/f" "$(printf 'a\nb\nc')"
+printf 'b' > "$REV/old"
+"$BIN" --replace-files "$REV/old" "$REV/sub" "$REV/f" >/dev/null 2>&1
+assert_rc '--replace-files with a directory as NEW_FILE (1.12.2: 0, b deleted)' 3 $?
+assert_file '--replace-files with a directory as NEW_FILE writes nothing' "$REV/f" "$(printf 'a\nb\nc')"
+"$BIN" --replace a A "$REV/sub" >/dev/null 2>&1
+assert_rc '--replace on a directory' 3 $?
+
+: | "$BIN" --write --dry-run "$REV/new-empty" >/dev/null 2>&1
+assert_rc '--write --dry-run, new file, empty stdin: still a change (1.12.2: 1)' 0 $?
+if [ ! -e "$REV/new-empty" ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: --write --dry-run created a file"; fi
+printf 'x\n' | "$BIN" --write --dry-run "$REV/sub" >/dev/null 2>&1
+assert_rc '--write --dry-run on a directory (1.12.2: 0)' 3 $?
+if [ "$(id -u)" != "0" ]; then
+    printf 'old\n' > "$REV/unreadable"; chmod 200 "$REV/unreadable"
+    printf 'new\n' | "$BIN" --write --dry-run "$REV/unreadable" >/dev/null 2>&1
+    assert_rc '--write --dry-run on an unreadable file (1.12.2: 0, diffed from empty)' 3 $?
+    chmod 600 "$REV/unreadable"
+fi
+
+# A path with a space: the header ends it with a tab, as GNU diff does, so
+# patch -p0 finds the file.
+if command -v patch >/dev/null 2>&1; then
+    printf 'one\ntwo\n' > "$REV/my file.txt"
+    ( cd "$REV" && "$BIN" --replace two TWO 'my file.txt' --dry-run > sp.diff 2>/dev/null && patch -s -p0 < sp.diff >/dev/null 2>&1 )
+    assert_file 'patch -p0 applies a dry-run diff for a path with a space' "$REV/my file.txt" "$(printf 'one\nTWO')"
+fi
+rm -rf "$REV"
+
 echo "$PASS passed, $FAIL failed ($((PASS + FAIL)) total)"
 [ "$FAIL" = "0" ] || exit 1

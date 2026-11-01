@@ -57,27 +57,7 @@ These rules apply to every cut in every version line below.
 
 ---
 
-## Next: 1.12.x — Agent verbs, round two
-
-agnos filed these after a ~60-edit session on its kernel tree, in a
-[proposal](proposals/2026-08-29-line-anchored-and-cyrius-aware-edits.md).
-(Its companion issue, on failure messages, closed at 1.12.0. Proposal § 3,
-`--expect` on the replace verbs, shipped at 1.12.1, and § 2, `--dry-run`, at
-1.12.2.) Agents are a first-class consumer, and every item here only adds
-behaviour. Each cut updates CLAUDE.md § Consumers, `--help` and
-`tests/cli_smoke.sh`.
-
-| Cut | Item | Notes |
-|---|---|---|
-| 1.12.x | **`--replace-lines A:B`** | Proposal § 1, and the filer's top ask. Replaces lines A–B, with a required content check (`--expect-first=`) so an edit that has already shifted the file cannot send it to the wrong lines. Then line-range pairs in `--batch`, resolved against the original buffer and applied from the bottom up. Decide where NEW comes from (a file, as proposed, or stdin) before writing code |
-
-Not scheduled from the same proposal: § 4, Cyrius-aware warnings
-(§ Demand-gated, needs a scope decision), and § 5, multi-file transactions
-(2.x, needs an ADR).
-
----
-
-## 1.13.x — Keyboard input and paste
+## Next: 1.13.x — Keyboard input and paste
 
 All items land in the input decoder (`editor_feed`, `src/driver.cyr`),
 and all need a decision before any code.
@@ -114,7 +94,7 @@ open.
 | Item | Why | What closes it |
 |---|---|---|
 | **One language table** — next in this track | Two if-chains have to stay in step: `src/lang.cyr` (`lang_name`, `lang_exts`, `lang_basenames`) and `src/highlight.cyr` (`hl_grammar_name`). When they drifted, 34 languages lost highlighting from 1.6.2 to 1.8.2. The CLAUDE.md "third instance" trigger fired at 1.8.2, and 1.11.1 grew both chains again. `tests/lang.tcyr` makes drift loud, so this is debt rather than risk, but every vyakarana bump pays for it with a `grammars/` re-sync | An ADR picks one of three options, then the refactor follows. (1) Parallel global string arrays. (2) Derive the load list from vyakarana (`grammar_count()` / `grammar_name_at(i)`). (3) Drop cyim's on-disk `grammars/` for vyakarana's embedded set and `detect_language_registered` (2.9.8). Option 3 loses cyim's routing overrides: `.asm` → `asm_x86_64`, the `.tcyr` / `.bcyr` / `.fcyr` extensions, and the shell rc basenames. See [architecture note 002](../architecture/002-routing-and-loading-are-two-tables.md) |
-| **Benchmark baseline on a quiet host** | The last absolute baseline is `BENCHMARKS.md`'s 1.8.6 table. 1.11.1 and the 1.11.2 closeout both ran on a shared host (load ≈ 12 and ≈ 20 on 16 cores), so each could only A/B against an older cut under the same load | A `cyrius bench` run on an idle machine, recorded as the new "current" table in `BENCHMARKS.md` |
+| **Agent verbs: stdout write failures** | Found by the 1.12.x closeout review. `--grep`, `--wc` and `--dry-run` ignore `write(2)`'s result on stdout, so `cyim --replace --dry-run … > /dev/full` exits 0, "diff printed", when it printed nothing. Every existing code already means something else on these verbs. Under `--dry-run`, 1 means "would change nothing" | Decide the code first, a new one (additive) or a documented reuse. Then check every stdout write in `src/cli.cyr` and report the failure |
 | **Plugin-ABI snapshot in CI** | ADR 0004's freeze is written down but not enforced. With a snapshot, 2.0.0's list of breaks is a diff instead of a recollection | A test or CI step that fails when a frozen symbol changes, as ADR 0004 § Neutral suggests |
 
 ---
@@ -128,9 +108,10 @@ same cut so consumers migrate once.
 
 ### Agent CLI
 
-The argv parser is hand-rolled: about 750 lines across `src/main.cyr`
-and `src/cli.cyr`. cmdit could replace most of it, but not with
-identical behaviour. It was surveyed on 2026-10-14 and re-checked
+The argv parser is hand-rolled: one modifier loop per verb in
+`src/main.cyr` and `src/cli.cyr`. Since 1.12.3 the eight writing verbs share
+`_cli_parse_mods` for `--wc`, `--dry-run`, `--expect` and `--expect-not`.
+cmdit could replace most of it, but not with identical behaviour. It was surveyed on 2026-10-14 and re-checked
 against cmdit 1.5.0 on 2026-10-31. The migration waits on demand, and
 these decisions are cyim's to make:
 
@@ -376,5 +357,5 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-10-31, at 1.12.2. Replace this line on each update; do not
+*Last updated: 2026-10-31, at 1.12.3. Replace this line on each update; do not
 add to it.*

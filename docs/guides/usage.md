@@ -241,6 +241,57 @@ cyim --replace --expect-1 --expect-not='old_name(' 'old_name(' 'new_name(' src/a
 After an `--expect-N=0` no-op, which writes nothing, the assertion is
 checked on the unchanged file.
 
+**`--replace-lines A:B <new-file|-> <file> --expect-first=<line A>`** (since
+1.12.3) replaces lines A to B, 1-based and inclusive, with the new file's
+contents. `-` reads them from stdin. Use it when you know the lines by number,
+from a line-addressed read, and have no unique text to anchor `--replace` on.
+Twenty-five identical `return 0 - 1;` lines in one file are the motivating
+case.
+
+- **The guard is mandatory.** `--expect-first` must equal line A exactly.
+  Otherwise the edit is refused (exit 6) and the message quotes what line A
+  actually is. So an earlier edit that shifted the file cannot send this one to
+  the wrong lines. `--expect-first=` (empty) asserts that line A is empty.
+- **NEW is lines.** When it does not end in a newline, one is added, so the
+  line after the range is not joined onto it. The exception is a range that
+  runs through a last line with no newline: then NEW goes in exactly as given.
+  An empty NEW deletes the lines.
+- **CRLF files.** Line A's text includes its carriage return, so pass it:
+  `--expect-first=$'a\r'`. A mismatch message shows the CR as `?`, like any
+  control byte, so copying `a?` from it will not match.
+- **Errors.** A range past the end exits 4, and the message says how many
+  lines the file has. A malformed range (anything but `A:B` with
+  `1 <= A <= B`) exits 2.
+- **Modifiers.** `--wc`, `--expect` / `--expect-not` and `--dry-run` work as on
+  the other verbs.
+
+```sh
+owl --line-range=138:149 elf.cyr          # read by number
+cyim --replace-lines 138:149 - elf.cyr --expect-first='            if (p_offset < 0) {' < new.txt
+```
+
+**`--batch-lines <file>`** (since 1.12.3) applies several line ranges in one
+call. Stdin carries NUL-separated triples, `A:B\0FIRST\0NEW\0`, with the
+stream ending in a NUL.
+
+- **Against the original.** Every range refers to the original file, so the
+  order of the triples does not matter, and nothing shifts while they apply.
+- **No overlaps.** Overlapping ranges are refused (exit 2).
+- **Each FIRST** is checked like `--expect-first`.
+- **All or nothing.** Everything is checked before anything is written, and
+  the file is saved once.
+- **Failures name the triple** (`triple 2/5`).
+- **Modifiers** are the same as `--batch`, without `--all`.
+
+```sh
+printf '2:2\0dup\0X\n\0' > edits; printf '5:5\0dup\0Y\n\0' >> edits
+cyim --batch-lines notes.txt < edits      # lines 2 and 5, though all six say "dup"
+```
+
+(Use one `printf` per triple, so that no `\0` is followed by a digit. `printf`
+reads `\0` and up to three digits after it as one octal escape: `\0002:2` is
+byte 0x02 followed by `:2`, not a NUL and then `2:2`.)
+
 **`--dry-run`** (since 1.12.2) — on `--write`, `--batch`, `--replace`,
 `--replace-all`, `--replace-files` and `--replace-files-all`. It prints a
 unified diff of what the edit would do to stdout and writes nothing.
@@ -255,6 +306,16 @@ unified diff of what the edit would do to stdout and writes nothing.
   first. `--expect` / `--expect-not` are checked on the result that would have
   been saved (6), and the diff is still printed. `--wc` is refused (2): stdout
   is the diff.
+- **`--write --dry-run` and the target** (since 1.12.3):
+  - A path that does not exist always counts as a change (exit 0), because the
+    write would create it, even with empty content, which no unified diff can
+    show.
+  - A directory, device or FIFO is refused (exit 3): there is nothing to diff,
+    and reading a FIFO would consume it.
+  - An existing file that cannot be read exits 3.
+- **Known gap.** If stdout cannot take the diff (a full disk, `> /dev/full`),
+  the dry run still exits 0. `--grep` and `--wc` have the same gap. Choosing
+  the exit code for it is an open decision in the roadmap.
 
 ```sh
 cyim --replace-all --dry-run 'TODO_v1' 'TODO_v2' src/foo.cyr > change.diff
@@ -263,9 +324,10 @@ printf 'new\n' | cyim --write --dry-run notes.txt   # also works for a file that
 ```
 
 **The output format:**
-- It is GNU `diff -u`: `--- FILE` / `+++ FILE`, then hunks with three lines of
-  context, and `\ No newline at end of file` where it applies. `patch -p0`
-  applies it.
+- It is GNU `diff -u`: `--- FILE` / `+++ FILE`, each name ended by a tab
+  where GNU diff puts a timestamp (since 1.12.3, so that a path with a space
+  still works). Then hunks with three lines of context, and
+  `\ No newline at end of file` where it applies. `patch -p0` applies it.
 - The file's own bytes are printed, as `--grep` prints them.
 - The diff is minimal up to an edit distance of 1024 lines. Past that it stays
   correct, but is computed line for line, or as one replacement region.
@@ -298,10 +360,10 @@ Exit codes (verb-disambiguated where noted):
 | 0    | Success (or, for `--grep`, ≥1 match) |
 | 1    | Save failed (`--write`/`--replace[-all]`) \| no match (`--grep`) \| `--dry-run`: the edit would change nothing |
 | 2    | Bad CLI args (missing positional, empty pattern, malformed `--expect-N`) |
-| 3    | File not found |
-| 4    | OLD not found in FILE (`--replace[-all]`; suppressed when `--expect-N=0`) |
+| 3    | File not found, or not readable as a file (a directory, a read error; since 1.12.3) |
+| 4    | OLD not found in FILE (`--replace[-all]`; suppressed when `--expect-N=0`) \| line range past the end (`--replace-lines`, `--batch-lines`) |
 | 5    | OLD occurs more than once and `--replace-all` not used |
-| 6    | Assertion failed (`--expect`/`--expect-not`/`--expect-N` mismatch) |
+| 6    | Assertion failed (`--expect`/`--expect-not`/`--expect-N` mismatch, or `--expect-first`) |
 
 **What stderr says.** The exit code is the contract. The stderr text is
 for whoever acts on the failure. Since 1.12.0 it names what failed:

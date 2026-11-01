@@ -12,7 +12,9 @@ Run: python3 tests/integration_smoke.py
 """
 import os
 import pty
+import random
 import select
+import subprocess
 import sys
 import time
 
@@ -85,6 +87,128 @@ def assert_eq(actual, expected, name):
         print(f"  FAIL: {name}\n    expected: {expected!r}\n    actual:   {actual!r}")
         return False
     return True
+
+
+def _lines_of(data):
+    """`data` split into lines that keep their newline; the last may lack one."""
+    out, start = [], 0
+    for i, c in enumerate(data):
+        if c == 10:
+            out.append(data[start:i + 1])
+            start = i + 1
+    if start < len(data):
+        out.append(data[start:])
+    return out
+
+
+def _model_lines(data, ranges):
+    """The file --replace-lines / --batch-lines should leave: each (a, b, new)
+    replaces lines a..b of the ORIGINAL, NEW gaining a newline when it lacks
+    one, unless the range ends at a last line that has none."""
+    lines = _lines_of(data)
+    out, nxt = [], 1
+    for a, b, new in sorted(ranges):
+        out.extend(lines[nxt - 1:a - 1])
+        last_noeol = b == len(lines) and not lines[-1].endswith(b"\n")
+        if new:
+            out.append(new)
+            if not new.endswith(b"\n") and not last_noeol:
+                out.append(b"\n")
+        nxt = b + 1
+    out.extend(lines[nxt - 1:])
+    return b"".join(out)
+
+
+def line_verbs_model():
+    """--replace-lines and --batch-lines (1.12.3) against _model_lines: 300
+    random files (empty lines, tabs, random final newline) and random edits,
+    single and batched (triples shuffled), plus invalid ones (range past the
+    end, wrong FIRST, overlapping ranges) that must exit 4 / 6 / 2 and leave
+    the file byte-identical. Returns True when every case agrees."""
+    rnd = random.Random(0x11DE5)
+    path = "/tmp/cyim-lines-model.txt"
+    words = [b"", b"a", b"bb", b"  x = 1;", b"tab\there", b"a"]
+    ok = True
+
+    def rand_new():
+        n = rnd.randint(0, 3)
+        new = b"\n".join(rnd.choice(words) for _ in range(n))
+        if n and rnd.random() < 0.5:
+            new += b"\n"
+        return new
+
+    for it in range(300):
+        data = b"\n".join(rnd.choice(words) for _ in range(rnd.randint(0, 30)))
+        if data and rnd.random() < 0.7:
+            data += b"\n"
+        lines = _lines_of(data)
+        n = len(lines)
+        with open(path, "wb") as f:
+            f.write(data)
+
+        def first(a):
+            ln = lines[a - 1]
+            return ln[:-1] if ln.endswith(b"\n") else ln
+
+        roll = rnd.random()
+        if n == 0 or roll < 0.15:
+            # Invalid: must be refused, file untouched.
+            if n == 0 or rnd.random() < 0.5:
+                a = max(n, 1)
+                args = [CYIM, "--replace-lines", f"{a}:{n + 1 + rnd.randint(0, 3)}".encode(), b"-", path.encode(),
+                        b"--expect-first=" + (first(a) if n else b"")]
+                want_rc = 4
+            else:
+                a = rnd.randint(1, n)
+                args = [CYIM, "--replace-lines", f"{a}:{a}".encode(), b"-", path.encode(),
+                        b"--expect-first=" + first(a) + b"Z"]
+                want_rc = 6
+            p = subprocess.run(args, input=b"X\n", capture_output=True)
+            with open(path, "rb") as f:
+                got = f.read()
+            if p.returncode != want_rc or got != data:
+                print(f"  FAIL: lines model case {it}: invalid edit gave rc {p.returncode} (want {want_rc}), "
+                      f"file changed = {got != data}")
+                ok = False
+        elif roll < 0.55:
+            a = rnd.randint(1, n)
+            b = rnd.randint(a, n)
+            new = rand_new()
+            p = subprocess.run([CYIM, "--replace-lines", f"{a}:{b}".encode(), b"-", path.encode(),
+                                b"--expect-first=" + first(a)], input=new, capture_output=True)
+            with open(path, "rb") as f:
+                got = f.read()
+            want = _model_lines(data, [(a, b, new)])
+            if p.returncode != 0 or got != want:
+                print(f"  FAIL: lines model case {it}: --replace-lines {a}:{b} rc {p.returncode}; "
+                      f"got {got!r}, want {want!r}")
+                ok = False
+        else:
+            # Non-overlapping ranges, sent in shuffled order.
+            cuts = sorted(rnd.sample(range(1, n + 1), min(n, 2 * rnd.randint(1, 4))))
+            ranges = [(cuts[i], cuts[i + 1], rand_new()) for i in range(0, len(cuts) - 1, 2)]
+            if not ranges:
+                ranges = [(1, 1, rand_new())]
+            overlap = len(ranges) > 1 and rnd.random() < 0.2
+            sent = list(ranges)
+            if overlap:
+                a0, b0, n0 = sent[0]
+                sent.append((b0, b0, b"Q\n"))
+            rnd.shuffle(sent)
+            stdin = b"".join(f"{a}:{b}".encode() + b"\0" + first(a) + b"\0" + new + b"\0" for a, b, new in sent)
+            p = subprocess.run([CYIM, "--batch-lines", path.encode()], input=stdin, capture_output=True)
+            with open(path, "rb") as f:
+                got = f.read()
+            want_rc, want = (2, data) if overlap else (0, _model_lines(data, ranges))
+            if p.returncode != want_rc or got != want:
+                print(f"  FAIL: lines model case {it}: --batch-lines {sent} rc {p.returncode} (want {want_rc}); "
+                      f"got {got!r}, want {want!r}")
+                ok = False
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    return ok
 
 
 def main():
@@ -997,6 +1121,12 @@ def main():
         print("  PASS: stdout to a dead pipe — no SIGPIPE death, exit 0, terminal cooked")
     else:
         print(f"  FAIL: stdout to a dead pipe: {desc(st)}, terminal cooked = {cooked}")
+        ok = False
+
+    print("=== --replace-lines / --batch-lines against a model (300 random cases) ===")
+    if line_verbs_model():
+        print("  PASS: every edit matched the model; every invalid one was refused untouched")
+    else:
         ok = False
 
     for p111 in ("/tmp/cyim-esc-\x1b]0;PWNED\x07-name.txt", "/tmp/cyim-c1-smoke.txt",
