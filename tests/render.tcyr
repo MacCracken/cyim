@@ -408,6 +408,50 @@ fn main() {
     assert_eq(render_build_line_naked(wb, 0, MAX_COLS, 0, wout, wcap) <= wcap, 1,
       "naked render at MAX_COLS stays within out_max");
 
+    # 1.13.1: the frame draws a view by walking line starts. Walking must give
+    # the same bytes, line for line, as asking for each line by number —
+    # including empty lines, the last line without a newline, and highlighting.
+    test_group("1.13.1 — drawing by line start == drawing by line number");
+    var vb = buf_new();
+    var vsrc = "fn main() {\n\n    var x = 42; # c\n\t\n}\nlast";
+    buf_insert(vb, vsrc, strlen(vsrc));
+    buf_move(vb, 0);
+    var vtb = highlight_buf(vb, "cyrius");
+    var va = alloc(512);
+    var vz = alloc(512);
+    var vn = buf_line_count(vb);
+    var vls = 0;
+    var vk = 0;
+    var same_naked = 1;
+    var same_crlf = 1;
+    while (vk < vn) {
+        var na = render_build_line_at(vb, vls, 80, vtb, va, 256);
+        var nz = render_build_line_naked(vb, vk, 80, vtb, vz, 256);
+        if (na != nz) { same_naked = 0; }
+        if (na == nz) {
+            var vi = 0;
+            while (vi < na) {
+                if (load8(va + vi) != load8(vz + vi)) { same_naked = 0; }
+                vi = vi + 1;
+            }
+        }
+        var ca = render_build_line_crlf_at(vb, vls, 80, vtb, va, 256);
+        var cz = render_build_line(vb, vk, 80, vtb, vz, 256);
+        if (ca != cz) { same_crlf = 0; }
+        if (ca == cz) {
+            var vj = 0;
+            while (vj < ca) {
+                if (load8(va + vj) != load8(vz + vj)) { same_crlf = 0; }
+                vj = vj + 1;
+            }
+        }
+        vls = buf_next_line_start(vb, vls);
+        vk = vk + 1;
+    }
+    assert_eq(vn, 6, "fixture has 6 lines");
+    assert_eq(same_naked, 1, "render_build_line_at == render_build_line_naked on every line");
+    assert_eq(same_crlf, 1, "render_build_line_crlf_at == render_build_line on every line");
+
     test_group("1.11.2 — the picker overlay fits short terminals");
     assert_eq(_render_list_height(24, 50), 10, "tall terminal: capped at 10 rows");
     assert_eq(_render_list_height(24, 3), 3, "short list: its own length");

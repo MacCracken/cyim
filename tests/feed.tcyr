@@ -111,8 +111,7 @@ fn main() {
     test_group("Other multi-byte CSI keys are swallowed whole in INSERT");
     var s7 = ed_with("abc", 1);
     editor_step(s7, 105);                       # i
-    feed(s7, "\x1b[5~");                        # PgUp
-    feed(s7, "\x1b[6~");                        # PgDn
+    # PgUp / PgDn scroll since 1.13.1 (tests/scroll.tcyr), so they are not here.
     feed(s7, "\x1b[2~");                        # Insert
     feed(s7, "\x1b[1~");                        # Home (vt / rxvt)
     feed(s7, "\x1b[4~");                        # End
@@ -230,13 +229,13 @@ fn main() {
     assert_eq(editor_mode(s17), MODE_SEARCH, "still SEARCH");
     assert_eq(buf_len(editor_cmdbuf(s17)), 0, "cmdbuf empty");
 
-    # Like any unmatched follow-up key, the arrow is consumed by the prefix.
+    # Like any unmatched follow-up key, the arrow is consumed by the prefix.  #skip-lint: prefix-sequence noun
     test_group("An arrow cancels a pending `g`");
     var s18 = ed_with("aa\nbb\ncc\n", 3);
     editor_step(s18, 103);                      # g
     feed(s18, "\x1b[B");
     assert_eq(editor_prefix(s18), 0, "prefix cleared (1.11.1: still pending)");
-    assert_eq(buf_cursor(editor_buf(s18)), 3, "consumed as the prefix's follow-up");
+    assert_eq(buf_cursor(editor_buf(s18)), 3, "consumed as the prefix's follow-up");  #skip-lint: prefix-sequence noun
     editor_step(s18, 103);                      # g: a new prefix, not `gg`
     assert_eq(buf_cursor(editor_buf(s18)), 3, "g <Down> g does not jump to the top (1.11.1: 0)");
     assert_eq(editor_prefix(s18), KEY_G, "the second g is pending on its own");
@@ -256,6 +255,93 @@ fn main() {
     feed(s20, "\x1b[C");
     editor_step(s20, 100);                      # d
     assert_eq(buf_eq(editor_buf(s20), "cdef", 4), 1, "v <Right> d removes 'ab'");
+
+    # BUG-008, 1.13.1: rxvt's `ESC [ <digit> $`. Through 1.13.0 the `$` kept
+    # the sequence open and the next key was eaten as its final byte.
+    test_group("BUG-008: rxvt Shift-Delete (`ESC [ 3 $`) is Delete, and the next key survives");
+    var s21 = ed_with("abc", 0);
+    editor_step(s21, 105);                      # i
+    feed(s21, "\x1b[3$x");
+    assert_eq(buf_eq(editor_buf(s21), "xbc", 3), 1, "'a' deleted, 'x' typed (1.13.0: 'abc', x swallowed)");
+    assert_eq(editor_feed_pending(s21), 0, "nothing held");
+    assert_eq(editor_mode(s21), MODE_INSERT, "still INSERT");
+
+    test_group("BUG-008: the other rxvt `$` keys act as their `~` forms");
+    var s22 = ed_with("abc", 1);
+    editor_step(s22, 105);                      # i
+    feed(s22, "\x1b[2$");                       # Shift-Insert: swallowed
+    feed(s22, "\x1b[7$");                       # Shift-Home: swallowed
+    feed(s22, "\x1b[8$");                       # Shift-End: swallowed
+    feed(s22, "y");
+    assert_eq(buf_eq(editor_buf(s22), "aybc", 4), 1, "nothing leaked, 'y' typed after them");
+    var s23 = ed_with("abc", 0);
+    feed(s23, "\x1b[3$");                       # NORMAL: Shift-Delete is `x`
+    assert_eq(buf_eq(editor_buf(s23), "bc", 2), 1, "NORMAL: deletes like `x`");
+
+    test_group("BUG-008: a `$` after anything but digits stays an intermediate byte");
+    var s24 = ed_with("abc", 0);
+    editor_step(s24, 105);                      # i
+    feed(s24, "\x1b[?1;2$y");                   # a DECRPM reply shape: `y` is its final
+    assert_eq(buf_eq(editor_buf(s24), "abc", 3), 1, "the whole reply swallowed, nothing typed");
+    assert_eq(editor_feed_pending(s24), 0, "nothing held");
+    feed(s24, "\x1b[1;2$y");                    # ANSI-mode DECRPM: `;` before the `$`
+    assert_eq(buf_eq(editor_buf(s24), "abc", 3), 1, "swallowed too");
+    feed(s24, "\x1b[$z");                       # no parameters: not rxvt's shape
+    assert_eq(buf_eq(editor_buf(s24), "abc", 3), 1, "`$` with no digits stays open; `z` ends it");
+
+    test_group("BUG-008: decodes the same split across reads");
+    var s25 = ed_with("abc", 0);
+    editor_step(s25, 105);                      # i
+    feed_cont(s25, "\x1b[3");
+    assert_eq(editor_feed_pending(s25), 1, "held after `ESC [ 3`");
+    feed(s25, "$x");
+    assert_eq(buf_eq(editor_buf(s25), "xbc", 3), 1, "same result as one read");
+
+    # BUG-007, 1.13.1: SS3 keys, decoded only when one read is exactly the key.
+    test_group("BUG-007: a read of exactly `ESC O P` is F1, swallowed");
+    var s26 = ed_with("abc
+", 1);
+    assert_eq(editor_feed_ss3(s26, "\x1bOP", 3), 1, "consumed");
+    assert_eq(buf_eq(editor_buf(s26), "abc\n", 4), 1, "no line opened, nothing typed (1.13.0: 'P\nabc\n')");
+    assert_eq(editor_mode(s26), MODE_NORMAL, "still NORMAL");
+    assert_eq(editor_feed_ss3(s26, "\x1bOQ", 3), 1, "F2");
+    assert_eq(editor_feed_ss3(s26, "\x1bOR", 3), 1, "F3");
+    assert_eq(editor_feed_ss3(s26, "\x1bOS", 3), 1, "F4");
+    assert_eq(buf_eq(editor_buf(s26), "abc\n", 4), 1, "F2–F4 swallowed too");
+
+    test_group("BUG-007: `ESC O A`..`D` are the arrows");
+    var s27 = ed_with("ab\ncd\n", 4);
+    assert_eq(editor_feed_ss3(s27, "\x1bOA", 3), 1, "consumed");
+    assert_eq(buf_cursor(editor_buf(s27)), 1, "Up: line 0, col 1");
+    editor_feed_ss3(s27, "\x1bOB", 3);
+    assert_eq(buf_cursor(editor_buf(s27)), 4, "Down: back to line 1");
+    editor_feed_ss3(s27, "\x1bOD", 3);
+    assert_eq(buf_cursor(editor_buf(s27)), 3, "Left");
+    editor_feed_ss3(s27, "\x1bOC", 3);
+    assert_eq(buf_cursor(editor_buf(s27)), 4, "Right");
+    var s28 = ed_with("abc", 0);
+    editor_step(s28, 105);                      # i
+    editor_feed_ss3(s28, "\x1bOP", 3);
+    assert_eq(editor_mode(s28), MODE_INSERT, "F1 in INSERT: stays INSERT (1.13.0: left it)");
+    assert_eq(buf_eq(editor_buf(s28), "abc", 3), 1, "and types nothing");
+
+    test_group("BUG-007: anything else is left to editor_feed, as keystrokes");
+    var s29 = ed_with("abc\n", 0);
+    assert_eq(editor_feed_ss3(s29, "\x1bOx", 3), 0, "unknown final: not consumed");
+    assert_eq(editor_feed_ss3(s29, "\x1bOPx", 4), 0, "four bytes: not consumed");
+    assert_eq(editor_feed_ss3(s29, "\x1bO", 2), 0, "two bytes: not consumed");
+    assert_eq(editor_feed_ss3(s29, "xOP", 3), 0, "no ESC: not consumed");
+    assert_eq(editor_feed_ss3(s29, "\x1b[P", 3), 0, "a CSI is not SS3");
+    assert_eq(buf_eq(editor_buf(s29), "abc\n", 4), 1, "none of those did anything");
+    feed_cont(s29, "\x1b");
+    assert_eq(editor_feed_ss3(s29, "\x1bOP", 3), 0, "a carried ESC first: not consumed");
+    editor_feed_flush(s29);
+    # The vim gesture itself, as an agent or three separate reads send it.
+    var s30 = ed_with("abc\n", 0);
+    editor_step(s30, 105);                      # i
+    feed(s30, "\x1bOP");
+    assert_eq(buf_eq(editor_buf(s30), "P\nabc\n", 6), 1, "editor_feed: <Esc>O then P typed, as ever");
+    assert_eq(editor_mode(s30), MODE_INSERT, "in INSERT on the new line");
 
     return assert_summary();
 }

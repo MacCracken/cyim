@@ -201,7 +201,85 @@ fn main() {
     }
     bench_report(bench_cached);
 
+    # 1.13.1: the view. A frame's buffer-side work for one 22-row leaf — what
+    # `_render_leaf` and `_render_frame_multi` do minus the writes — with the
+    # cursor on the first line and on the last line of the 1 MB fixture
+    # (65,536 lines). Before 1.13.1 only the first case existed: every frame
+    # drew from line 0. The third bench draws the same end-of-file screen by
+    # line NUMBER, which is what the line walk avoids.
+    syscall(1, 1, "\n=== a 22-row view frame on the 1 MB buffer (1.13.1) ===\n", 57);
+    var vtb = highlight_buf(b1, "plain");
+    buf_move(b1, 0);
+    var bench_vtop = bench_new("view_frame_22rows_1MB_top_x10");
+    var vt_round = 0;
+    while (vt_round < 3) {
+        bench_start(bench_vtop);
+        var vt = 0;
+        while (vt < 10) {
+            bench_view_frame(b1, 22, vtb, &out);
+            vt = vt + 1;
+        }
+        bench_stop(bench_vtop);
+        vt_round = vt_round + 1;
+    }
+    bench_report(bench_vtop);
+
+    buf_move(b1, buf_pos_of_line(b1, buf_line_count(b1) - 1));
+    var bench_vend = bench_new("view_frame_22rows_1MB_end_x10");
+    var ve_round = 0;
+    while (ve_round < 3) {
+        bench_start(bench_vend);
+        var ve = 0;
+        while (ve < 10) {
+            bench_view_frame(b1, 22, vtb, &out);
+            ve = ve + 1;
+        }
+        bench_stop(bench_vend);
+        ve_round = ve_round + 1;
+    }
+    bench_report(bench_vend);
+
+    var bench_vnum = bench_new("view_lines_by_number_22rows_1MB_end_x10");
+    var vtop_end = buf_line_count(b1) - 22;
+    var vn_round = 0;
+    while (vn_round < 3) {
+        bench_start(bench_vnum);
+        var vn = 0;
+        while (vn < 10) {
+            var vl = 0;
+            while (vl < 22) {
+                render_build_line_naked(b1, vtop_end + vl, 80, vtb, &out, 8192);
+                vl = vl + 1;
+            }
+            vn = vn + 1;
+        }
+        bench_stop(bench_vnum);
+        vn_round = vn_round + 1;
+    }
+    bench_report(bench_vnum);
+
     return 0;
+}
+
+# One leaf's buffer-side frame work, as `_render_leaf` does it
+# (src/render.cyr), without writing anything: count lines, find the cursor's
+# line, follow it, walk back to the view's top and draw `h` lines down from
+# there. Returns the cursor row so nothing is dead.
+fn bench_view_frame(b, h, tb, out) {
+    var n = buf_line_count(b);
+    var cpos = buf_cursor(b);
+    var cur = buf_line_of(b, cpos);
+    var top = view_follow(0, cur, h);
+    var ls = buf_prev_line_start(b, cpos, cur - top);
+    var line = 0;
+    while (line < h) {
+        if (top + line < n) {
+            render_build_line_at(b, ls, 80, tb, out, 8192);
+            ls = buf_next_line_start(b, ls);
+        }
+        line = line + 1;
+    }
+    return cur - top + 1;
 }
 
 var exit_code = main();

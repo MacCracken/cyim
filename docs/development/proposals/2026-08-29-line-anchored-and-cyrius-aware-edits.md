@@ -7,7 +7,7 @@
 `--expect-first`, plus `--batch-lines`, a separate verb rather than line pairs inside `--batch`, because its
 ranges resolve against the original file while `--batch` pairs apply one after another. NEW comes from a
 file or from stdin (`-`). § 4 needs a scope decision, and § 5 is for 2.x (see `../roadmap.md`).
-**Related issue:** [`../issues/2026-08-29-batch-and-expect-diagnostics.md`](../issues/2026-08-29-batch-and-expect-diagnostics.md)
+**Related issue:** [`../issues/archive/2026-08-29-batch-and-expect-diagnostics.md`](../issues/archive/2026-08-29-batch-and-expect-diagnostics.md)
 
 ---
 

@@ -107,6 +107,16 @@ var ACT_WIN_DOWN          = 401;
 var ACT_WIN_UP            = 402;
 var ACT_WIN_RIGHT         = 403;
 
+# Scrolling the view (1.13.1). Applied by `window_apply` (src/window.cyr),
+# which knows the view's height. Each keeps the cursor on screen, moving it
+# only as far as it must, except where the line says otherwise.
+var ACT_SCROLL_LINE_DOWN  = 410;   # Ctrl-e — one line
+var ACT_SCROLL_LINE_UP    = 411;   # Ctrl-y
+var ACT_SCROLL_HALF_DOWN  = 412;   # Ctrl-d — half a view; the cursor moves as far
+var ACT_SCROLL_HALF_UP    = 413;   # Ctrl-u
+var ACT_SCROLL_PAGE_DOWN  = 414;   # Ctrl-f / PgDn — a view less two lines
+var ACT_SCROLL_PAGE_UP    = 415;   # Ctrl-b / PgUp
+
 # ──── Key codes (ASCII / control)
 var KEY_ESC       = 27;
 var KEY_ENTER     = 13;
@@ -114,7 +124,14 @@ var KEY_LF        = 10;
 var KEY_BACKSPACE = 8;
 var KEY_DEL       = 127;
 var KEY_CTRL_W    = 23;
-var KEY_CTRL_R    = 18;   # the ONLY seeded binding with no printable char
+var KEY_CTRL_R    = 18;   # redo
+# 1.13.1 — the scroll keys, seeded into the NORMAL keymap like Ctrl-r.
+var KEY_CTRL_B    = 2;
+var KEY_CTRL_D    = 4;
+var KEY_CTRL_E    = 5;
+var KEY_CTRL_F    = 6;
+var KEY_CTRL_U    = 21;
+var KEY_CTRL_Y    = 25;
 var KEY_G         = 103;   # v1.4.2 — prefix for `gg` + plugin normal_prefix_key
 var KEY_M         = 109;   # v1.6.0 — prefix for `m<letter>` (set mark)
 var KEY_QUOTE     = 39;    # v1.6.0 — prefix for `'<letter>` (jump to mark)
@@ -132,6 +149,13 @@ var KEY_UP        = 257;
 var KEY_DOWN      = 258;
 var KEY_RIGHT     = 259;
 var KEY_LEFT      = 260;
+# 1.13.1 — Page Up / Page Down (`ESC [ 5 ~` / `ESC [ 6 ~`, decoded by
+# `editor_feed`). A page scroll in NORMAL, VISUAL and INSERT, swallowed on the
+# command and search lines. ⚠ Every mode must decide these explicitly: a code
+# that falls through to a literal-byte default is stored by its low byte, and
+# 261 would type a Ctrl-e.
+var KEY_PGUP      = 261;
+var KEY_PGDN      = 262;
 
 # ──── Error codes (set into state.last_error)
 var ERR_NONE            = 0;
@@ -198,12 +222,20 @@ var ERR_FILE_TOO_LARGE  = 6;  # M7 audit F-2 — :e refused because file > maxfi
 #   off 216  feed_plen        i64  CSI parameter / intermediate bytes seen so
 #                                   far. Counts past 16; only 16 are kept.
 #   off 224  feed_pbuf        16B  the first 16 of those bytes (two slots).
+#   off 240  view_top         i64  1.13.1 — first buffer line drawn by the
+#                                   SINGLE view: the one `render_frame` draws
+#                                   when there is no window tree. A window
+#                                   leaf carries its own (src/window.cyr), and
+#                                   the binary always has a tree, so this slot
+#                                   serves embedders and the test suites.
+#   off 248  view_rows        i64  1.13.1 — text rows that view showed in the
+#                                   last frame; 0 until one is drawn.
 
 # Allocate a fresh editor state over buffer `buf`, with every field at its
 # documented default (NORMAL mode, tabstop 4, maxfilesize 100 MB, everything
 # else zero). The command buffer is allocated here; the dot buffer is not.
 fn editor_new(buf) {
-    var s = alloc(240);
+    var s = alloc(256);
     store64(s, MODE_NORMAL);
     store64(s + 8, buf);
     var nmap = map_u64_new();
@@ -236,6 +268,8 @@ fn editor_new(buf) {
     store64(s + 216, 0);   # feed_plen
     store64(s + 224, 0);   # feed_pbuf[0..8)
     store64(s + 232, 0);   # feed_pbuf[8..16)
+    store64(s + 240, 0);   # view_top — top of the file
+    store64(s + 248, 0);   # view_rows — not drawn yet
     return s;
 }
 
@@ -405,6 +439,21 @@ fn _editor_set_feed_plen(s, v)     { store64(s + 216, v); return 0; }
 # Address of the 16-byte CSI parameter store inside the record.
 fn _editor_feed_pbuf(s)            { return s + 224; }
 
+# First line the single view draws (off 240). Private: callers go through
+# `editor_view_top` (src/window.cyr), which picks the active leaf's instead
+# whenever a window tree exists.
+fn _editor_solo_top(s)             { return load64(s + 240); }
+
+# Set the single view's first line. Private, as above.
+fn _editor_set_solo_top(s, v)      { store64(s + 240, v); return 0; }
+
+# Text rows the single view showed in the last frame (off 248), 0 before
+# the first. Private: callers use `editor_view_rows`.
+fn _editor_solo_rows(s)            { return load64(s + 248); }
+
+# Record the single view's text rows. Written by `render_frame`.
+fn _editor_set_solo_rows(s, v)     { store64(s + 248, v); return 0; }
+
 # Seed NORMAL-mode keymap with the canonical single-byte vi mappings.
 fn _seed_normal_keymap(m) {
     map_u64_set(m, 104, ACT_MOVE_LEFT);        # h
@@ -431,6 +480,12 @@ fn _seed_normal_keymap(m) {
     map_u64_set(m, 35,  ACT_SEARCH_WORD_BACK);   # #
     map_u64_set(m, 117, ACT_UNDO);               # u
     map_u64_set(m, KEY_CTRL_R, ACT_REDO);        # Ctrl-r (0x12)
+    map_u64_set(m, KEY_CTRL_E, ACT_SCROLL_LINE_DOWN);   # Ctrl-e
+    map_u64_set(m, KEY_CTRL_Y, ACT_SCROLL_LINE_UP);     # Ctrl-y
+    map_u64_set(m, KEY_CTRL_D, ACT_SCROLL_HALF_DOWN);   # Ctrl-d
+    map_u64_set(m, KEY_CTRL_U, ACT_SCROLL_HALF_UP);     # Ctrl-u
+    map_u64_set(m, KEY_CTRL_F, ACT_SCROLL_PAGE_DOWN);   # Ctrl-f
+    map_u64_set(m, KEY_CTRL_B, ACT_SCROLL_PAGE_UP);     # Ctrl-b
     map_u64_set(m, 118, ACT_TO_VISUAL);          # v
     map_u64_set(m, 86,  ACT_TO_VISUAL_LINE);     # V
     map_u64_set(m, 112, ACT_PASTE_AFTER);        # p
@@ -447,6 +502,23 @@ fn _arrow_action(key) {
     if (key == KEY_RIGHT) { return ACT_MOVE_RIGHT; }
     if (key == KEY_LEFT)  { return ACT_MOVE_LEFT; }
     return ACT_NONE;
+}
+
+# The scroll a Page Up / Page Down key stands for, or ACT_NONE when `key` is
+# neither. The NORMAL, VISUAL and INSERT branches below all use it.
+fn _page_action(key) {
+    if (key == KEY_PGDN) { return ACT_SCROLL_PAGE_DOWN; }
+    if (key == KEY_PGUP) { return ACT_SCROLL_PAGE_UP; }
+    return ACT_NONE;
+}
+
+# 1 if `act` is one of the ACT_SCROLL_* actions, else 0. VISUAL mode lets
+# these through as it does motions.
+fn _is_scroll_action(act) {
+    if (act >= ACT_SCROLL_LINE_DOWN) {
+        if (act <= ACT_SCROLL_PAGE_UP) { return 1; }
+    }
+    return 0;
 }
 
 # Translate one input byte into an action and update mode-state if the action
@@ -607,6 +679,7 @@ fn editor_dispatch(s, key) {
         # into the keymap because KEY_DELETE is not a byte.
         if (key == KEY_DELETE) { return ACT_DELETE_RIGHT; }
         if (_arrow_action(key) != ACT_NONE) { return _arrow_action(key); }
+        if (_page_action(key) != ACT_NONE) { return _page_action(key); }
         if (key == KEY_CTRL_W) {
             editor_set_prefix(s, KEY_CTRL_W);
             return ACT_NONE;
@@ -652,12 +725,14 @@ fn editor_dispatch(s, key) {
         if (key == 100)     { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; } # d
         if (key == KEY_DELETE) { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
         if (_arrow_action(key) != ACT_NONE) { return _arrow_action(key); }
-        # Motions allowed; everything else is swallowed so dispatch
-        # doesn't trigger inserts / commands while a selection is open.
+        if (_page_action(key) != ACT_NONE) { return _page_action(key); }
+        # Motions and scrolls allowed; everything else is swallowed so
+        # dispatch doesn't trigger inserts / commands while a selection is open.
         var act = map_u64_get(load64(s + 16), key);
         if (act >= ACT_MOVE_LEFT) {
             if (act <= ACT_MOVE_FILE_END) { return act; }
         }
+        if (_is_scroll_action(act) == 1) { return act; }
         return ACT_NONE;
     }
     if (mode == MODE_VISUAL_LINE) {
@@ -668,10 +743,12 @@ fn editor_dispatch(s, key) {
         if (key == 100)     { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
         if (key == KEY_DELETE) { store64(s, MODE_NORMAL); return ACT_VISUAL_DELETE; }
         if (_arrow_action(key) != ACT_NONE) { return _arrow_action(key); }
+        if (_page_action(key) != ACT_NONE) { return _page_action(key); }
         var act = map_u64_get(load64(s + 16), key);
         if (act >= ACT_MOVE_LEFT) {
             if (act <= ACT_MOVE_FILE_END) { return act; }
         }
+        if (_is_scroll_action(act) == 1) { return act; }
         return ACT_NONE;
     }
 
@@ -683,6 +760,9 @@ fn editor_dispatch(s, key) {
         if (key == KEY_BACKSPACE) { return ACT_DELETE_LEFT; }
         if (key == KEY_DELETE)    { return ACT_DELETE_RIGHT; }   # forward delete; stays in INSERT
         if (_arrow_action(key) != ACT_NONE) { return _arrow_action(key); }
+        # PgUp / PgDn scroll, as in vim. Ctrl-e / Ctrl-d and the rest stay
+        # literal bytes here: in INSERT they are not scroll keys.
+        if (_page_action(key) != ACT_NONE) { return _page_action(key); }
         return ACT_INSERT_LITERAL;
     }
 
@@ -696,6 +776,7 @@ fn editor_dispatch(s, key) {
         # would store the code's low byte, a NUL.
         if (key == KEY_DELETE)    { return ACT_NONE; }
         if (_arrow_action(key) != ACT_NONE) { return ACT_NONE; }
+        if (_page_action(key) != ACT_NONE)  { return ACT_NONE; }
         return ACT_CMDLINE_APPEND;
     }
 
@@ -710,6 +791,7 @@ fn editor_dispatch(s, key) {
         if (key == KEY_BACKSPACE) { return ACT_CMDLINE_BACKSPACE; }
         if (key == KEY_DELETE)    { return ACT_NONE; }
         if (_arrow_action(key) != ACT_NONE) { return ACT_NONE; }
+        if (_page_action(key) != ACT_NONE)  { return ACT_NONE; }
         return ACT_CMDLINE_APPEND;
     }
 

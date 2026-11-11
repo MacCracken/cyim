@@ -113,6 +113,10 @@ for humanity. Consumers:
   all resolved against the original file. Closeout for the 1.12.x line.
 - **v1.13.0** — a failed write to stdout is exit 7: `--grep`, `--wc`,
   `--dry-run` and `--help` no longer report success having printed nothing.
+- **v1.13.1** — **the screen scrolls.** The view follows the cursor (before
+  this, nothing past a file's first screen could be seen), and `Ctrl-e` /
+  `Ctrl-y` / `Ctrl-d` / `Ctrl-u` / `Ctrl-f` / `Ctrl-b` and PgUp / PgDn
+  scroll. F1–F4 (SS3) and rxvt's Shift keys no longer leak into the buffer.
 
 Current pins: cyrius `6.7.18`, vyakarana `2.10.0`, cyim-lsp `1.5.4`,
 darshana `1.7.0`.
@@ -154,6 +158,7 @@ cyim --probe                               # TTY round-trip diagnostic
 Daily-driver bindings (full reference: [`docs/guides/keymap.md`](docs/guides/keymap.md)):
 
 - `h j k l` motions; `0` / `$` line bounds; `w` / `b` words; `gg` / `G` file bounds
+- `Ctrl-e` / `Ctrl-y` scroll a line; `Ctrl-d` / `Ctrl-u` half a view; `Ctrl-f` / `Ctrl-b` (PgDn / PgUp) a page
 - `m<letter>` set mark; `'<letter>` jump to mark (per-buffer a-z + global A-Z)
 - `i` / `a` / `A` enter INSERT; `Esc` exits; `x` deletes; `u` / `Ctrl-r` undo/redo; `.` repeat
 - `v` / `V` visual + `y` / `d` yank/delete

@@ -59,14 +59,13 @@ These rules apply to every cut in every version line below.
 
 ## Next: 1.13.x — Input and output
 
-The line opens on the output side: 1.13.0 makes the agent verbs report a
-failed write to stdout (exit 7), a gap the 1.12.x closeout review found. The
-rest of the line is the input decoder (`editor_feed`, `src/driver.cyr`), and
-each of those items needs a decision before any code.
+The line opened on the output side: 1.13.0 makes the agent verbs report a
+failed write to stdout (exit 7). 1.13.1 decoded the keys outside CSI's
+grammar (BUG-007, BUG-008). What is left is the input decoder's last item
+(`editor_feed`, `src/driver.cyr`), which needs a decision before any code.
 
 | Cut | Item | Notes |
 |---|---|---|
-| 1.13.x | **BUG-007 and BUG-008 — keys outside CSI's grammar** | See § Open Bugs. Both are the same decision: whether to recognise a sequence a terminal sends but ECMA-48 does not define as a key. For SS3, pick a risk: decode only the final bytes a terminal sends, or use inter-byte timing. Or decide not to decode either, and document that |
 | 1.13.x | **Bracketed paste** | darshana ships `tty_paste_enable` / `_disable`, and since 1.11.0 the decoder already swallows the paste markers, so turning them on changes nothing by itself. The work is deciding what a paste *does*. In INSERT and on the command line it inserts literally, so a pasted ESC cannot run commands (the pastejacking case). It also needs a NORMAL-mode behaviour, one undo unit per paste, and a dot-repeat rule. Design first, and write an ADR if the NORMAL-mode answer is not obvious |
 
 ---
@@ -82,6 +81,7 @@ user will hit them.
 |---|---|---|
 | **`:set number`** (`.cyimrc` `line_numbers`) | Stored but never rendered: `:set number` succeeds and the screen does not change | `src/mode.cyr`; [`cyimrc.md`](../guides/cyimrc.md) documents it as storage-only |
 | **`:set tabstop`** (`.cyimrc` `tabstop`) | Stored but never rendered: Tab goes to the terminal as a raw byte | same |
+| **Long lines** (BUG-009) | Cut at the window's width, with no sideways scroll or wrap: `$` takes the cursor off the right edge. Shares the column model with `tabstop` | `src/render.cyr`; § Open Bugs |
 | **Dot-repeat** | `.` repeats insert sessions only. `x`, paste and visual-mode operations do not repeat, and neither does a Delete typed during an insert session | `src/driver.cyr` |
 | **`:marks`** | No command lists the marks. `marks_count` already exists for it | `src/marks.cyr` |
 | **Ex ranges and `:s`** | `:1,5d` and `:%s/x/y/` are not parsed. `:s` can reuse the niyama regex engine that the CLI's `--regex` flavors already link | `src/command.cyr` |
@@ -134,7 +134,7 @@ these decisions are cyim's to make:
    is a break.
 5. **An exit code for "already applied".** The message half shipped in
    1.12.0. A separate code
-   ([issue](issues/2026-08-29-batch-and-expect-diagnostics.md) § 3) would
+   ([issue](issues/archive/2026-08-29-batch-and-expect-diagnostics.md) § 3) would
    change what scripts see where they get exit 4 today.
 
 **Once unblocked:**
@@ -192,6 +192,8 @@ after 2.0.0. Any of them can move earlier if its trigger fires first.
 
 | Feature | Trigger | Notes |
 |---|---|---|
+| **Mouse reporting** (click to place the cursor, wheel scrolls the view) | A user asks for clicks, or uses a terminal that does not send the wheel as arrow keys | Since 1.13.1 the wheel scrolls wherever the terminal sends it as Up / Down on the alternate screen, which most do. Turning reporting on (`?1000h` / `?1006h`) takes text selection away from the terminal unless Shift is held, so it would be a `.cyimrc` key, off by default like vim's `mouse=`, and classified under ADR 0005. The decoder already swallows SGR mouse reports |
+| **`zt` / `zz` / `zb`, counts, `scrolloff`** | A user asks | The 1.13.1 scroll keys take no count, because nothing in cyim's grammar does yet. `z` is unbound in NORMAL. `scrolloff` would be a `.cyimrc` key and a margin in `view_follow` (`src/window.cyr`) |
 | **System clipboard** | Wayland integration through `aethersafha` | Belongs in the compositor, not the editor. The single yank register stays the in-editor primitive |
 | **Terminal embed** (`:term`) | A third user asks | `Ctrl-z` and a shell work until then |
 | **Macros** (`q<reg>`) | A recurring need | Replaying a recorded key sequence is not a scripting language, so it fits the refusal. Would need named registers |
@@ -223,7 +225,7 @@ after 2.0.0. Any of them can move earlier if its trigger fires first.
 |---|---|---|
 | **LSP glue copied from cyim-lsp's example** into `src/plugins/lsp_glue.cyr` | 2: the reference label (1.6.5), the split mode (1.6.7) | A third refactor of the example glue. Then document how to copy from upstream, or include more of the bundle |
 | **F-CO-2** — extract `_cyim_lsp_jump_to_uri_lc` | 2 | `:lsp-implementation` or `:lsp-type-definition` |
-| **Window-navigation geometry** — `window_navigate` lays out at `WIN_NAV_DEFAULT_ROWS` × `WIN_NAV_DEFAULT_COLS` (23 × 80) while render uses the live size | 1 | Proportional layout keeps the two in agreement in every case tried at the 1.11.2 closeout. Revisit if Ctrl-W picks the wrong neighbour on a small terminal |
+| **Window-navigation geometry** — `window_navigate` lays out at `WIN_NAV_DEFAULT_ROWS` × `WIN_NAV_DEFAULT_COLS` (23 × 80) while render uses the live size | 2: Ctrl-W's neighbour (1.11.2); the scroll keys' height (1.13.1) | Proportional layout keeps the two in agreement in every case tried at the 1.11.2 closeout. Since 1.13.1 the scroll keys read a view's height from the same rects, so a scroll in the same read as a Ctrl-W move uses the 23 × 80 layout until the next frame. Revisit if Ctrl-W picks the wrong neighbour on a small terminal, or a third reader of the rects appears |
 | **Decimal-to-ASCII** — `_buf_append_dec`, `_cmd_ls_put_int`, agnos `_al_put_uint` | 3 | Deliberately not merged. One writes raw, one goes through a bounds-checked putter, and one writes via `syscall` under `#ifdef`. A shared version would be used three different ways. Revisit on a new instance or a bounds bug in any of them |
 
 ---
@@ -261,6 +263,7 @@ deferrals.
   - `tty_raw_nonblock`. The main loop waits in epoll.
   - `tty_paste_enable`. Paste behaviour has to be designed first
     (1.13.x).
+  - Mouse reporting. A decision first (§ Demand-gated).
   - The frame composers `tty_move_buf`, `tty_clear_to_eol_buf` and
     `tty_sgr_list_buf`. Render still writes once per line (frame
     batching, § Demand-gated).
@@ -292,73 +295,23 @@ deferrals.
 
 ## Open Bugs
 
-### BUG-007 — SS3 keys (F1–F4 on xterm-style terminals) arrive as Esc, `O`, a letter
+### BUG-009 — Text past the window's width cannot be reached
 
-Filed 2026-10-12 (cyim 1.11.0) and planned for **1.13.x**. xterm-style
-terminals send F1–F4 as SS3 sequences, `ESC O P` through `ESC O S`. The
-decoder handles only CSI (`ESC [`), so F1 arrives as three keys: Esc,
-then `O`, which opens a line above in INSERT, then `P`, which is typed.
+Filed 2026-11-11 (cyim 1.13.1), found while fixing vertical scrolling, and
+planned for **1.14.x**. Each line is drawn cut at the window's width, and
+nothing scrolls sideways or wraps. On a longer line the cursor goes past the
+right edge, where the terminal pins it, and the rest of the line never
+appears. Measured: on a 40-column terminal, `$` on a 128-byte line moves the
+cursor to column 128, and the text from column 41 on is not drawn.
 
-**Why 1.11.0 deliberately does not decode it:**
+- **Two ways to fix it.** Scroll each view sideways (vim's `nowrap` with
+  `sidescroll`), or wrap long lines onto the next rows (vim's default `wrap`).
+- **Either needs a column model first.** Today one byte is one column, except
+  `^X` (2 columns), `<xx>` (4), and Tab, which is drawn raw so the terminal
+  moves to its own tab stop. Decide this with the `:set tabstop` item below
+  and F-7 (§ 2.x), because all three change what a column is.
 
-- `<Esc>O` is an everyday vim gesture: leave INSERT, open a line above.
-  Typed quickly, both bytes land in one read. A decoder that treated
-  `ESC O <final>` as a key would eat that real command, which is worse
-  than the bug it fixes.
-- Decoding SS3 safely needs one of two signals. One is a short list of
-  final bytes that only a terminal sends, but `P` `Q` `R` `S` are also
-  plausible typed text after `O`. The other is inter-byte timing, which
-  a single `read()` does not carry.
-- So the first step is deciding which risk to take, before writing code.
-  CSI has no such conflict, because `[` is unbound in NORMAL.
-
-**Proposed (1.13.0, awaiting the owner's decision): decode SS3 only when a
-single read is exactly the sequence.**
-- **The rule.** In the interactive loop, a `read()` (8 bytes at most) that
-  returns exactly the three bytes `ESC O <final>` is the key.
-- **Why it works.** A terminal sends F1–F4 in one write, which arrives as one
-  such read. A human typing Esc, `O`, `P` produces three reads, one per
-  keystroke.
-- **What is decoded.** P / Q / R / S, which are F1–F4 and unbound, are
-  swallowed. A / B / C / D, the arrows in application-cursor mode, become the
-  arrow keys. Anything else stays three keystrokes.
-- **`--headless` never decodes SS3.** An agent's `<Esc>O` is always the
-  command.
-- **The remaining risk.** The editor is busy (a full re-highlight of a large
-  file takes about 0.25 s per frame) while a human types exactly Esc, `O`,
-  `P` and nothing after. Those keys queue into one 3-byte read, and the command
-  would be swallowed as F1. That is unlikely, and it loses keys rather than
-  running the wrong command.
-
-### BUG-008 — rxvt's `$`-final keys swallow the next key
-
-Filed 2026-10-31 at the 1.11.2 closeout, planned for **1.13.x** with
-BUG-007. rxvt and urxvt send Shift-modified Insert / Delete / Home / End /
-PgUp / PgDn as a CSI that ends in `$`, for example `ESC [ 3 $`. In
-ECMA-48, `$` (0x24) is an intermediate byte, not a final one. The decoder
-therefore keeps the sequence open, and the next key becomes its final
-byte: in INSERT, `ESC [ 3 $` followed by `x` inserts nothing.
-
-- Interactively, this only happens when the next key arrives in the same
-  read or within 50 ms. Under `--headless` it always happens, but agents
-  do not send rxvt sequences.
-- **The fix has a risk too.** Treating `$` after parameter bytes as final
-  would misparse a genuine `CSI … $ <final>` sequence, such as a DECRPM
-  reply. cyim sends no query that would produce one today. That is the
-  same trade as BUG-007, so decide both together.
-
-**Proposed (1.13.0, awaiting the owner's decision): `$` ends a CSI when the
-parameters before it are digits only.**
-- **The rule.** No `;` and no private marker (`?` `>` `<` `=`) before the `$`.
-- **Why it is safe.** rxvt's keys are exactly `ESC [ <digit> $`. A DECRPM reply
-  always has a `;` before its `$`, so the rule cannot mistake one for a key.
-- **What is decoded.** `ESC [ 3 $` (Shift-Delete) becomes Delete, as
-  `ESC [ 3 ; 2 ~` already does. The rest (Insert, Home, End, PgUp, PgDn) are
-  swallowed, like their `~` forms.
-- **The remaining risk.** None that cyim can reach: it sends no query whose
-  reply has a digits-only `$`.
-
-Closed bugs are recorded in CHANGELOG.md. The next ID is **BUG-009**.
+Closed bugs are recorded in CHANGELOG.md. The next ID is **BUG-010**.
 
 ---
 
@@ -387,5 +340,5 @@ name in the tradition, written in the language of the library.
 
 ---
 
-*Last updated: 2026-10-31, at 1.13.0. Replace this line on each update; do not
+*Last updated: 2026-11-11, at 1.13.1. Replace this line on each update; do not
 add to it.*

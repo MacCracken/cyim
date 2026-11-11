@@ -441,7 +441,18 @@ N             repeat last search (opposite direction)
 *             search forward for word under cursor
 #             search backward for word under cursor
 Ctrl-w h/j/k/l    switch focus to neighbor window
+Ctrl-e Ctrl-y     scroll the view one line down / up
+Ctrl-d Ctrl-u     scroll half a view down / up (the cursor moves as far)
+Ctrl-f Ctrl-b     scroll a page down / up (also PgDn / PgUp)
 ```
+
+The view follows the cursor: move off the bottom of the screen and it
+scrolls (1.13.1 — before that it never did, and nothing past the first
+screen of a file could be seen). The scroll keys work in NORMAL and VISUAL;
+in INSERT, PgUp / PgDn do. A mouse wheel scrolls where the terminal sends it
+as arrow keys on the alternate screen, which most do; cyim does not turn on
+mouse reporting. The [keymap reference](keymap.md) § Scrolling has the exact
+rules.
 
 Arrow keys also move the cursor (terminal CSI sequences are decoded
 at the driver layer, modifiers ignored). They work in NORMAL, INSERT, and
@@ -703,12 +714,19 @@ draws as one column. Render integration is deferred, as
 display" through 1.8.2, which it never has. Literal Tab insertion stays.
 (Auto-indent / spaces-as-Tab is post-v1.0 if asked.)
 
-**F1 opened a line and typed a letter.** xterm-style terminals send
-F1–F4 as `\x1b O P` .. `S`, which cyim does not decode (arrows, Delete
-and the other CSI keys are decoded, and swallowed when unbound): Esc,
-then `O` opens a line above, then the letter is typed — you are left
-in INSERT. `Esc u` undoes it.
-Tracked as BUG-007 in the roadmap.
+**Text past the right edge of the window can't be seen.** Lines are cut at
+the window's width and cyim does not scroll sideways yet; on a long line `$`
+puts the cursor at the right edge, not on the last character. Tracked as
+BUG-009 in the roadmap. Widen the terminal, or split the line.
+
+**`<Esc>O` typed fast did nothing.** Since 1.13.1, a read of exactly the
+three bytes Esc, `O`, `P` (or `Q`, `R`, `S`) is taken as F1–F4, which is how
+xterm-style terminals send those keys, and F1–F4 do nothing. Typed by hand
+the three keys arrive one at a time and work as ever. They can only arrive
+together if the editor was busy, for example re-highlighting a large file,
+while you typed exactly those three and paused. Type the `O` again. Through
+1.13.0 the opposite happened: F1 opened a line above and typed `P`. The
+[keymap reference](keymap.md) has the rule.
 
 **I see `<9b>` (or `<85>`, …) in a file.** That is a C1 control byte —
 an 8-bit terminal control — shown instead of being sent to your terminal

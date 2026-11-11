@@ -13,6 +13,42 @@ the source of truth for what's measured.
 
 ---
 
+## v1.13.1 — 2026-11-11 (new benches; not a re-baseline)
+
+1.13.1 gives each window a view that follows the cursor. Through 1.13.0 every
+frame drew from line 0. Three benches are new. Each times the buffer-side work
+of one 22-row leaf's frame, the same work `_render_leaf` does, minus the writes,
+×10, on the 1 MB fixture (65,536 lines).
+
+The host was loaded (average 1.9–3.8 on 16 cores), so read these as ratios.
+The v1.12.3 table below stays the absolute baseline. Ranges cover four runs.
+
+| Bench (per frame, i.e. ÷10) | 1.13.1 |
+|---|---:|
+| `view_frame_22rows_1MB_top_x10`, cursor on line 0 | 5.6–6.0 ms |
+| `view_frame_22rows_1MB_end_x10`, cursor on the last line | 9.4–10.3 ms |
+| `view_lines_by_number_22rows_1MB_end_x10`, the same screen drawn by line number | 105–111 ms |
+
+- **Why a frame is a few milliseconds.** The cost is the two O(n) scans every
+  frame already made before 1.13.1: `buf_line_count`, and `buf_line_of` for
+  the cursor. At the top, the cursor scan is free. At the end, it reads the
+  whole file. The 22 drawn lines add only microseconds.
+- **The line walk.** The frame finds its first line by walking back from the
+  cursor (`buf_prev_line_start`), then walks forward line by line
+  (`buf_next_line_start`). Drawing the same end-of-file screen by line number
+  rescans from byte 0 for each row, which is 11× slower.
+- **A first cut was 18.8 ms at the end** (one run, load 1.9). It counted the
+  cursor's line twice and found the first line by scanning from byte 0. Both
+  scans were removed before release, which halved the cost.
+- **`render_build_line_80c_x1000` gained one call frame.** `render_build_line`
+  now wraps `render_build_line_crlf_at`, which keeps the CRLF bounds logic in
+  one copy. Alternating A/B on the same host (load 3.3–3.8), three runs each:
+  1.13.0 measured 320–327 µs (min 311 µs), and 1.13.1 measured 330–362 µs
+  (min 321–339 µs), so +3–9 %. The frame loop does not take this path; it
+  calls `render_build_line_at` directly, at the same depth as 1.13.0's call.
+
+---
+
 ## v1.12.3 — 2026-10-31 (current baseline, quiet host)
 
 The first absolute numbers since 1.8.6, taken at the 1.12.x closeout on an idle

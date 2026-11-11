@@ -4,6 +4,183 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.13.1] — 2026-11-11
+
+**The screen scrolls.** Through 1.13.0 cyim had no view. Every frame drew the
+buffer from line 0, and the cursor row was clamped to the last text row. So
+`j`, `G`, the arrows and the mouse wheel moved the cursor through the file
+while the screen stayed on its first screenful, and nothing below it could be
+seen. Measured on a 24-row terminal with a 100-line file: `G`, PgDn, 40 `j`s
+and 25 Down arrows all left L000–L021 on screen. This cut also adds the vim
+scroll keys, fixes BUG-007 and BUG-008 (keys outside CSI's grammar), and
+archives the two closed issues.
+
+Audit: [`docs/audit/2026-11-11-1.13.1-audit.md`](docs/audit/2026-11-11-1.13.1-audit.md).
+
+### Fixed — the view follows the cursor
+
+- **Each window has a view, its first line.** The renderer keeps it in step
+  with the cursor every frame. When the cursor goes above the view, its line
+  becomes the top. When it goes below, the view moves just far enough to put
+  it on the bottom row. This is vim's behaviour with `scrolloff=0`.
+- **`:sp` and `:vsp`.** The new half opens on the same view and then moves on
+  its own. A window that changes buffer (`:e`, `:b`) starts at the top.
+- **The mouse wheel works** on terminals that send it as Up / Down arrows on
+  the alternate screen, which most do. cyim still does not turn on mouse
+  reporting (roadmap § Demand-gated).
+- **Cost.** A frame still makes two O(n) scans (the line count and the
+  cursor's line), as before. The first line is found by walking back from the
+  cursor, and the drawn lines by walking forward from it. On the 1 MB fixture:
+  5.6 ms per frame at the top, and 9.4 ms at the end. The same end screen
+  drawn by line number would cost 105 ms (`BENCHMARKS.md`).
+
+### Added — scrolling keys
+
+| Key | Does |
+|---|---|
+| `Ctrl-e` / `Ctrl-y` | View one line down / up |
+| `Ctrl-d` / `Ctrl-u` | View and cursor half a view down / up |
+| `Ctrl-f` / `Ctrl-b`, `PgDn` / `PgUp` | View a page (its height less two lines) down / up |
+
+- **The cursor moves only when the view leaves it off screen.** It keeps its
+  byte column, as `j` / `k` do.
+- **Repeating reaches the ends.** `Ctrl-d` and `Ctrl-f` stop scrolling once
+  the last line is on the bottom row. After that, `Ctrl-d` keeps moving the
+  cursor and `Ctrl-f` jumps it to the last line. `Ctrl-u` and `Ctrl-b` do the
+  same at the top. `Ctrl-e` can scroll until the last line is at the top.
+- **Modes.** NORMAL, VISUAL and VISUAL_LINE take every scroll key. INSERT
+  takes PgUp / PgDn only; `Ctrl-e` and the rest are still typed bytes there.
+  The `:` and `/` lines ignore PgUp / PgDn.
+- **Height.** Half a view and a page come from the window's height as last
+  drawn. `--headless` never draws, so it uses 22 rows, the height of a
+  24-row terminal's single window.
+- **PgUp / PgDn are decoded** (`ESC [ 5 ~` / `ESC [ 6 ~`, with or without a
+  `;<modifier>`). They were swallowed through 1.13.0.
+- **Not in this cut:** counts, `zt` / `zz` / `zb` and `scrolloff` (roadmap §
+  Demand-gated).
+
+The [keymap reference](docs/guides/keymap.md) § Scrolling has the full rules.
+
+### Fixed — BUG-008: rxvt's `$`-final keys swallowed the next key
+
+rxvt and urxvt send Shift-modified Insert / Delete / Home / End / PgUp / PgDn
+as `ESC [ <digit> $`. ECMA-48 makes `$` an intermediate byte, so the sequence
+stayed open and the next key became its final byte. In INSERT, Shift-Delete
+followed by `x` typed nothing.
+
+- **The fix.** A `$` now ends a CSI when every parameter byte before it is a
+  digit. The key then acts as its `~` form: Shift-Delete deletes, and
+  Shift-PgUp / PgDn scroll. The rest are swallowed.
+- **Why it is safe.** DECRPM, the only standard reply with a `$` before its
+  final byte, always has a `;` first, so it still parses whole. It is pinned in
+  `tests/feed.tcyr`. cyim sends no query anyway.
+
+### Fixed — BUG-007: F1–F4 opened a line and typed a letter
+
+xterm-style terminals send F1–F4 as SS3, `ESC O P` .. `S`, and the arrows as
+`ESC O A` .. `D` in application-cursor mode. cyim decoded only CSI, so F1
+arrived as Esc, `O` (open a line above) and a typed `P`.
+
+- **The rule.** `<Esc>O` is also a vim command, so cyim decides by timing. A
+  read(2) of the terminal that returns exactly those three bytes is the key. A
+  terminal sends a key in one write, while typing produces one read per key.
+  F1–F4 are swallowed, and `ESC O A` .. `D` move like the arrows. Any other
+  final byte stays three keystrokes.
+- **`--headless` never decodes SS3,** even when a read is exactly the three
+  bytes. An agent's `<Esc>O` is always the command.
+- **The risk taken.** If the editor is busy (re-highlighting a large file
+  takes about 0.25 s) while a human types exactly Esc, `O`, `P` and pauses,
+  the keys can queue into one read and be swallowed as F1. The keys are lost;
+  no other command runs.
+- **New:** `editor_feed_ss3(s, buf, len)`, which only the interactive loop's
+  terminal reads call. It is not called on agnos, whose keyboard channel is
+  not a read(2).
+
+### Changed
+
+- **Render walks line starts.** New in `src/buffer.cyr`:
+  `buf_next_line_start` and `buf_prev_line_start`. New in `src/render.cyr`:
+  `render_build_line_at` / `render_build_line_crlf_at`, which take a line's
+  start offset. `render_build_line` and `render_build_line_naked` wrap them,
+  so the bounds arithmetic is still in one place. The by-number path is one
+  call deeper, measured at +3–9 % on `render_build_line_80c_x1000`; the frame
+  loop does not use it. `render_line` had no callers left and is removed.
+- **A line buffer bounded by a bare literal.** `_render_leaf` passed `8192`
+  beside its `var out[8192]`, the 1.8.5 finding's shape. It now passes
+  `RENDER_LINE_BUF`.
+- **Records.** A Window is now 88 bytes, with `top` at offset 80. The editor
+  state is 256 bytes, adding `view_top` at 240 and `view_rows` at 248 for the
+  tree-less `render_frame` path. ADR 0004's frozen surface is unchanged:
+  neither record is part of it.
+- **Lint.** Two lines in `tests/feed.tcyr` raised the untracked-deferral rule's
+  known false positive ("follow-up" meaning a prefix key's second byte). They
+  are marked `#skip-lint`, so lint is back to 0 untracked deferrals.
+
+### Docs
+
+- **Issues archived.** `docs/development/issues/` held two issues closed long
+  ago: the LSP smoke handshake (closed at 1.9.1) and the `--batch` /
+  `--expect-N` diagnostics (closed at 1.12.0). Both were re-verified against
+  this build and moved to `issues/archive/`. The original commands give the
+  closed behaviour, and `cyrius smoke` is 13 / 0 behind its CI gate. Every link
+  to them was updated: in the roadmap, the 1.12.x closeout, the proposal, two
+  code comments and this file. The archived 4 KB-cap issue's `../roadmap.md`
+  links had been broken since it was archived; they are fixed too.
+- **Guides.** The keymap reference has a new § Scrolling, and its SS3 and rxvt
+  notes are rewritten. The usage guide covers scrolling and BUG-009, and its
+  F1 troubleshooting entry is replaced.
+- **Roadmap.** BUG-007 and BUG-008 are removed, and BUG-009 is filed. Two
+  demand-gated rows are new: mouse reporting, and `zt` / `zz` / `zb` / counts
+  / `scrolloff`. The window-geometry watch item goes to 2.
+- **BUG-009 (new, open).** Text past the window's width cannot be seen: lines
+  are cut, nothing scrolls sideways, and `$` on a long line takes the cursor
+  off the right edge. It is planned for 1.14.x with `:set tabstop`, since both
+  need a column model.
+
+### Tests
+
+- **`tests/scroll.tcyr`** (new, 97 assertions):
+  - the follow rule and both line walks, with the walks checked against
+    `buf_pos_of_line` on every line and byte of a fixture;
+  - view state with and without a window tree, and the height from the layout
+    or the default;
+  - every scroll key's rule and both ends, the byte column, and a file that
+    fits on one screen;
+  - PgUp / PgDn in every mode, including the command and search lines;
+  - VISUAL, and splits.
+
+  Mutation-tested three ways: a frozen `view_follow`, no page-end rule, and no
+  command-line guard.
+- **`tests/render.tcyr`** (+3): drawing by line start is byte-identical to
+  drawing by line number, on every line of a highlighted fixture.
+- **`tests/feed.tcyr`** (66 → 100): BUG-008 in INSERT and NORMAL, the
+  other `$` keys, both DECRPM shapes, and a split read. BUG-007: F1–F4, the
+  four arrows, INSERT, and the cases left to `editor_feed` (an unknown final,
+  wrong lengths, a CSI, a carried ESC). Each half is mutation-tested two ways.
+  PgUp / PgDn left the "swallowed whole" group.
+- **`tests/integration_smoke.py`** (70 → 75 PASS lines):
+  - 11 view checks on a real 24 × 80 PTY: `G`, `gg`, PgDn / PgUp, `40 j`,
+    Up / Down arrows, `Ctrl-d` / `Ctrl-u` and `Ctrl-f` to the end, each
+    checking the lines on screen and the cursor's row. 8 of the 11 fail
+    against 1.13.0.
+  - F1 as one write, the same three bytes typed, `ESC O B`, rxvt
+    Shift-Delete, and a `--headless` read of exactly `ESC O P`.
+- **`tests/perf.bcyr`:** three view benches (`BENCHMARKS.md` § v1.13.1).
+- **Totals.** `cyrius test`: 24 → **25** suites, 1387 → **1521** assertions,
+  0 failures, the same under `--aarch64`. `cyrius fuzz`: 6 / 6.
+  `tests/cli_smoke.sh`: 272 / 0. `cyrius smoke`: 13 / 0. The agnos
+  full-screen QEMU run (`scripts/agnos-fullscreen-test.py`) passes.
+
+### Binary
+
+`CYRIUS_DCE=1`:
+
+| Target | 1.13.0 | 1.13.1 |
+|---|---:|---:|
+| x86_64 Linux | 1,088,496 B | **1,092,720 B** (+4,224) |
+| agnos | 1,064,400 B | **1,072,720 B** (+8,320) |
+| aarch64 Linux | 1,551,240 B | **1,551,360 B** (+120) |
+
 ## [1.13.0] — 2026-10-31
 
 **A failed write to stdout is now exit 7.** This opens the 1.13.x line, input
@@ -433,7 +610,7 @@ had. `cyrius test` is unchanged at 1363.
 
 **Agent CLI failures say what failed.** This opens the 1.12.x line, agent
 verbs round two, and closes agnos's
-[diagnostics issue](docs/development/issues/2026-08-29-batch-and-expect-diagnostics.md):
+[diagnostics issue](docs/development/issues/archive/2026-08-29-batch-and-expect-diagnostics.md):
 - `--batch` names the failing pair;
 - count failures report the count they found;
 - "OLD not found" asks whether the edit is already applied.
@@ -2523,7 +2700,7 @@ change, as at 1.8.1. cyim's own tree was swept for the same class during this
 cut — every `var NAME[N]` in `src/`, `tests/` and `fuzz/` later accessed via
 `load64`/`store64`, checked against its maximum written offset — with **zero
 findings**. Full write-up:
-[`docs/development/issues/2026-08-11-lsp-fold-smoke-handshake.md`](docs/development/issues/2026-08-11-lsp-fold-smoke-handshake.md).
+[`docs/development/issues/archive/2026-08-11-lsp-fold-smoke-handshake.md`](docs/development/issues/archive/2026-08-11-lsp-fold-smoke-handshake.md).
 
 The structural half of BUG-002 is untouched and still stands: `cyrius smoke` is
 not a step in `.github/workflows/ci.yml`, which is why a dead feature sat
@@ -2681,7 +2858,7 @@ while `docs/development/state.md` still recorded "13 PASS". Left open for its
 own investigation rather than folded into a fix-only patch cut, and tracked as
 **BUG-002 (P2)** in [`docs/development/roadmap.md`](docs/development/roadmap.md)
 § Open Bugs, with a full issue doc at
-[`docs/development/issues/2026-08-11-lsp-fold-smoke-handshake.md`](docs/development/issues/2026-08-11-lsp-fold-smoke-handshake.md).
+[`docs/development/issues/archive/2026-08-11-lsp-fold-smoke-handshake.md`](docs/development/issues/archive/2026-08-11-lsp-fold-smoke-handshake.md).
 
 ### Binary
 

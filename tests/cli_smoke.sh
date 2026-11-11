@@ -991,8 +991,8 @@ rm -rf "$RO_DIR"
 rm -f "$SHORTW" "$PAYLOAD" "$SAFE"
 
 # ── 1.12.0: failure messages say which pair and how many ─────────────
-# Filed by agnos (docs/development/issues/2026-08-29-batch-and-expect-
-# diagnostics.md). The exit codes are the contract and do not change; the
+# Filed by agnos (docs/development/issues/archive/2026-08-29-batch-and-
+# expect-diagnostics.md). The exit codes are the contract and do not change; the
 # stderr text gains what the caller needs to act on it.
 assert_err_has() {
     case "$3" in

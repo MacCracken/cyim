@@ -1215,7 +1215,7 @@ fn run_grepfiles(pattern, files_arr, file_count, context_n, regex_flavor, fuzzy_
 # the edit looks already applied. Each is composed in one buffer and written
 # with one write(2). Only the text changes: the exit codes are the contract
 # (CLAUDE.md § Consumers) and stay as they were. Filed by agnos in
-# docs/development/issues/2026-08-29-batch-and-expect-diagnostics.md.
+# docs/development/issues/archive/2026-08-29-batch-and-expect-diagnostics.md.
 
 # Bytes in a composed message; every `var msg[N]` that holds one must equal it.
 var CLI_MSG_CAP = 512;

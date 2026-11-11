@@ -483,6 +483,10 @@ fn run_editor(file_path) {
         # `n` at 0, and conflating them would make every terminal resize quit
         # the editor.
         var have_keys = 1;
+        # 1 when `key_buf` holds exactly what one read(2) of the terminal
+        # returned — the unit `editor_feed_ss3` decides by (BUG-007). Not on
+        # agnos, whose keyboard channel is not a terminal read.
+        var one_read = 0;
         #ifdef CYRIUS_TARGET_AGNOS
         n = _agnos_kbd_read(&key_buf, 8);   # blocks until a real key (kbscan#42)
         if (_agnos_kbd_pending() > 0) { more = 1; }
@@ -531,6 +535,7 @@ fn run_editor(file_path) {
                 } else {
                     n = file_read(0, &key_buf, 8);
                     if (n == 8) { more = 1; }
+                    one_read = 1;
                 }
             }
         }
@@ -540,6 +545,7 @@ fn run_editor(file_path) {
             if (have_keys == 1) {
                 n = file_read(0, &key_buf, 8);
                 if (n == 8) { more = 1; }
+                one_read = 1;
             }
         }
         #endif
@@ -548,7 +554,11 @@ fn run_editor(file_path) {
         }
         if (quit == 0) {
             if (have_keys == 1) {
-                if (more == 1) { editor_feed_cont(s, &key_buf, n); } else { editor_feed(s, &key_buf, n); }
+                var ss3 = 0;
+                if (one_read == 1) { ss3 = editor_feed_ss3(s, &key_buf, n); }
+                if (ss3 == 0) {
+                    if (more == 1) { editor_feed_cont(s, &key_buf, n); } else { editor_feed(s, &key_buf, n); }
+                }
                 if (editor_quit(s) == 1) { quit = 1; }
             }
         }

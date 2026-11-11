@@ -6,7 +6,7 @@
 **Affects file:** `lib/args.cyr` (line 42)
 **Severity:** P1 — silent argc undercount on a scriptable surface
 **Status:** **RESOLVED upstream in cyrius 5.9.5** (heap-backed 2 MB buffer); verified 2026-05-06 against cyrius 5.9.13. cyim-side workaround `_cli_args_reload_big()` retires in cyim v1.3.3.
-**Internal label (cyim):** BUG-001 ([`../roadmap.md`](../roadmap.md) § Active Bugs)
+**Internal label (cyim):** BUG-001 ([`../../roadmap.md`](../../roadmap.md) § Active Bugs)
 
 ---
 
@@ -162,7 +162,7 @@ the moment the upstream fix lands and cyim's cyrius pin picks it
 up.
 
 cyim's bug record:
-[`docs/development/roadmap.md`](../roadmap.md) § Active Bugs §
+[`docs/development/roadmap.md`](../../roadmap.md) § Active Bugs §
 BUG-001 (full P1 spec, threshold table, discovery context).
 
 ## Verification

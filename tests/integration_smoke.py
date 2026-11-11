@@ -483,6 +483,20 @@ def main():
         else:
             ok &= assert_eq(content, expect, f"--headless Left + Delete, {label}")
 
+    # 1.13.1 — BUG-007's SS3 rule is the interactive loop's alone. Even when a
+    # --headless read is exactly `ESC O P`, an agent's <Esc>O is the command.
+    with open(headless_fixture, "wb") as f:
+        f.write(b"hello\n")
+    hp = subprocess.Popen([CYIM, "--headless", headless_fixture], stdin=subprocess.PIPE)
+    hp.stdin.write(b"\x1bOP"); hp.stdin.flush()
+    time.sleep(0.3)                        # let that be a read of its own
+    hp.stdin.write(b"\x1b:wq\r"); hp.stdin.close()
+    hrc = hp.wait(timeout=5)
+    with open(headless_fixture, "rb") as f:
+        content = f.read()
+    ok &= assert_eq((hrc, content), (0, b"P\nhello\n"),
+                    "--headless: a read of exactly ESC O P is still <Esc>O + 'P'")
+
     print("=== --grep: emit FILE:N:LINE for every line containing PATTERN ===")
     grep_fixture = "/tmp/cyim-grep-fixture.txt"
     with open(grep_fixture, "wb") as f:
@@ -902,6 +916,99 @@ def main():
     except OSError:
         pass
 
+    # ── 1.13.1 — the view follows the cursor ─────────────────────────────
+    #
+    # Through 1.13.0 every frame drew from line 0: on a 24-row terminal `G`,
+    # PgDn, 40 `j`s and the arrow keys a mouse wheel sends all left L000-L021
+    # on screen. Run against the 1.13.0 binary, 8 of these 11 fail; the three
+    # that pass (start, gg, PgUp) are the ones whose answer is the first screen.
+    print()
+    print("=== 1.13.1 the view follows the cursor ===")
+    view_fixture = "".join("L%03d line\n" % i for i in range(100))
+    view_path = "/tmp/cyim-view-smoke.txt"
+    with open(view_path, "w") as fh:
+        fh.write(view_fixture)
+    vm, vsl = pty.openpty()
+    fcntl.ioctl(vsl, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    vpid = os.fork()
+    if vpid == 0:
+        os.setsid()
+        fcntl.ioctl(vsl, termios.TIOCSCTTY, 0)
+        os.dup2(vsl, 0); os.dup2(vsl, 1); os.dup2(vsl, 2)
+        os.close(vm); os.close(vsl)
+        os.execv(CYIM, [CYIM, view_path])
+    os.close(vsl)
+    fcntl.fcntl(vm, fcntl.F_SETFL, os.O_NONBLOCK)
+
+    def vdrain(sec=0.4):
+        buf = b""; t0 = time.time()
+        while time.time() - t0 < sec:
+            try:
+                buf += os.read(vm, 65536)
+            except BlockingIOError:
+                time.sleep(0.02)
+            except OSError:
+                break
+        return buf
+
+    def last_frame(out):
+        """The bytes of the last full repaint in `out` (from its clear)."""
+        i = out.rfind(b"\x1b[2J")
+        return out[i:] if i >= 0 else out
+
+    def view_of(keys):
+        """Send `keys`, return (lines on screen, final cursor row)."""
+        if keys:
+            os.write(vm, keys)
+        fr = last_frame(vdrain(0.6 if not keys else 0.4))
+        shown = sorted(set(int(x) for x in re.findall(rb"L(\d\d\d) line", fr)))
+        moves = re.findall(rb"\x1b\[(\d+);(\d+)H", fr)
+        row = int(moves[-1][0]) if moves else None
+        return shown, row
+
+    def check_view(name, keys, first, last, row=None):
+        global_ok = True
+        shown, crow = view_of(keys)
+        good = bool(shown) and shown[0] == first and shown[-1] == last and len(shown) == 22
+        if row is not None:
+            good = good and crow == row
+        where = f"L{shown[0]:03d}-L{shown[-1]:03d}" if shown else "nothing"
+        if good:
+            print(f"  PASS: {name}: {where} on screen" + (f", cursor row {crow}" if row else ""))
+        else:
+            print(f"  FAIL: {name}: {where} on screen, cursor row {crow} "
+                  f"(want L{first:03d}-L{last:03d}" + (f", row {row})" if row else ")"))
+            global_ok = False
+        return global_ok
+
+    ok &= check_view("start", b"", 0, 21, row=1)
+    ok &= check_view("G", b"G", 78, 99, row=22)
+    ok &= check_view("gg", b"gg", 0, 21, row=1)
+    ok &= check_view("PgDn", b"\x1b[6~", 20, 41, row=1)
+    ok &= check_view("PgUp", b"\x1b[5~", 0, 21)
+    ok &= check_view("40 j", b"j" * 40, 39, 60, row=22)
+    # A wheel on the alternate screen arrives as arrow keys (most terminals'
+    # alternate-scroll mode), so these two are the mouse path.
+    ok &= check_view("30 Up arrows", b"\x1b[A" * 30, 30, 51, row=1)
+    ok &= check_view("25 Down arrows", b"\x1b[B" * 25, 34, 55, row=22)
+    ok &= check_view("Ctrl-d", b"\x04", 45, 66, row=22)
+    ok &= check_view("Ctrl-u", b"\x15", 34, 55, row=22)
+    ok &= check_view("Ctrl-f x5 reaches the end", b"\x06" * 5, 78, 99, row=22)
+    try:
+        os.write(vm, b"\x1b:q!\r")
+    except OSError:
+        pass
+    vdrain(0.4)
+    try:
+        os.waitpid(vpid, 0)
+    except ChildProcessError:
+        pass
+    os.close(vm)
+    try:
+        os.unlink(view_path)
+    except OSError:
+        pass
+
     # ── v1.11.0 — terminal safety, key sequences, SIGPIPE ────────────────
     #
     # Every case below FAILS against the 1.10.1 binary except the ESC-timeout
@@ -1038,6 +1145,64 @@ def main():
         got = fh.read()
     ok &= assert_eq(got, b"abcdef\n", "the burst was typed, then :wq saved it")
 
+    # 1.13.1 — BUG-007: SS3 keys are decoded when ONE read is exactly the key,
+    # which is how a terminal sends them. The same bytes as three keystrokes
+    # stay the vim command. The first and third cases fail against 1.13.0.
+    p111 = "/tmp/cyim-ss3-smoke.txt"
+    with open(p111, "wb") as fh:
+        fh.write(b"abc\n")
+    pid, m = spawn111(p111)
+    drain111(m, 0.5)
+    os.write(m, b"\x1bOP")                 # F1, one write
+    drain111(m, 0.3)
+    # Esc first: on 1.13.0 F1 leaves INSERT open, and a bare `:wq` would be
+    # typed rather than run, the file never saved, and this case pass by
+    # accident.
+    _, st = finish111(pid, m, b"\x1b:wq\r")
+    with open(p111, "rb") as fh:
+        got = fh.read()
+    ok &= assert_eq((got, clean_exit(st)), (b"abc\n", True),
+                    "F1 (one write of ESC O P) does nothing (1.13.0 wrote 'P\\nabc\\n')")
+
+    with open(p111, "wb") as fh:
+        fh.write(b"abc\n")
+    pid, m = spawn111(p111)
+    drain111(m, 0.5)
+    for k in (b"\x1b", b"O", b"P"):        # typed: three reads
+        os.write(m, k)
+        drain111(m, 0.2)
+    _, st = finish111(pid, m, b"\x1b:wq\r")
+    with open(p111, "rb") as fh:
+        got = fh.read()
+    ok &= assert_eq(got, b"P\nabc\n", "Esc, O, P typed separately is still <Esc>O + 'P'")
+
+    with open(p111, "wb") as fh:
+        fh.write(b"ab\ncd\n")
+    pid, m = spawn111(p111)
+    drain111(m, 0.5)
+    os.write(m, b"\x1bOB")                 # application-cursor Down
+    drain111(m, 0.3)
+    os.write(m, b"x")
+    drain111(m, 0.2)
+    _, st = finish111(pid, m, b":wq\r")
+    with open(p111, "rb") as fh:
+        got = fh.read()
+    ok &= assert_eq(got, b"ab\nd\n", "ESC O B is Down: x deletes on line 2")
+
+    # 1.13.1 — BUG-008: rxvt's Shift-Delete, then a key that must survive.
+    with open(p111, "wb") as fh:
+        fh.write(b"abc\n")
+    pid, m = spawn111(p111)
+    drain111(m, 0.5)
+    os.write(m, b"i")
+    drain111(m, 0.2)
+    os.write(m, b"\x1b[3$x")
+    drain111(m, 0.3)
+    _, st = finish111(pid, m, b"\x1b:wq\r")
+    with open(p111, "rb") as fh:
+        got = fh.read()
+    ok &= assert_eq(got, b"xbc\n", "rxvt Shift-Delete deletes, and the next key is typed (1.13.0: 'abc')")
+
     # SIGPIPE: the language server dies mid-session; the next edit writes to
     # its stdin. 1.10.1 died (signal 13) with unsaved changes, terminal raw.
     if shutil.which("cyrius-lsp"):
@@ -1131,6 +1296,7 @@ def main():
 
     for p111 in ("/tmp/cyim-esc-\x1b]0;PWNED\x07-name.txt", "/tmp/cyim-c1-smoke.txt",
                  "/tmp/cyim-del-smoke.txt", "/tmp/cyim-esc-timeout-smoke.txt",
+                 "/tmp/cyim-ss3-smoke.txt",
                  "/tmp/cyim-lsp-sigpipe-smoke.cyr", "/tmp/cyim-deadpipe-smoke.txt"):
         try:
             os.unlink(p111)

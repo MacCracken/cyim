@@ -222,3 +222,10 @@ excerpt.
 State at v1.13.0: the [1.13.0 release audit](docs/audit/2026-10-31-1.13.0-audit.md)
 found nothing. The cut closes the 1.12.x review's fourth finding: a failed write
 to stdout is now exit 7 instead of a false success.
+
+State at v1.13.1: the [1.13.1 release audit](docs/audit/2026-11-11-1.13.1-audit.md)
+found nothing. The cut adds a scrolling view and decodes three more key shapes:
+PgUp / PgDn, rxvt's `$` keys (BUG-008) and SS3 (BUG-007). Neither decoder rule
+can take a terminal reply for a key, and `--headless` never decodes SS3. One
+latent bound of the 1.8.5 shape, a line buffer sized by a bare literal, now
+uses its constant. The residuals above carry.

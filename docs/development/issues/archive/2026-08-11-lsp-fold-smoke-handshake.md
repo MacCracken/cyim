@@ -5,7 +5,8 @@
 **Affects file:** `tests/smcyr/lsp_fold.smcyr` — subject under test is `lib/cyim-lsp.cyr`'s client path (`lsp_client_start_default` → `_lsp_client_start_with` → `lsp_proc_spawn` + `_lsp_initialize`)
 **Severity:** P2 — an opt-in feature is dead on its only supported platform, but nothing ships broken: no CI gate covers it, the editor is unaffected, and no user-visible surface regressed
 **Status:** ✅ **CLOSED 2026-08-23 (cyim 1.9.1).** Fixed upstream in `cyim-lsp` **1.5.3** (`var argv[4]` → `argv[32]`, `var fallback[1]` → `fallback[8]`) and picked up by cyim as a `[deps.cyim-lsp].tag` bump with **no cyim source change**. `cyrius smoke` goes **4 passed / 9 failed → 13 passed / 0 failed**. The structural half — putting `cyrius smoke` behind a CI gate — landed in the same cut.
-**Internal label (cyim):** BUG-002 ([`../roadmap.md`](../roadmap.md) § Open Bugs)
+**Archived 2026-11-11 (cyim 1.13.1).** Re-run against the 1.13.1 build: `cyrius smoke` is 13 passed / 0 failed, and the gate is still in `.github/workflows/ci.yml`. Nothing left open.
+**Internal label (cyim):** BUG-002 ([`../../roadmap.md`](../../roadmap.md) § Open Bugs)
 
 ---
 

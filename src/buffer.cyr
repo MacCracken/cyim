@@ -358,6 +358,46 @@ fn buf_pos_of_line(b, line) {
     return last_line_start;
 }
 
+# Byte offset of the start of the line after the one containing `pos`: one
+# past the next '\n' at or after `pos`, or `buf_len` when no '\n' follows.
+#
+# The renderer walks a screenful of lines with this from one
+# `buf_pos_of_line` (1.13.1). Asking `buf_pos_of_line` for each line instead
+# rescans from byte 0 every time, which is fine for the first screen of a
+# file and quadratic for a screen at the end of a large one.
+fn buf_next_line_start(b, pos) {
+    var len = buf_len(b);
+    var i = pos;
+    if (i < 0) { i = 0; }
+    var done = 0;
+    while (done == 0) {
+        if (i >= len) { done = 1; }
+        if (done == 0) {
+            if (buf_get(b, i) == 10) { done = 1; }
+        }
+        if (done == 0) { i = i + 1; }
+    }
+    if (i >= len) { return len; }
+    return i + 1;
+}
+
+# Byte offset of the start of the line `k` lines above the line containing
+# `pos`; line 0's start if there are fewer than `k` above it.
+#
+# The renderer finds a view's first line with this, walking back from the
+# cursor (1.13.1): the first line is never more than a screenful above the
+# cursor, so this reads about a screen of bytes, where `buf_pos_of_line`
+# scans the file from byte 0 to get there.
+fn buf_prev_line_start(b, pos, k) {
+    var ls = buf_line_start(b, pos);
+    var i = 0;
+    while (i < k) {
+        if (ls > 0) { ls = buf_line_start(b, ls - 1); }
+        i = i + 1;
+    }
+    return ls;
+}
+
 # Column of `pos` within its line (== pos - buf_line_start(pos)).
 fn buf_col_of(b, pos) {
     return pos - buf_line_start(b, pos);

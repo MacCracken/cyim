@@ -19,6 +19,11 @@ the exit codes are unchanged:
 
 Covered by `tests/cli_smoke.sh` (+24 cases).
 
+**Archived 2026-11-11 (cyim 1.13.1).** Re-run against the 1.13.1 build: the three commands below give
+`pair 3/3: OLD not found in file: "NOPE"` (exit 4, file byte-identical), `expected 3, found 1` (exit 6)
+and `(NEW already present — already applied?)` (exit 4). The open half of § 3, a distinct exit code, is
+tracked in [`roadmap.md` § 2.0.0 — Agent CLI](../../roadmap.md) item 5, not here.
+
 ---
 
 ## Summary

@@ -1,0 +1,354 @@
+# tests/scroll.tcyr — views and the scroll keys (1.13.1)
+#
+# Through 1.13.0 cyim had no view: every frame drew the buffer from line 0 and
+# clamped the cursor row to the last text row, so nothing past the first
+# screen of a file could be seen, by any key or the mouse wheel. These cover
+# the pieces the renderer now stands on — the follow rule, the line walk, the
+# per-view state — and the scroll keys' rules. The end-to-end half (a real
+# PTY, `G`, the last line on screen) is in tests/integration_smoke.py.
+#
+# Mutation-tested: making `view_follow` return `top` unchanged fails the
+# "follow" group; dropping the `nt == top` page rule fails "Ctrl-f reaches the
+# last line"; removing `_page_action` from the COMMAND branch fails "PgDn on
+# the command line".
+
+include "src/buffer.cyr"
+# marks.cyr must precede mode.cyr (single-pass; see tests/dot.tcyr).
+include "src/marks.cyr"
+include "src/mode.cyr"
+include "src/buflist.cyr"
+include "src/window.cyr"
+include "src/motion.cyr"
+include "src/insert.cyr"
+include "src/edit.cyr"
+include "src/plugin.cyr"
+include "src/command.cyr"
+include "src/search.cyr"
+include "src/undo.cyr"
+include "src/visual.cyr"
+include "src/driver.cyr"
+
+# Append `n` lines "L000 line\n", "L001 line\n", ... to `b`.
+fn fill_lines(b, n) {
+    var row[16];
+    var i = 0;
+    while (i < n) {
+        store8(&row + 0, 76);                   # L
+        store8(&row + 1, 48 + (i / 100) % 10);
+        store8(&row + 2, 48 + (i / 10) % 10);
+        store8(&row + 3, 48 + i % 10);
+        store8(&row + 4, 32);
+        store8(&row + 5, 108);                  # line
+        store8(&row + 6, 105);
+        store8(&row + 7, 110);
+        store8(&row + 8, 101);
+        store8(&row + 9, 10);
+        buf_insert(b, &row, 10);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# An editor as the binary sets one up — buflist and a one-leaf window tree —
+# over `n_lines` lines, laid out on a terminal of `rows` rows (the leaf gets
+# `rows - 1`, the last row being the command line). `rows` 0 skips the
+# layout, as `--headless` never draws.
+fn ed_lines(n_lines, rows) {
+    var b = buf_new();
+    fill_lines(b, n_lines);
+    buf_move(b, 0);
+    var s = editor_new(b);
+    bl_init(s, b);
+    window_init(s);
+    if (rows > 0) { window_layout(editor_window_root(s), 0, 0, rows - 1, 80); }
+    return s;
+}
+
+# The cursor's 0-indexed line.
+fn cur_line(s) {
+    var b = editor_buf(s);
+    return buf_line_of(b, buf_cursor(b));
+}
+
+# The cursor's byte column.
+fn cur_col(s) {
+    var b = editor_buf(s);
+    return buf_col_of(b, buf_cursor(b));
+}
+
+# Feed a NUL-terminated byte string as one read.
+fn feed(s, str) {
+    return editor_feed(s, str, strlen(str));
+}
+
+# Feed key `k` `n` times through editor_step.
+fn press(s, k, n) {
+    var i = 0;
+    while (i < n) {
+        editor_step(s, k);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Run every group; the exit code is the number of failed assertions.
+fn main() {
+    alloc_init();
+
+    test_group("follow: the view moves only as far as the cursor needs");
+    assert_eq(view_follow(0, 5, 22), 0, "cursor on screen: top stays");
+    assert_eq(view_follow(0, 21, 22), 0, "cursor on the bottom row: top stays");
+    assert_eq(view_follow(0, 22, 22), 1, "one past the bottom: scroll one line");
+    assert_eq(view_follow(0, 99, 22), 78, "G: last line on the bottom row");
+    assert_eq(view_follow(78, 10, 22), 10, "cursor above the view: it becomes the top");
+    assert_eq(view_follow(10, 20, 22), 10, "inside the view: unchanged");
+    assert_eq(view_follow(0, 5, 0), 5, "a zero-row view is taken as one row");
+    assert_eq(view_follow(0 - 3, 0, 5), 0, "a negative top is clamped");
+
+    test_group("buf_next_line_start walks lines");
+    var w = buf_new();
+    buf_insert(w, "ab\ncd\n", 6);
+    assert_eq(buf_next_line_start(w, 0), 3, "after line 0");
+    assert_eq(buf_next_line_start(w, 1), 3, "from mid-line");
+    assert_eq(buf_next_line_start(w, 3), 6, "after the last line: buf_len");
+    assert_eq(buf_next_line_start(w, 6), 6, "at the end: buf_len");
+    var w2 = buf_new();
+    buf_insert(w2, "ab", 2);
+    assert_eq(buf_next_line_start(w2, 0), 2, "no newline: buf_len");
+    var w3 = buf_new();
+    buf_insert(w3, "\n\n", 2);
+    assert_eq(buf_next_line_start(w3, 0), 1, "empty line 0");
+    assert_eq(buf_next_line_start(w3, 1), 2, "empty line 1");
+    var w4 = buf_new();
+    assert_eq(buf_next_line_start(w4, 0), 0, "empty buffer");
+    # The walk visits exactly the starts buf_pos_of_line reports.
+    var wl = buf_new();
+    buf_insert(wl, "one\n\nthree\n\n\nsix\nseven", 23);
+    var nl = buf_line_count(wl);
+    var ls = 0;
+    var k = 0;
+    var walk_ok = 1;
+    while (k < nl) {
+        if (ls != buf_pos_of_line(wl, k)) { walk_ok = 0; }
+        ls = buf_next_line_start(wl, ls);
+        k = k + 1;
+    }
+    assert_eq(walk_ok, 1, "walk == buf_pos_of_line for every line");
+    # Walking back from any byte of any line lands on buf_pos_of_line too.
+    var back_ok = 1;
+    var p = 0;
+    while (p <= buf_len(wl)) {
+        var pl = buf_line_of(wl, p);
+        var kk = 0;
+        while (kk <= pl) {
+            if (buf_prev_line_start(wl, p, kk) != buf_pos_of_line(wl, pl - kk)) { back_ok = 0; }
+            kk = kk + 1;
+        }
+        p = p + 1;
+    }
+    assert_eq(back_ok, 1, "buf_prev_line_start(p, k) == buf_pos_of_line(line(p) - k)");
+    assert_eq(buf_prev_line_start(wl, 20, 99), 0, "more lines than exist: line 0");
+    var wt = buf_new();
+    buf_insert(wt, "ab\ncd\n", 6);
+    assert_eq(buf_prev_line_start(wt, 6, 0), 6, "after the final newline: that virtual line's start");
+    assert_eq(buf_prev_line_start(wt, 6, 1), 3, "one up from there: the last line");
+
+    test_group("view rows: laid out, or the default before any frame");
+    var sh = ed_lines(10, 0);
+    assert_eq(editor_view_rows(sh), VIEW_DEFAULT_ROWS, "never laid out: default");
+    assert_eq(VIEW_DEFAULT_ROWS, 22, "default is a 24-row terminal's window");
+    var s24 = ed_lines(10, 24);
+    assert_eq(editor_view_rows(s24), 22, "24 rows: 22 text rows");
+    var bare = buf_new();
+    var sb = editor_new(bare);
+    assert_eq(editor_view_rows(sb), VIEW_DEFAULT_ROWS, "no tree, never drawn: default");
+    _editor_set_solo_rows(sb, 9);
+    assert_eq(editor_view_rows(sb), 9, "no tree: the single view's rows");
+    editor_set_view_top(sb, 4);
+    assert_eq(_editor_solo_top(sb), 4, "no tree: top goes to the editor slot");
+    var leaf24 = editor_active_leaf(s24);
+    editor_set_view_top(s24, 3);
+    assert_eq(window_view_top(leaf24), 3, "tree: top goes to the active leaf");
+
+    test_group("Ctrl-e / Ctrl-y move the view one line");
+    var s = ed_lines(100, 24);
+    editor_step(s, KEY_CTRL_E);
+    assert_eq(editor_view_top(s), 1, "Ctrl-e: top 1");
+    assert_eq(cur_line(s), 1, "Ctrl-e: cursor pulled onto the view");
+    editor_step(s, KEY_CTRL_Y);
+    assert_eq(editor_view_top(s), 0, "Ctrl-y: top 0");
+    assert_eq(cur_line(s), 1, "Ctrl-y: cursor still on screen, unmoved");
+    editor_step(s, KEY_CTRL_Y);
+    assert_eq(editor_view_top(s), 0, "Ctrl-y at the top: no-op");
+    press(s, KEY_CTRL_E, 200);
+    assert_eq(editor_view_top(s), 99, "Ctrl-e stops with the last line at the top");
+    assert_eq(cur_line(s), 99, "cursor followed to the last line");
+    editor_step(s, KEY_CTRL_D);
+    assert_eq(editor_view_top(s), 99, "a forward scroll never moves the view back");
+    editor_step(s, KEY_CTRL_F);
+    assert_eq(editor_view_top(s), 99, "nor does Ctrl-f");
+    assert_eq(editor_modified(s), 0, "scrolling never marks the buffer modified");
+
+    test_group("Ctrl-d / Ctrl-u: half a view, cursor moves as far");
+    var sd = ed_lines(100, 24);
+    editor_step(sd, KEY_CTRL_D);
+    assert_eq(editor_view_top(sd), 11, "Ctrl-d: top 11");
+    assert_eq(cur_line(sd), 11, "Ctrl-d: cursor 11");
+    editor_step(sd, KEY_CTRL_D);
+    assert_eq(editor_view_top(sd), 22, "Ctrl-d again: top 22");
+    assert_eq(cur_line(sd), 22, "cursor 22");
+    editor_step(sd, KEY_CTRL_U);
+    assert_eq(editor_view_top(sd), 11, "Ctrl-u: top 11");
+    assert_eq(cur_line(sd), 11, "cursor 11");
+    press(sd, KEY_CTRL_D, 20);
+    assert_eq(editor_view_top(sd), 78, "Ctrl-d stops with the last line on the bottom row");
+    assert_eq(cur_line(sd), 99, "but the cursor reaches the last line");
+    press(sd, KEY_CTRL_U, 20);
+    assert_eq(editor_view_top(sd), 0, "Ctrl-u back to the top");
+    assert_eq(cur_line(sd), 0, "cursor reaches line 0");
+
+    test_group("Ctrl-f / Ctrl-b: a view less two lines");
+    var sf = ed_lines(100, 24);
+    editor_step(sf, KEY_CTRL_F);
+    assert_eq(editor_view_top(sf), 20, "Ctrl-f: top 20");
+    assert_eq(cur_line(sf), 20, "cursor moved onto the new view's first line");
+    editor_step(sf, KEY_CTRL_B);
+    assert_eq(editor_view_top(sf), 0, "Ctrl-b: top 0");
+    assert_eq(cur_line(sf), 20, "cursor still on screen (row 20 of 22), unmoved");
+    editor_step(sf, KEY_CTRL_B);
+    assert_eq(cur_line(sf), 0, "Ctrl-b at the top: cursor to line 0");
+
+    test_group("Ctrl-f reaches the last line");
+    var sl = ed_lines(100, 24);
+    press(sl, KEY_CTRL_F, 3);
+    assert_eq(editor_view_top(sl), 60, "three pages: top 60");
+    editor_step(sl, KEY_CTRL_F);
+    assert_eq(editor_view_top(sl), 78, "fourth: clamped, last line on the bottom row");
+    editor_step(sl, KEY_CTRL_F);
+    assert_eq(editor_view_top(sl), 78, "fifth: the view cannot move");
+    assert_eq(cur_line(sl), 99, "so the cursor goes to the last line");
+    press(sl, KEY_CTRL_B, 10);
+    assert_eq(editor_view_top(sl), 0, "Ctrl-b back to the top");
+    assert_eq(cur_line(sl), 0, "and the cursor to line 0");
+
+    test_group("scrolling keeps the byte column, clamped");
+    var sc = ed_lines(100, 24);
+    buf_move(editor_buf(sc), 3);              # line 0, col 3
+    editor_step(sc, KEY_CTRL_F);
+    assert_eq(cur_line(sc), 20, "Ctrl-f: line 20");
+    assert_eq(cur_col(sc), 3, "column 3 kept");
+    var bs = buf_new();
+    buf_insert(bs, "long line here\nab\n", 18);
+    buf_move(bs, 10);                         # line 0, col 10
+    var ss = editor_new(bs);
+    bl_init(ss, bs);
+    window_init(ss);
+    window_layout(editor_window_root(ss), 0, 0, 23, 80);
+    editor_step(ss, KEY_CTRL_D);
+    assert_eq(cur_line(ss), 1, "Ctrl-d onto a short line");
+    assert_eq(cur_col(ss), 1, "column clamped to its last byte");
+
+    test_group("a file that fits: the page keys go to the ends");
+    var sm = ed_lines(5, 24);
+    editor_step(sm, KEY_CTRL_F);
+    assert_eq(editor_view_top(sm), 0, "nothing to scroll");
+    assert_eq(cur_line(sm), 4, "Ctrl-f: last line");
+    editor_step(sm, KEY_CTRL_B);
+    assert_eq(cur_line(sm), 0, "Ctrl-b: first line");
+    editor_step(sm, KEY_CTRL_D);
+    assert_eq(cur_line(sm), 4, "Ctrl-d: cursor down half a view, clamped");
+
+    test_group("the view height comes from the layout");
+    var s10 = ed_lines(100, 12);              # 11-row leaf, 10 text rows
+    assert_eq(editor_view_rows(s10), 10, "12 rows: 10 text rows");
+    editor_step(s10, KEY_CTRL_D);
+    assert_eq(cur_line(s10), 5, "Ctrl-d: half of 10");
+    editor_step(s10, KEY_CTRL_F);
+    assert_eq(editor_view_top(s10), 13, "Ctrl-f: 8 more (10 less 2)");
+    var sh2 = ed_lines(100, 0);
+    editor_step(sh2, KEY_CTRL_D);
+    assert_eq(cur_line(sh2), 11, "never drawn (--headless): half of 22");
+
+    test_group("a scroll first catches the view up with the cursor");
+    # Several keys in one read run before the next frame: `G` moves the
+    # cursor, but nothing has moved the view yet when Ctrl-y arrives.
+    var sg = ed_lines(100, 24);
+    editor_step(sg, 71);                      # G
+    assert_eq(editor_view_top(sg), 0, "G alone does not move the view (the frame does)");
+    editor_step(sg, KEY_CTRL_Y);
+    assert_eq(editor_view_top(sg), 77, "Ctrl-y scrolls from where the frame would draw");
+    assert_eq(cur_line(sg), 98, "cursor kept on the new bottom row");
+
+    test_group("PgDn / PgUp are Ctrl-f / Ctrl-b");
+    var sp = ed_lines(100, 24);
+    feed(sp, "\x1b[6~");
+    assert_eq(editor_view_top(sp), 20, "ESC [ 6 ~: page down");
+    feed(sp, "\x1b[6;5~");
+    assert_eq(editor_view_top(sp), 40, "ESC [ 6 ; 5 ~ (Ctrl-PgDn): page down");
+    feed(sp, "\x1b[5~");
+    assert_eq(editor_view_top(sp), 20, "ESC [ 5 ~: page up");
+    assert_eq(editor_mode(sp), MODE_NORMAL, "still NORMAL");
+    feed(sp, "\x1b[56~");
+    assert_eq(editor_view_top(sp), 20, "ESC [ 5 6 ~ is not PgUp: swallowed");
+
+    test_group("PgDn in INSERT scrolls and types nothing");
+    var si = ed_lines(100, 24);
+    var bi = editor_buf(si);
+    var len_i = buf_len(bi);
+    editor_step(si, 105);                     # i
+    feed(si, "\x1b[6~");
+    assert_eq(editor_mode(si), MODE_INSERT, "still INSERT");
+    assert_eq(editor_view_top(si), 20, "scrolled a page");
+    assert_eq(buf_len(bi), len_i, "no byte inserted");
+    editor_step(si, KEY_CTRL_E);
+    assert_eq(editor_view_top(si), 20, "Ctrl-e in INSERT is not a scroll");
+
+    test_group("PgDn on the command and search lines is swallowed");
+    var sx = ed_lines(100, 24);
+    editor_step(sx, 58);                      # :
+    feed(sx, "\x1b[6~");
+    assert_eq(buf_len(editor_cmdbuf(sx)), 0, "command line: nothing appended");
+    assert_eq(editor_view_top(sx), 0, "command line: no scroll");
+    feed(sx, "\x1b[5~");
+    assert_eq(buf_len(editor_cmdbuf(sx)), 0, "PgUp: nothing appended");
+    editor_step(sx, KEY_ESC);
+    editor_step(sx, 47);                      # /
+    feed(sx, "\x1b[6~");
+    assert_eq(buf_len(editor_cmdbuf(sx)), 0, "search line: nothing appended");
+    editor_step(sx, KEY_ESC);
+    assert_eq(editor_mode(sx), MODE_NORMAL, "back in NORMAL");
+
+    test_group("VISUAL lets the scroll keys through");
+    var sv = ed_lines(100, 24);
+    editor_step(sv, 118);                     # v
+    editor_step(sv, KEY_CTRL_F);
+    assert_eq(editor_mode(sv), MODE_VISUAL, "still VISUAL");
+    assert_eq(cur_line(sv), 20, "Ctrl-f extended the selection");
+    feed(sv, "\x1b[6~");
+    assert_eq(cur_line(sv), 40, "PgDn too");
+    editor_step(sv, KEY_ESC);
+    editor_step(sv, 86);                      # V
+    editor_step(sv, KEY_CTRL_U);
+    assert_eq(editor_mode(sv), MODE_VISUAL_LINE, "still VISUAL LINE");
+    assert_eq(cur_line(sv), 29, "Ctrl-u in VISUAL LINE");
+
+    test_group("splits: each leaf has its own view");
+    var sw = ed_lines(100, 24);
+    editor_set_view_top(sw, 30);
+    var la = editor_active_leaf(sw);
+    window_split_active(sw, WIN_SPLIT_H);
+    var root = editor_window_root(sw);
+    var lb = window_child_b(root);
+    assert_eq(window_view_top(lb), 30, "the new half opens on the same view");
+    window_set_view_top(lb, 50);
+    assert_eq(window_view_top(la), 30, "and moves on its own");
+    window_set_buf_idx(la, window_buf_idx(la));
+    assert_eq(window_view_top(la), 30, "re-pointing at the same buffer keeps the view");
+    window_set_buf_idx(la, window_buf_idx(la) + 1);
+    assert_eq(window_view_top(la), 0, "a different buffer starts at the top");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

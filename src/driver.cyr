@@ -202,7 +202,9 @@ fn editor_run(s, keys, n) {
 #     Ctrl / Alt modifiers) are ignored, so Ctrl-Right moves like Right.
 #   - `ESC [ 3 ~`, with or without a `;<modifier>` — the Delete key, fed to
 #     `editor_step` as KEY_DELETE (src/mode.cyr says what each mode does).
-#   - everything else is SWALLOWED whole: PgUp / PgDn / Home / End / Insert,
+#   - `ESC [ 5 ~` / `ESC [ 6 ~`, likewise — PgUp / PgDn, fed as KEY_PGUP /
+#     KEY_PGDN (since 1.13.1; swallowed before, with nothing to scroll).
+#   - everything else is SWALLOWED whole: Home / End / Insert,
 #     F5 and up, the Linux console's `ESC [ [ A`-style F1–F5, focus and mouse
 #     reports, bracketed-paste markers. None reaches a mode as keystrokes.
 # A byte that cannot continue a CSI (a C0 control, DEL, any byte >= 0x80)
@@ -218,14 +220,14 @@ fn editor_run(s, keys, n) {
 # interactive loop calls it after ESC_SEQ_TIMEOUT_MS of quiet, `--headless` at
 # end of input.
 #
-# SS3 keys (`ESC O <final>`: F1–F4, and arrows in application-cursor mode,
-# which cyim never enables) are deliberately NOT decoded. `O` is "open line
-# above", and `<Esc>O` typed quickly lands in one read — decoding it would eat
-# a real command. See roadmap.md § Open Bugs.
+# SS3 keys (`ESC O <final>`: F1–F4, and arrows in application-cursor mode)
+# are NOT decoded here, because `O` is "open line above" and `<Esc>O` is an
+# everyday command. `editor_feed_ss3` below decodes them under a narrower
+# rule that only the interactive loop applies (BUG-007, 1.13.1).
 #
-# rxvt's `$`-final keys (`ESC [ 3 $`, Shift-Delete) are not decoded either:
-# `$` is an intermediate byte in ECMA-48, so the sequence stays open and the
-# NEXT key becomes its final byte (BUG-008, same section).
+# rxvt's `$`-final keys (`ESC [ 3 $`, Shift-Delete) end the sequence when
+# every parameter byte before the `$` is a digit, and then act as their `~`
+# forms (BUG-008, 1.13.1; `_feed_params_digits`).
 
 # How long the interactive loop waits for the rest of a carried escape
 # sequence before `editor_feed_flush` resolves it. A terminal sends a whole
@@ -263,17 +265,49 @@ fn _feed_csi_dispatch(s, final) {
     }
     if (final == 126) {                        # `~`
         if (plen > 0) {
-            if (load8(pb) == 51) {             # `3`
-                var is_del = 0;
-                if (plen == 1) { is_del = 1; }
-                if (plen > 1) {
-                    if (load8(pb + 1) == 59) { is_del = 1; }   # `3;<modifier>`
-                }
-                if (is_del == 1) { editor_step(s, KEY_DELETE); }
+            # One digit, alone or before `;<modifier>`: `ESC [ 3 ~`, `ESC [ 3 ; 5 ~`.
+            var one = 0;
+            if (plen == 1) { one = 1; }
+            if (plen > 1) {
+                if (load8(pb + 1) == 59) { one = 1; }
+            }
+            if (one == 1) {
+                var d = load8(pb);
+                if (d == 51) { editor_step(s, KEY_DELETE); }   # `3` — Delete
+                if (d == 53) { editor_step(s, KEY_PGUP); }     # `5` — PgUp (1.13.1)
+                if (d == 54) { editor_step(s, KEY_PGDN); }     # `6` — PgDn (1.13.1)
             }
         }
     }
     return 0;
+}
+
+# 1 if the CSI held so far has at least one parameter byte and every one is a
+# digit (`0`–`9`), else 0. A count past FEED_PBUF_MAX means bytes were dropped,
+# so that is never "digits only".
+#
+# ⭐ BUG-008, fixed at 1.13.1. rxvt and urxvt send Shift-modified Insert /
+# Delete / Home / End / PgUp / PgDn as `ESC [ <digit> $`. ECMA-48 makes `$`
+# (0x24) an intermediate byte, so through 1.13.0 the sequence stayed open and
+# the NEXT key became its final byte: in INSERT, Shift-Delete then `x` typed
+# nothing. A `$` after digits alone now ends the sequence. Nothing cyim can
+# receive is misread by that: the one reply shape with a `$` before its final
+# byte, DECRPM (`CSI ? Ps ; Pm $ y`), always has a `;` first, and cyim sends
+# no query that would produce one anyway.
+fn _feed_params_digits(s) {
+    var n = _editor_feed_plen(s);
+    if (n < 1) { return 0; }
+    if (n > FEED_PBUF_MAX) { return 0; }
+    var pb = _editor_feed_pbuf(s);
+    var ok = 1;
+    var i = 0;
+    while (i < n) {
+        var c = load8(pb + i);
+        if (c < 48) { ok = 0; }
+        if (c > 57) { ok = 0; }
+        i = i + 1;
+    }
+    return ok;
 }
 
 # Feed one byte through the decoder. `last` is 1 when this byte ends the
@@ -282,6 +316,16 @@ fn _feed_csi_dispatch(s, final) {
 fn _feed_byte(s, c, last) {
     var st = _editor_feed_state(s);
     if (st == 2) {
+        # BUG-008: rxvt's `ESC [ <digits> $` is a whole key, decoded as the
+        # same digits with `~` (`ESC [ 3 $`, Shift-Delete, is Delete).
+        if (c == 36) {
+            if (_feed_params_digits(s) == 1) {
+                _editor_set_feed_state(s, 0);
+                _feed_csi_dispatch(s, 126);
+                _editor_set_feed_plen(s, 0);
+                return 0;
+            }
+        }
         # The Linux console's F1–F5 are `ESC [ [ A`..`E`: a `[` straight after
         # the CSI introducer is kept as a marker, not taken as the final byte —
         # which would leave the trailing letter to run as a command.
@@ -368,6 +412,44 @@ fn editor_feed(s, buf, len) {
 # of a sequence the read cut in two. Returns `len`.
 fn editor_feed_cont(s, buf, len) {
     return _editor_feed_n(s, buf, len, 1);
+}
+
+# Decode one READ that is exactly an SS3 key, `ESC O <final>`. Returns 1 if it
+# was one and has been handled, 0 if not, in which case the caller feeds the
+# bytes as usual (`editor_feed`).
+#
+# ⭐ BUG-007, fixed at 1.13.1. xterm-style terminals send F1–F4 as SS3,
+# `ESC O P` .. `ESC O S`, and the arrows as `ESC O A` .. `D` in
+# application-cursor mode. Through 1.13.0 F1 arrived as three keys: Esc, then
+# `O` (open a line above), then `P`, typed. But `<Esc>O` is also an everyday
+# vim gesture, so the byte stream alone cannot tell the two apart. Timing can:
+# a terminal sends the key in one write, which arrives as one read, while a
+# human typing Esc, `O`, `P` produces three reads. So the rule is a read of
+# exactly those three bytes, with nothing held from the read before.
+#   - P / Q / R / S (F1–F4, unbound) are swallowed, as CSI keys are.
+#   - A / B / C / D are the arrows, dispatched like their CSI forms.
+#   - Any other final is not decoded: the read is three keystrokes.
+#
+# Only the interactive loop calls this, on each read(2) of the terminal.
+# `--headless` never does, so an agent's `<Esc>O` is always the command.
+# The risk taken: while the editor is busy (a full re-highlight of a large
+# file takes about 0.25 s), a human types exactly Esc, `O`, `P` and nothing
+# after, and the three queue into one read. That is swallowed as F1, losing
+# the keys rather than running a different command.
+fn editor_feed_ss3(s, buf, len) {
+    if (len != 3) { return 0; }
+    if (editor_feed_pending(s) == 1) { return 0; }
+    if (load8(buf) != KEY_ESC) { return 0; }
+    if (load8(buf + 1) != 79) { return 0; }    # `O`
+    var f = load8(buf + 2);
+    if (f >= 80) {
+        if (f <= 83) { return 1; }             # F1–F4
+    }
+    if (f == 65) { editor_step(s, KEY_UP);    return 1; }
+    if (f == 66) { editor_step(s, KEY_DOWN);  return 1; }
+    if (f == 67) { editor_step(s, KEY_RIGHT); return 1; }
+    if (f == 68) { editor_step(s, KEY_LEFT);  return 1; }
+    return 0;
 }
 
 # 1 if the decoder is holding an unfinished escape sequence (a carried ESC, or

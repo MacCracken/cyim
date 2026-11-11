@@ -46,13 +46,82 @@ bytes are split across reads. *(Through 1.11.1 an arrow moved the buffer
 cursor even on the `:` line and left a pending prefix in place, so
 `g <Down> g` ran `gg`.)*
 
-**Other terminal keys** (1.11.0). `Delete` (`ESC [ 3 ~`) is below. Every
-other multi-byte key a terminal sends as a CSI sequence — PgUp / PgDn,
-Home / End, Insert, F5 and up, the Linux console's `ESC [ [ A`-style
-F1–F5, mouse and focus reports — is swallowed whole; through 1.10.1 their
-tails ran as keystrokes. ⚠ F1–F4 on xterm-style terminals are SS3
-sequences (`ESC O P` .. `S`), which cyim does NOT decode: they arrive as
-Esc, `O` (open line above) and a letter. Known — BUG-007 in the roadmap.
+**Other terminal keys** (1.11.0). `Delete` (`ESC [ 3 ~`) is below, and
+PgUp / PgDn (`ESC [ 5 ~` / `ESC [ 6 ~`) are under Scrolling. Every other
+multi-byte key a terminal sends as a CSI sequence — Home / End, Insert, F5
+and up, the Linux console's `ESC [ [ A`-style F1–F5, mouse and focus
+reports — is swallowed whole; through 1.10.1 their tails ran as keystrokes.
+
+**rxvt's Shift keys** (1.13.1, BUG-008). rxvt and urxvt send Shift-Insert /
+Delete / Home / End / PgUp / PgDn as `ESC [ <digit> $`. These act as their
+`~` forms: Shift-Delete deletes, Shift-PgUp / PgDn scroll, the rest are
+swallowed. Through 1.13.0 they swallowed the next key instead.
+
+**F1–F4 and SS3 arrows** (1.13.1, BUG-007). xterm-style terminals send F1–F4
+as `ESC O P` .. `S`, and the arrows as `ESC O A` .. `D` when the terminal is
+in application-cursor mode. But `<Esc>O` is also the command "leave INSERT,
+open a line above", so cyim decides by how the bytes arrive:
+
+- **One read of exactly those three bytes is the key.** A terminal sends a
+  key in one write, so it arrives that way. F1–F4 are swallowed (they are
+  unbound) and `ESC O A` .. `D` move like the arrows.
+- **Typed, they are three keys.** Typing Esc, `O`, `P` produces three reads,
+  so it is Esc, open a line above, `P`, as in vim.
+- **`--headless` never decodes SS3.** An agent's `<Esc>O` is always the
+  command.
+- **The one case that goes wrong:** if the editor is busy (re-highlighting a
+  large file takes about a quarter of a second) and you type exactly Esc,
+  `O`, `P` and nothing after, the three can queue into one read and be
+  swallowed as F1. You lose the keystrokes; no other command runs.
+
+### Scrolling (1.13.1)
+
+The screen shows a **view** of the buffer, and the view follows the
+cursor: when a motion takes the cursor off screen, the view moves just far
+enough to bring it back (to the top row going up, the bottom row going
+down). These keys move the view itself. *(Through 1.13.0 there was no view:
+every frame drew from line 0, so nothing past the first screen of a file
+could be seen.)*
+
+| Key | Byte | Action | Action ID | Vim |
+|-----|------|--------|-----------|-----|
+| `Ctrl-e` | 5 | View down one line | `ACT_SCROLL_LINE_DOWN` | = |
+| `Ctrl-y` | 25 | View up one line | `ACT_SCROLL_LINE_UP` | = |
+| `Ctrl-d` | 4 | View and cursor down half a view | `ACT_SCROLL_HALF_DOWN` | = (no count) |
+| `Ctrl-u` | 21 | View and cursor up half a view | `ACT_SCROLL_HALF_UP` | = (no count) |
+| `Ctrl-f` | 6 | View down a page: its height less two lines | `ACT_SCROLL_PAGE_DOWN` | ≈ |
+| `Ctrl-b` | 2 | View up a page | `ACT_SCROLL_PAGE_UP` | ≈ |
+| `PgDn` | `ESC [ 6 ~` | Same as `Ctrl-f` | `ACT_SCROLL_PAGE_DOWN` | = |
+| `PgUp` | `ESC [ 5 ~` | Same as `Ctrl-b` | `ACT_SCROLL_PAGE_UP` | = |
+
+- **The cursor moves only if the view leaves it behind.** After `Ctrl-e`
+  it moves to the new top line if it was on the old one; after `Ctrl-f` it
+  moves to the new view's first line unless it is already on screen. It
+  keeps its byte column where the new line is long enough, as `j` and `k`
+  do.
+- **The ends.** `Ctrl-e` can scroll until the last line is at the top.
+  `Ctrl-d` and `Ctrl-f` stop scrolling once the last line is on the bottom
+  row; after that, `Ctrl-d` keeps moving the cursor and `Ctrl-f` takes it
+  to the last line. `Ctrl-u` and `Ctrl-b` do the same at the top. So
+  repeating any of them always reaches the first or last line.
+- **Where they work.** NORMAL, VISUAL and VISUAL_LINE (the selection
+  extends with the cursor). In INSERT only PgUp / PgDn scroll; `Ctrl-e`,
+  `Ctrl-d` and the rest are typed as bytes there, as before. PgUp / PgDn
+  are ignored on the `:` and `/` lines.
+- **Each window has its own view.** A `:sp` half opens on the same view as
+  the window it was split from and then moves on its own. A window that
+  changes buffer (`:e`, `:b`) starts at the top of the new one.
+- **Height.** Half a view and a page come from the window's height as last
+  drawn. `--headless` never draws, so there they use 22 rows, a 24-row
+  terminal's single window.
+- **The mouse wheel.** cyim does not turn on mouse reporting. On the
+  alternate screen most terminals (VTE-based ones, kitty, Alacritty,
+  WezTerm, foot, iTerm2) send the wheel as Up / Down arrows, which move the
+  cursor and so scroll the view. xterm does this only with its
+  `alternateScroll` resource set.
+- **Not yet:** `zt` / `zz` / `zb`, counts (`5 Ctrl-e`), and `scrolloff`.
+  Long lines are still cut at the window's width, with no horizontal
+  scroll ([roadmap](../development/roadmap.md) § Open Bugs, BUG-009).
 
 ### Edits
 
@@ -191,6 +260,7 @@ the plugin is folded in.
 | `DEL`           | 127   | Same as Backspace          |
 | `Delete`        | `ESC [ 3 ~` | Delete byte UNDER the cursor; stay in INSERT (1.11.0). Part of the session's undo unit; not replayed by `.` |
 | arrows          | `ESC [ A`..`D` | Move without leaving INSERT |
+| `PgUp` / `PgDn` | `ESC [ 5 ~` / `ESC [ 6 ~` | Scroll a page without leaving INSERT (1.13.1; see NORMAL § Scrolling) |
 
 An ESC that a terminal sends as the start of a key sequence is not
 mistaken for the Esc key: cyim decodes the whole sequence. A real Esc
@@ -209,6 +279,7 @@ whether a sequence follows.)
 | any printable   | 32–126 | Append to cmdbuf            |
 | `Backspace` / `DEL` | 8 / 127 | Delete byte from cmdbuf |
 | `Delete`        | `ESC [ 3 ~` | Ignored (the command line has no cursor) |
+| `PgUp` / `PgDn` | `ESC [ 5 ~` / `ESC [ 6 ~` | Ignored (1.13.1) |
 | `Enter` / `LF`  | 13 / 10 | Execute, return to NORMAL |
 | `Esc`           | 27     | Cancel, return to NORMAL  |
 
@@ -254,6 +325,7 @@ pattern is saved and a forward / backward scan runs from the cursor.
 |-----------------|--------|-----------------------------|
 | any printable   | 32–126 | Append to cmdbuf            |
 | `Backspace` / `DEL` | 8 / 127 | Delete byte from cmdbuf |
+| `Delete`, arrows, `PgUp` / `PgDn` | CSI keys | Ignored (PgUp / PgDn since 1.13.1) |
 | `Enter` / `LF`  | 13 / 10 | Execute search; return to NORMAL |
 | `Esc`           | 27     | Cancel; return to NORMAL  |
 
@@ -319,6 +391,7 @@ lines for VISUAL_LINE).
 | Key | Bytes | Action                    | Action ID            |
 |-----|-------|---------------------------|----------------------|
 | any motion | (NORMAL motion bytes) | Extend selection | (NORMAL motions) |
+| any scroll key | `Ctrl-e` … `Ctrl-b`, PgUp / PgDn | Scroll; the selection extends with the cursor (1.13.1) | (NORMAL scrolls) |
 | `y` | 121   | Yank selection            | `ACT_VISUAL_YANK`    |
 | `d` | 100   | Yank + delete selection   | `ACT_VISUAL_DELETE`  |
 | `Delete` | `ESC [ 3 ~` | Same as `d` (1.11.0) | `ACT_VISUAL_DELETE` |
@@ -350,6 +423,7 @@ renumbering:
 | 230–231 | Visual yank / delete   |
 | 240     | Dot-repeat             |
 | 400–403 | Window navigation      |
+| 410–415 | Scrolling (1.13.1)     |
 
 The dispatcher emits an action; the per-mode `*_apply` handlers
 (`insert_apply`, `motion_apply`, `edit_apply`, `command_apply`,
